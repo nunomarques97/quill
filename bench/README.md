@@ -27,6 +27,16 @@ py -3.12 -m bench.run --dry-run                     # dataset counts only
 .venv\Scripts\python -m bench.run --engines groq-whisper-large-v3
 py -3.12 -m bench.privacy_guard                     # scan publishable files
 py -3.12 -m bench.report --check docs/research/ENGINES.md
+
+# Phase 2
+py -3.12 -m bench.record --list-devices             # MME inputs; microphone not opened
+py -3.12 -m bench.record                            # record the dictation script
+py -3.12 -m bench.record --redo dt-05,dt-07         # record takes again
+py -3.12 -m bench.pipeline --set all --dry-run      # counts of both sets, no GPU
+.venv\Scripts\python -m bench.pipeline --set all --stage raw --summary docs/research/phase2-summary.json
+py -3.12 -m bench.pipeline --summary docs/research/phase2-summary.json --require complete --require overall
+py -3.12 -m bench.pipeline --summary docs/research/phase2-summary.json --write-doc docs/research/FASE2.md
+py -3.12 -m bench.pipeline --summary docs/research/phase2-summary.json --check-doc docs/research/FASE2.md
 ```
 
 Tests use invented phrases only. They never play sound, open the microphone
@@ -50,6 +60,97 @@ HTTP server that stands in for the provider hosts, and a fake Ollama.
   manifest entry and validated against the project names in the reference
   `config.toml`. A missing or unknown name is an error. Resolved names and
   spoken text are never printed and are only written under `bench/results/`.
+
+## Dictation set (Phase 2)
+
+Phase 2 adds a second real-voice set. The 44 takes above form the `commands`
+set; the `dictation` set holds longer utterances (about 5-30 s) in the styles
+of Claude Code prompts, VS Code, WhatsApp and email.
+
+- The script `bench/dictation/guiao-ditado-pt.md` is committed invented text:
+  the same table as the commands script plus an `estilo` column
+  (`claude-code`, `vscode`, `whatsapp`, `email`), ids `dt-NN`, and
+  `<projeto-N>` placeholders instead of real project names.
+- Markup in `frase`: `{hum}`, `{pronto}`, `{tipo}` and `{é pá}` are fillers;
+  `[words]` is a self-repetition and must be followed by the same first word
+  (`[corre os] corre os testes`). The loader derives the verbatim reference
+  (everything spoken), the clean reference (fillers and repetitions dropped),
+  the filler/repetition spans and the content words. Markup errors name the
+  take id only.
+- Recordings live in `local/recordings/dictation/` (ignored; any configured
+  folder must be under `local/`) with a `manifesto.json` of the same shape as
+  the commands manifest (`ficheiro`, `duracao_s`, `origem`, `projetos`).
+- Script rows that are not recorded yet are *pending*, not invalid. The set is
+  complete with at least `min_takes` (30) valid takes. Invalid and discarded
+  takes follow the commands rules.
+- Placeholders are resolved from each take's manifest entry; the recorder
+  shows them from `[dictation.projects]` in `local/bench.toml`, or else from
+  the commands manifest. Names must exist in the reference `config.toml`.
+
+The loader, metrics and results for the commands set are unchanged.
+
+### Recorder
+
+`py -3.12 -m bench.record` shows each pending phrase (placeholders resolved,
+fillers marked with `…`), then Enter starts and Enter stops the take; `s`
+skips it, `q` quits and `r` records the take just saved again. Running it
+again resumes at the first take not recorded; `--redo dt-NN,...` repeats
+chosen takes.
+
+- Capture is 16 kHz mono PCM16 through MME (`waveIn` via `ctypes`, no extra
+  package). DirectSound is never used; WASAPI is not implemented.
+- The device is chosen by the configured name (`[recorder].device`, else the
+  reference config's `[microfone].nome`). MME truncates names to 31
+  characters, so a device name of 10+ characters that is a prefix of the
+  configured name also matches. No match, or more than one, is an error that
+  points to `--list-devices`.
+- A take is rejected and asked again when it has 0.5 s or more of exact
+  zeros, when the captured audio falls behind or runs ahead of the wall clock
+  by more than 0.25 s + 10 %, when it is near-silent, or when it is shorter
+  than one second.
+- A repeated take keeps the old file as `dt-NN.invalida-K.wav`; the manifest
+  records `substituiu`. WAV files and the manifest are written only under
+  `local/`.
+- `--list-devices` enumerates MME inputs without opening the microphone.
+
+Tests use a fake `waveIn` layer; they never open the microphone or play sound.
+
+### Pipeline evaluation
+
+`bench.pipeline` is the shared Phase 2 oracle. `--set commands|dictation|all`
+selects the sets. `--dry-run` prints counts only (no GPU): a dictation set
+with nothing recorded reports 0 recorded and exits 0; only a structural error
+(missing or malformed script, bad settings) exits non-zero.
+
+`--stage raw` loads faster-whisper large-v3 (float16, CUDA) once, warms it up,
+and transcribes every valid take with the vocabulary hints (`initial_prompt`
+and `hotwords`). Later stages (`cleanup`, `vocabulary`, `corrections`,
+`profiles`) are cumulative and added by later tasks. Per set and stage the
+summary holds:
+
+- `wer_verbatim` and `wer_clean`: corpus WER against the verbatim and the
+  clean reference (equal for the commands set, which has no markup);
+- `term_error_rate`, `name_error_rate` and `intent_preserved` (slot rule plus
+  the local judge, as above);
+- dictation only: `filler_removal_rate` (share of marked filler/repetition
+  spans whose words are all absent, from a word alignment that prefers
+  deleting marked words) and `content_deleted` (content words missing);
+- `p50_s`/`p95_s` of the transcription time.
+
+Per-take text goes only to `bench/results/pipeline/<run>/<set>/<stage>.json`.
+`--summary PATH` (default `bench/results/pipeline/summary.json`) is
+aggregate-only and refused when a phrase or name would appear in it.
+
+`--require TARGET` (repeatable) reads the summary and exits 1, printing
+measured-vs-target aggregates, when a target is unmet or a set is missing or
+incomplete: `complete` (both sets measured, n equals the valid takes),
+`latency` (key-release p95 <= 1.5 s, measured by the app task), `cleanup`
+(dictation removal >= 95 % and 0 content words deleted), `vocabulary` (name
+and term error <= 10 % per set), `corrections` (100 % of learned recurrences
+fixed, 0 new errors) and `overall` (final-text WER <= 10 %, intent >= 95 %).
+`--write-doc DOC` inserts the Portuguese table between
+`<!-- pipeline:summary:start -->` and `<!-- pipeline:summary:end -->`;
+`--check-doc DOC` exits 1 when that block differs from the summary.
 
 ## Normalizer
 
@@ -193,7 +294,7 @@ engine/variant.
 
 ## Keys and network
 
-- Keys are read from the ignored `.env` only (names in `.env.example`), never
+- Keys are read from the ignored `.env` only (names in `env.example`), never
   from the process environment.
 - Key values never appear in logs, exceptions, cache files or results: reprs
   list names only and every error message is redacted. Tests assert this on
@@ -234,7 +335,10 @@ not ignore. It fails on:
   spaces, dashes, dots or underscores between their parts);
 - `personal-name`: the Git `user.name`, whole or any part of 4+ letters;
 - `script-text`: any 4-word sequence of a script phrase, raw or resolved,
-  after normalization (also across line breaks);
+  after normalization (also across line breaks). Dictation phrases count in
+  their verbatim and clean forms. Only the committed dictation script may
+  contain dictation phrases; it is still checked against the commands script
+  and every other rule;
 - `home-path`: absolute paths inside a Windows `Users` folder or a Unix home;
 - `api-key`: key-shaped strings (known provider prefixes, private key blocks,
   or a long letter-and-digit value assigned to an API key name);

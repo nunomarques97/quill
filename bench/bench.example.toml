@@ -14,6 +14,28 @@ reference_config = "/path/to/reference-project/config.toml"
 # Number of valid takes the benchmark requires.
 expected_takes = 44
 
+# Optional: the Phase 2 dictation set (defaults shown). Its script is committed
+# invented text; its recordings stay under the ignored local/ folder.
+# [dictation]
+# recordings_dir = "local/recordings/dictation"   # must be under local/
+# recording_script = "bench/dictation/guiao-ditado-pt.md"
+# id_prefix = "dt"
+# expected_takes = 36
+# min_takes = 30
+#
+# Optional: names shown for the <projeto-N> placeholders while recording.
+# They must exist in the reference config. Without this table the mapping of
+# the commands manifest ("projetos") is used.
+# [dictation.projects]
+# "<projeto-1>" = "first-project-name"
+# "<projeto-2>" = "second-project-name"
+
+# Optional: MME input device used by bench.record. A name truncated by MME to
+# 31 characters still matches. Without it the reference config's microphone
+# name ([microfone].nome) is used.
+# [recorder]
+# device = "Headset Microphone (Example Headset)"
+
 # Optional engine settings (defaults shown).
 [engines.gemini]
 # Free-tier Gemini model with audio input; change it when the free tier changes.

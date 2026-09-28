@@ -43,7 +43,7 @@ VERSION_PROBE = (
     "print(json.dumps(out))\n"
 )
 PASTE_STEPS = [
-    "In the Quill folder, if there is no file named .env, copy .env.example and name the copy .env.",
+    "In the Quill folder, if there is no file named .env, copy env.example and name the copy .env.",
     "Open .env in a text editor, paste the key right after {name}= on the same line "
     "(no spaces, no quotes) and save the file.",
     "Run py -3.12 -m bench.run --preflight again: the line for {name} must show [ok].",

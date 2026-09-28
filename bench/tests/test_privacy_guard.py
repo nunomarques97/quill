@@ -66,6 +66,51 @@ class ScriptTextTest(unittest.TestCase):
         self.assertIn((1, "script-text"), categories("do <projeto-1> com calma"))
 
 
+class DictationScriptTest(unittest.TestCase):
+    """Dictation phrases may appear only in the committed dictation script."""
+
+    DICTATION = (
+        "hum abre o painel do <projeto-2> e corre os testes",
+        "abre o painel do <projeto-2> e corre os testes",
+        "hum abre o painel do omegapp e corre os testes",
+        "abre o painel do omegapp e corre os testes",
+    )
+    EXEMPT = "bench/dictation/guiao.md"
+
+    def rules(self):
+        return guard.build_rules(PROJECTS, PERSON, SCRIPT, self.DICTATION, [self.EXEMPT])
+
+    def found(self, path, text):
+        return [(f.line, f.category) for f in guard.scan_text(path, text, self.rules())]
+
+    def test_exempt_file_may_hold_raw_dictation_phrases(self):
+        self.assertEqual(self.found(self.EXEMPT, "| dt-01 | {hum} abre o painel do <projeto-2> e corre os testes |"), [])
+
+    def test_other_files_are_flagged_raw_and_resolved(self):
+        for text in ("abre o painel do <projeto-2>", "Abre o PAINEL do Omegapp", "e corre os testes"):
+            self.assertIn((1, "script-text"), self.found("docs/notes.md", text), text)
+        self.assertIn((1, "script-text"), self.found("bench/dictation/other.md", "e corre os testes"))
+
+    def test_exempt_file_is_still_checked_for_everything_else(self):
+        # The commands script, real names and paths stay forbidden there.
+        found = self.found(self.EXEMPT, "liga o painel do <projeto-1>\no omegapp\n" + HOME_UNIX)
+        self.assertEqual(found, [(1, "script-text"), (2, "project-name"), (3, "home-path")])
+
+    def test_resolved_phrase_in_exempt_file_is_flagged_by_name(self):
+        self.assertIn((1, "project-name"), self.found(self.EXEMPT, "abre o painel do omegapp e corre os testes"))
+
+    def test_committed_script_passes_its_own_exemption(self):
+        from bench.dataset import parse_script, strip_markup
+        from bench.settings import DICTATION_SCRIPT, REPO_ROOT
+
+        text = DICTATION_SCRIPT.read_text(encoding="utf-8")
+        phrases = [form for row in parse_script(text, "dt", markup=True) for form in strip_markup(row.text)]
+        path = DICTATION_SCRIPT.relative_to(REPO_ROOT).as_posix()
+        rules = guard.build_rules((), None, (), phrases, [path])
+        self.assertEqual(guard.scan_text(path, text, rules), [])
+        self.assertTrue(guard.scan_text("README.md", phrases[0], rules))
+
+
 class PatternTest(unittest.TestCase):
     def test_home_paths(self):
         for path in (HOME_WIN, HOME_WIN_FWD, HOME_JSON, HOME_UNIX):

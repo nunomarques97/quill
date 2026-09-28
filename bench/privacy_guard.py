@@ -4,6 +4,11 @@ Scans tracked files and untracked files that are not ignored. Categories:
 project-name, personal-name, script-text, home-path, api-key, audio-file.
 Output shows only ``file:line: category``; the matched text is never printed.
 
+The script-text rule uses the phrases of both recording scripts, raw and with
+placeholders resolved. The committed dictation script (invented text) is the
+only file allowed to contain dictation phrases; it is still checked against
+the commands script and every other rule.
+
 Usage: py -3.12 -m bench.privacy_guard [--config local/bench.toml]
 """
 
@@ -17,9 +22,9 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from bench.dataset import DatasetError, load_private_text
+from bench.dataset import DatasetError, load_dictation_private_text, load_private_text
 from bench.normalize import normalize_words
-from bench.settings import REPO_ROOT, SettingsError, load_settings
+from bench.settings import DICTATION_SCRIPT, REPO_ROOT, SettingsError, load_settings
 
 NGRAM = 4
 AUDIO_EXTENSIONS = {
@@ -70,10 +75,29 @@ class Rules:
     project_names: list[re.Pattern[str]] = field(default_factory=list)
     personal_names: list[re.Pattern[str]] = field(default_factory=list)
     ngrams: set[tuple[str, ...]] = field(default_factory=set)
+    # N-grams that only the files in exempt_paths may contain.
+    exempt_ngrams: set[tuple[str, ...]] = field(default_factory=set)
+    exempt_paths: frozenset[str] = frozenset()
 
 
-def build_rules(project_names: Iterable[str], person_name: str | None, script_texts: Iterable[str]) -> Rules:
-    rules = Rules()
+def _ngrams(texts: Iterable[str]) -> set[tuple[str, ...]]:
+    grams: set[tuple[str, ...]] = set()
+    for text in texts:
+        words = normalize_words(text)
+        for start in range(len(words) - NGRAM + 1):
+            grams.add(tuple(words[start : start + NGRAM]))
+    return grams
+
+
+def build_rules(
+    project_names: Iterable[str],
+    person_name: str | None,
+    script_texts: Iterable[str],
+    exempt_texts: Iterable[str] = (),
+    exempt_paths: Iterable[str] = (),
+) -> Rules:
+    """``exempt_texts`` are flagged everywhere except in ``exempt_paths``."""
+    rules = Rules(exempt_paths=frozenset(exempt_paths))
     for name in project_names:
         pattern = _name_pattern(name)
         if pattern is not None:
@@ -83,10 +107,9 @@ def build_rules(project_names: Iterable[str], person_name: str | None, script_te
             pattern = _name_pattern(candidate)
             if pattern is not None:
                 rules.personal_names.append(pattern)
-    for text in script_texts:
-        words = normalize_words(text)
-        for start in range(len(words) - NGRAM + 1):
-            rules.ngrams.add(tuple(words[start : start + NGRAM]))
+    rules.ngrams = _ngrams(script_texts)
+    rules.exempt_ngrams = _ngrams(exempt_texts) - rules.ngrams
+    rules.ngrams |= rules.exempt_ngrams
     return rules
 
 
@@ -96,6 +119,7 @@ def _is_key_like(value: str) -> bool:
 
 def scan_text(path: str, text: str, rules: Rules) -> list[Finding]:
     found: set[Finding] = set()
+    exempt = rules.exempt_ngrams if path in rules.exempt_paths else set()
     stream: list[tuple[str, int]] = []
     for number, line in enumerate(text.splitlines(), start=1):
         if any(p.search(line) for p in rules.project_names):
@@ -113,7 +137,7 @@ def scan_text(path: str, text: str, rules: Rules) -> list[Finding]:
     # Script n-grams may wrap across lines, so slide over the whole file.
     for start in range(len(stream) - NGRAM + 1):
         window = tuple(word for word, _ in stream[start : start + NGRAM])
-        if window in rules.ngrams:
+        if window in rules.ngrams and window not in exempt:
             found.add(Finding(path, stream[start][1], "script-text"))
     return sorted(found)
 
@@ -172,14 +196,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        texts, names = load_private_text(load_settings(args.config))
+        settings = load_settings(args.config)
+        texts, names = load_private_text(settings)
+        dictation_texts, dictation_names = load_dictation_private_text(settings.dictation, settings)
     except (SettingsError, DatasetError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     person = git_user_name(REPO_ROOT)
     if person is None:
         print("warning: git user.name is not set; personal-name check skipped", file=sys.stderr)
-    rules = build_rules(names, person, texts)
+    exempt_path = DICTATION_SCRIPT.relative_to(REPO_ROOT).as_posix()
+    rules = build_rules(names | dictation_names, person, texts, dictation_texts, [exempt_path])
     try:
         files = list_files(REPO_ROOT)
     except (OSError, subprocess.CalledProcessError):

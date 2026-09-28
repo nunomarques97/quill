@@ -114,6 +114,86 @@ def load_terms(path: Path = TERMS_FILE) -> list[str]:
     return terms
 
 
+@dataclass(frozen=True)
+class RemovalCounts:
+    """Filler/repetition spans removed and content words deleted in one or more texts."""
+
+    spans: int = 0
+    removed: int = 0
+    content_words: int = 0
+    content_deleted: int = 0
+
+    def __add__(self, other: RemovalCounts) -> RemovalCounts:
+        return RemovalCounts(
+            self.spans + other.spans,
+            self.removed + other.removed,
+            self.content_words + other.content_words,
+            self.content_deleted + other.content_deleted,
+        )
+
+    @property
+    def removal_rate(self) -> float | None:
+        return self.removed / self.spans if self.spans else None
+
+
+def removal_counts(segments: Sequence[tuple[str, str]], hypothesis: str) -> RemovalCounts:
+    """Align the verbatim reference, word by word, with ``hypothesis``.
+
+    ``segments`` are (kind, text) pairs, kind "content", "filler" or
+    "repetition". The alignment minimizes word edits and, among equal
+    alignments, content-word deletions, so a repeated phrase that survives
+    once is matched to its content copy. A span counts as removed when every
+    one of its words is deleted; a content word counts as deleted when it has
+    no counterpart (a substitution is a recognition error, not a deletion).
+    """
+    tagged: list[tuple[str, int]] = []  # (word, span index or -1 for content)
+    spans = content_words = 0
+    for kind, text in segments:
+        words = normalize_words(text)
+        if kind == "content":
+            tagged.extend((word, -1) for word in words)
+            content_words += len(words)
+        elif words:
+            tagged.extend((word, spans) for word in words)
+            spans += 1
+    hyp = normalize_words(hypothesis)
+    rows, cols = len(tagged), len(hyp)
+    # cost[i][j] = (edits, content deletions) aligning tagged[:i] with hyp[:j].
+    cost = [[(0, 0)] * (cols + 1) for _ in range(rows + 1)]
+    move = [[""] * (cols + 1) for _ in range(rows + 1)]
+    for j in range(1, cols + 1):
+        cost[0][j], move[0][j] = (j, 0), "I"
+    for i in range(1, rows + 1):
+        word, span = tagged[i - 1]
+        deleted_content = 1 if span < 0 else 0
+        edits, dels = cost[i - 1][0]
+        cost[i][0], move[i][0] = (edits + 1, dels + deleted_content), "D"
+        for j in range(1, cols + 1):
+            diagonal = cost[i - 1][j - 1]
+            options = [
+                ((diagonal[0] + (word != hyp[j - 1]), diagonal[1]), "M"),
+                ((cost[i - 1][j][0] + 1, cost[i - 1][j][1] + deleted_content), "D"),
+                ((cost[i][j - 1][0] + 1, cost[i][j - 1][1]), "I"),
+            ]
+            cost[i][j], move[i][j] = min(options)
+    kept_spans: set[int] = set()
+    i, j = rows, cols
+    content_deleted = 0
+    while i > 0 or j > 0:
+        step = move[i][j]
+        if step == "M":
+            if tagged[i - 1][1] >= 0:
+                kept_spans.add(tagged[i - 1][1])
+            i, j = i - 1, j - 1
+        elif step == "D":
+            if tagged[i - 1][1] < 0:
+                content_deleted += 1
+            i -= 1
+        else:
+            j -= 1
+    return RemovalCounts(spans, spans - len(kept_spans), content_words, content_deleted)
+
+
 def percentile_nearest_rank(values: Iterable[float], percent: float) -> float | None:
     """Nearest-rank percentile: the ceil(p/100 * n)-th smallest value."""
     ordered = sorted(values)

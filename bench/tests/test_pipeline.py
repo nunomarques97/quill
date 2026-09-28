@@ -265,5 +265,21 @@ class CliTest(unittest.TestCase):
             self.assertEqual(lines, ["error: not a pipeline summary"])
 
 
+class SplitTimingsTest(unittest.TestCase):
+    def test_moves_wall_clock_fields_out_of_the_summary(self):
+        summary = {
+            "engine": {"model": "m", "load_s": 8.2, "warmup_s": 1.7},
+            "sets": {"dictation": {"stages": {"raw": {"wer_clean": 0.13, "transcribe_p50_s": 1.1, "transcribe_p95_s": 2.2, "max_audio_s": 18.0}}}},
+        }
+        timings = pipeline.split_timings(summary)
+        self.assertEqual(summary["engine"], {"model": "m"})
+        self.assertEqual(summary["sets"]["dictation"]["stages"]["raw"], {"wer_clean": 0.13, "max_audio_s": 18.0})
+        self.assertEqual(timings["engine"], {"load_s": 8.2, "warmup_s": 1.7})
+        self.assertEqual(timings["sets"]["dictation"]["raw"], {"transcribe_p50_s": 1.1, "transcribe_p95_s": 2.2})
+
+    def test_rendered_block_has_no_timing_column(self):
+        self.assertNotIn("p95 transcrição (s)", pipeline.render_block({"sets": {}}))
+
+
 if __name__ == "__main__":
     unittest.main()

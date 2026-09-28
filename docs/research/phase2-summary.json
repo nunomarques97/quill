@@ -1,0 +1,85 @@
+{
+  "schema": 1,
+  "kind": "pipeline",
+  "engine": {
+    "model": "large-v3",
+    "compute_type": "float16",
+    "hints": true
+  },
+  "stages": [
+    "raw"
+  ],
+  "sets": {
+    "commands": {
+      "dataset": {
+        "voice": "real",
+        "script_rows": 44,
+        "expected": 44,
+        "minimum": 44,
+        "n_valid": 44,
+        "pending": 0,
+        "invalid_reasons": {},
+        "discarded_takes": 44,
+        "recording_origin": {
+          "microfone": 44
+        },
+        "complete": true
+      },
+      "stages": {
+        "raw": {
+          "n": 44,
+          "wer_verbatim": 0.2833,
+          "wer_clean": 0.2833,
+          "term_error_rate": 0.2353,
+          "term_occurrences": 17,
+          "name_error_rate": 0.2105,
+          "name_occurrences": 38,
+          "intent_preserved": 0.5227,
+          "intent_judged": 44,
+          "intent_note": null,
+          "filler_spans": null,
+          "filler_removal_rate": null,
+          "content_words": null,
+          "content_deleted": null,
+          "max_audio_s": 6.272
+        }
+      }
+    },
+    "dictation": {
+      "dataset": {
+        "voice": "real",
+        "script_rows": 36,
+        "expected": 36,
+        "minimum": 30,
+        "n_valid": 36,
+        "pending": 0,
+        "invalid_reasons": {},
+        "discarded_takes": 0,
+        "recording_origin": {
+          "microfone": 36
+        },
+        "complete": true
+      },
+      "stages": {
+        "raw": {
+          "n": 36,
+          "wer_verbatim": 0.1691,
+          "wer_clean": 0.1354,
+          "term_error_rate": 0.0227,
+          "term_occurrences": 44,
+          "name_error_rate": 0.0,
+          "name_occurrences": 9,
+          "intent_preserved": 0.5556,
+          "intent_judged": 36,
+          "intent_note": null,
+          "filler_spans": 56,
+          "filler_removal_rate": 0.6429,
+          "content_words": 960,
+          "content_deleted": 19,
+          "max_audio_s": 18.048
+        }
+      }
+    }
+  },
+  "latency": null
+}

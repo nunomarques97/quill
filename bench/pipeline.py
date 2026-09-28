@@ -299,6 +299,28 @@ def measure(
     return summary
 
 
+TIMING_KEYS = ("load_s", "warmup_s", "transcribe_p50_s", "transcribe_p95_s")
+
+
+def split_timings(summary: dict) -> dict:
+    """Move wall-clock timings out of ``summary`` (in place) and return them.
+
+    Timings vary from run to run, so the committed summary keeps only
+    deterministic quality metrics; timings go to the ignored results folder.
+    """
+    timings: dict = {"engine": {}, "sets": {}}
+    engine = summary.get("engine") or {}
+    for key in TIMING_KEYS:
+        if key in engine:
+            timings["engine"][key] = engine.pop(key)
+    for set_name, block in (summary.get("sets") or {}).items():
+        for stage, row in (block.get("stages") or {}).items():
+            moved = {key: row.pop(key) for key in TIMING_KEYS if key in row}
+            if moved:
+                timings["sets"].setdefault(set_name, {})[stage] = moved
+    return timings
+
+
 # ---------------------------------------------------------------- targets
 
 
@@ -382,7 +404,7 @@ def check_targets(summary: dict, targets: Sequence[str]) -> list[tuple[bool, str
 
 HEADER = (
     "Conjunto", "Etapa", "n", "WER literal", "WER limpo", "Erro termos EN", "Erro nomes",
-    "Intenção preservada", "Hesitações removidas", "Palavras apagadas", "p95 transcrição (s)",
+    "Intenção preservada", "Hesitações removidas", "Palavras apagadas",
 )
 SET_LABELS = {"commands": "comandos", "dictation": "ditado"}
 EMPTY = "—"
@@ -412,7 +434,6 @@ def render_block(summary: dict) -> str:
                 _pt_percent(row.get("term_error_rate")), _pt_percent(row.get("name_error_rate")),
                 _pt_percent(row.get("intent_preserved")), _pt_percent(row.get("filler_removal_rate")),
                 EMPTY if row.get("content_deleted") is None else str(row["content_deleted"]),
-                _pt_seconds(row.get("transcribe_p95_s")),
             )
             lines.append("| " + " | ".join(cells) + " |")
     latency = summary.get("latency")
@@ -498,6 +519,8 @@ def main(
                 summary = measure(sets, args.stage, engine, judge, unavailable, load_terms(), run_dir, results_dir=results_dir, log=out)
             finally:
                 engine.close()
+            run_dir.mkdir(parents=True, exist_ok=True)
+            (run_dir / "timings.json").write_text(json.dumps(split_timings(summary), indent=2), encoding="utf-8")
             texts = [text for _, dataset in sets.values() for text in dataset.reference_texts()]
             spoken_names = [name for _, dataset in sets.values() for name in dataset.names]
             write_summary(args.summary, summary, texts, spoken_names)

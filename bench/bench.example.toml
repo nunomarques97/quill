@@ -1,0 +1,15 @@
+# Copy to local/bench.toml (ignored by Git) and replace the placeholders with
+# absolute paths on this machine. Never commit real paths.
+[paths]
+# Folder with the valid takes (pt-NN.wav) and the recordings manifest.
+recordings_dir = "/path/to/reference-project/recordings/pt"
+# Markdown recording script with the expected text of each take.
+recording_script = "/path/to/reference-project/recording-script.md"
+# Reference project's local config.toml with the real project names.
+reference_config = "/path/to/reference-project/config.toml"
+# Optional: manifest path. Defaults to <recordings_dir>/manifesto.json.
+# manifest = "/path/to/reference-project/recordings/pt/manifesto.json"
+
+[dataset]
+# Number of valid takes the benchmark requires.
+expected_takes = 44

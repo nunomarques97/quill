@@ -1,0 +1,38 @@
+# Generic English and technical terms spoken inside Portuguese.
+# One term per line; normalized with bench.normalize before matching.
+# Only generic vocabulary belongs here: never project names or personal words.
+api
+backend
+benchmark
+bug
+build
+claude
+commit
+dashboard
+debug
+deploy
+email
+feedback
+frontend
+github
+hotkey
+json
+log
+logs
+merge
+online
+prompt
+prompts
+pull request
+push
+readme
+run
+runs
+script
+scripts
+setup
+task
+tasks
+update
+vscode
+workflow

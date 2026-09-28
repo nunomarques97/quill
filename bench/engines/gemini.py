@@ -1,8 +1,14 @@
-"""Gemini API audio transcription through generateContent with inline WAV data.
+"""Gemini API audio transcription with inline WAV data.
 
 The model id is configurable (``[engines.gemini].model`` in local/bench.toml)
 because free-tier models change. The key goes in the ``x-goog-api-key``
-header, never in the URL. Vocabulary hints are added to the instruction.
+header, never in the URL.
+
+General models use generateContent and get the vocabulary hints in the
+instruction. Dedicated speech-to-text models (``*-transcribe``) reject that
+configuration, so they use the Interactions API with ``transcription_config``
+(language and ``custom_vocabulary``) and ``store: false``, which keeps the
+request out of server-side interaction storage.
 """
 
 from __future__ import annotations
@@ -26,6 +32,10 @@ INSTRUCTION = (
     "content. Output only the transcription text."
 )
 HINTS_INSTRUCTION = "Vocabulary that may occur (spell these exactly like this): "
+# Interactions API settings for dedicated transcription models.
+LANGUAGE_CODES = ("pt-PT",)
+# The API accepts up to 1,000 terms; its guide reports the best results up to 100.
+VOCABULARY_MAX_TERMS = 100
 
 
 class GeminiEngine(CloudEngine):
@@ -41,6 +51,7 @@ class GeminiEngine(CloudEngine):
         super().__init__(transport)
         self.model = model
         self.thinking_budget = thinking_budget
+        self.transcription_model = model.endswith("-transcribe")
         self.id = f"gemini-{model}"
         self._api_key = api_key
 
@@ -52,7 +63,18 @@ class GeminiEngine(CloudEngine):
             return INSTRUCTION + "\n" + HINTS_INSTRUCTION + hints.joined(max_chars=2000) + "."
         return INSTRUCTION
 
+    def _vocabulary(self, hints: Hints | None) -> list[str]:
+        return hints.vocabulary()[:VOCABULARY_MAX_TERMS] if hints else []
+
     def params(self, hints: Hints | None) -> dict:
+        if self.transcription_model:
+            return {
+                "model": self.model,
+                "api": "interactions",
+                "language_codes": list(LANGUAGE_CODES),
+                "custom_vocabulary": self._vocabulary(hints),
+                "store": False,
+            }
         return {
             "model": self.model,
             "instruction": self._instruction(hints),
@@ -61,6 +83,8 @@ class GeminiEngine(CloudEngine):
         }
 
     def transcribe(self, wav: bytes, hints: Hints | None) -> str:
+        if self.transcription_model:
+            return self._transcribe_interaction(wav, hints)
         generation: dict = {"temperature": 0}
         if self.thinking_budget is not None:
             generation["thinkingConfig"] = {"thinkingBudget": self.thinking_budget}
@@ -94,4 +118,36 @@ class GeminiEngine(CloudEngine):
             reason = candidate.get("finishReason")
             known = isinstance(reason, str) and re.fullmatch(r"[A-Z_]{1,40}", reason)
             raise EngineError(f"no text in the response from {HOST}" + (f" (finishReason {reason})" if known else ""))
+        return " ".join("".join(texts).split())
+
+    def _transcribe_interaction(self, wav: bytes, hints: Hints | None) -> str:
+        config: dict = {"language_codes": list(LANGUAGE_CODES)}
+        vocabulary = self._vocabulary(hints)
+        if vocabulary:
+            config["custom_vocabulary"] = vocabulary
+        payload = {
+            "model": self.model,
+            "input": [{"type": "audio", "data": base64.b64encode(wav).decode("ascii"), "mime_type": "audio/wav"}],
+            "generation_config": {"transcription_config": config},
+            "store": False,
+        }
+        response = self.transport.request(
+            "POST",
+            f"https://{HOST}/v1beta/interactions",
+            {"x-goog-api-key": self._api_key, "Content-Type": "application/json"},
+            json.dumps(payload).encode("utf-8"),
+        )
+        data = parse_json(response, HOST)
+        steps = data.get("steps") if isinstance(data, dict) else None
+        texts = [
+            item.get("text")
+            for step in steps or []
+            if isinstance(step, dict) and step.get("type") == "model_output" and isinstance(step.get("content"), list)
+            for item in step["content"]
+            if isinstance(item, dict) and item.get("type") == "text" and isinstance(item.get("text"), str)
+        ]
+        if not texts:
+            status = data.get("status") if isinstance(data, dict) else None
+            known = isinstance(status, str) and re.fullmatch(r"[a-z_]{1,40}", status)
+            raise EngineError(f"no text in the response from {HOST}" + (f" (status {status})" if known else ""))
         return " ".join("".join(texts).split())

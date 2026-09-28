@@ -102,14 +102,19 @@ class OllamaClient:
                 )
         return result
 
-    def chat(self, model: str, system: str, user: str, schema: dict | None = None) -> ChatResult:
-        """One deterministic chat turn with thinking disabled."""
+    def chat(
+        self, model: str, system: str, user: str, schema: dict | None = None, max_tokens: int | None = None
+    ) -> ChatResult:
+        """One deterministic chat turn with thinking disabled; ``max_tokens`` caps the reply."""
+        options: dict = {"temperature": 0, "seed": 0}
+        if max_tokens is not None:
+            options["num_predict"] = max_tokens
         payload: dict = {
             "model": model,
             "messages": [{"content": system, "role": "system"}, {"content": user, "role": "user"}],
             "stream": False,
             "think": False,
-            "options": {"temperature": 0, "seed": 0},
+            "options": options,
         }
         if schema is not None:
             payload["format"] = schema
@@ -133,6 +138,11 @@ CLEANUP_SYSTEM = (
     "translate, paraphrase, summarize, answer or add anything. Reply with the cleaned text only."
 )
 VOCABULARY_LINE = "\nWhen a word clearly refers to one of these, spell it exactly like this: "
+# Reply cap: a cleaned text is about as long as its input. Without a cap, a
+# repetition loop hallucinated by the engine can make the model loop too until
+# the request times out.
+CLEANUP_TOKENS_PER_WORD = 4
+CLEANUP_MIN_TOKENS = 64
 
 
 @dataclass(frozen=True)
@@ -152,7 +162,11 @@ class Cleaner:
         prompt_hash = hashlib.sha256(self.system_prompt().encode("utf-8")).hexdigest()[:16]
         return {"model": self.model, "prompt": prompt_hash, "temperature": 0, "think": False}
 
+    @staticmethod
+    def max_tokens(text: str) -> int:
+        return max(CLEANUP_MIN_TOKENS, CLEANUP_TOKENS_PER_WORD * len(text.split()))
+
     def clean(self, text: str) -> ChatResult:
         if not text.strip():
             return ChatResult(content="", load_s=0.0, total_s=0.0)
-        return self.client.chat(self.model, self.system_prompt(), text)
+        return self.client.chat(self.model, self.system_prompt(), text, max_tokens=self.max_tokens(text))

@@ -12,6 +12,8 @@ import gc
 import importlib
 import importlib.util
 import os
+import sys
+import types
 from pathlib import Path
 
 from bench.engines.base import Engine, EngineError, EngineUnavailable, Hints, wav_pcm
@@ -42,6 +44,9 @@ def register_cuda_dlls() -> list[str]:
     """On Windows, let CTranslate2 find cuBLAS/cuDNN shipped in torch or nvidia wheels.
 
     Locates the packages without importing them; returns the folder names added.
+    CTranslate2 loads cuBLAS lazily with the default DLL search order, which
+    ignores ``add_dll_directory``, so the folders also go at the front of this
+    process's PATH (the environment of Windows itself is not changed).
     """
     if os.name != "nt" or not hasattr(os, "add_dll_directory"):
         return []
@@ -60,8 +65,31 @@ def register_cuda_dlls() -> list[str]:
                 _dll_handles.append(os.add_dll_directory(str(folder)))
                 added.append(folder.name)
             except OSError:
-                pass
+                continue
+            path = os.environ.get("PATH", "")
+            if str(folder).lower() not in (part.lower() for part in path.split(os.pathsep)):
+                os.environ["PATH"] = str(folder) + (os.pathsep + path if path else "")
     return added
+
+
+def shim_requests() -> bool:
+    """Stand in for ``requests`` when it is absent; True when the shim was registered.
+
+    faster-whisper 1.1.1 imports ``requests`` only to name
+    ``requests.exceptions.ConnectionError`` in its model download helper.
+    huggingface_hub 1.x no longer depends on ``requests``, and the benchmark
+    never downloads (models load from a local folder), so a module exposing
+    that one exception type is enough and avoids another install.
+    """
+    if "requests" in sys.modules or importlib.util.find_spec("requests") is not None:
+        return False
+    exceptions = types.ModuleType("requests.exceptions")
+    exceptions.ConnectionError = type("ConnectionError", (OSError,), {})
+    shim = types.ModuleType("requests")
+    shim.exceptions = exceptions
+    sys.modules["requests"] = shim
+    sys.modules["requests.exceptions"] = exceptions
+    return True
 
 
 class LocalWhisperEngine(Engine):
@@ -116,6 +144,9 @@ class LocalWhisperEngine(Engine):
         if self.device == "cuda":
             register_cuda_dlls()
         try:
+            if importlib.util.find_spec("faster_whisper") is None:
+                raise ImportError("faster_whisper")
+            shim_requests()
             faster_whisper = importlib.import_module("faster_whisper")
             self._numpy = importlib.import_module("numpy")
         except ImportError:

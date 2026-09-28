@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 import urllib.parse
+from unittest import mock
 from pathlib import Path
 
 from bench.cleanup import OllamaClient
@@ -25,6 +26,7 @@ from bench.engines.base import (
 from bench.engines.deepgram import DeepgramEngine
 from bench.engines.gemini import GeminiEngine
 from bench.engines.groq import GroqEngine
+from bench.engines import local_whisper
 from bench.engines.local_whisper import LocalWhisperEngine
 from bench.envfile import Keys
 from bench.latency import build_composites
@@ -178,6 +180,40 @@ class AdapterTest(unittest.TestCase):
                 GeminiEngine(FAKE_KEY, transport_for(server)).transcribe(self.wav, None)
         self.assertIn("SAFETY", str(caught.exception))
 
+    def test_gemini_transcribe_model_uses_interactions_without_storage(self) -> None:
+        reply = json_reply(
+            {
+                "status": "completed",
+                "steps": [
+                    {"type": "thought", "content": [{"type": "text", "text": "pensei"}]},
+                    {"type": "model_output", "content": [{"type": "text", "text": "olá  mundo"}]},
+                ],
+            }
+        )
+        with FakeServer(lambda request: reply) as server:
+            engine = GeminiEngine(FAKE_KEY, transport_for(server), "gemini-3.5-transcribe", None)
+            self.assertEqual(engine.transcribe(self.wav, None), "olá mundo")
+            self.assertEqual(engine.transcribe(self.wav, HINTS), "olá mundo")
+        raw, hinted = server.requests
+        self.assertEqual(raw["path"], "/v1beta/interactions")
+        self.assertNotIn(FAKE_KEY, raw["path"])
+        self.assertEqual(raw["headers"]["x-goog-api-key"], FAKE_KEY)
+        payload = json.loads(raw["body"])
+        self.assertEqual(payload["model"], "gemini-3.5-transcribe")
+        self.assertIs(payload["store"], False)
+        self.assertEqual(payload["generation_config"], {"transcription_config": {"language_codes": ["pt-PT"]}})
+        self.assertEqual(payload["input"][0]["mime_type"], "audio/wav")
+        vocabulary = json.loads(hinted["body"])["generation_config"]["transcription_config"]["custom_vocabulary"]
+        self.assertEqual(vocabulary, HINTS.vocabulary())
+        self.assertNotEqual(engine.params(None), engine.params(HINTS))
+
+    def test_gemini_transcribe_without_text_fails(self) -> None:
+        reply = json_reply({"status": "failed", "steps": [{"type": "model_output", "content": []}]})
+        with FakeServer(lambda request: reply) as server:
+            with self.assertRaises(EngineError) as caught:
+                GeminiEngine(FAKE_KEY, transport_for(server), "gemini-3.5-transcribe", None).transcribe(self.wav, None)
+        self.assertIn("status failed", str(caught.exception))
+
     def test_deepgram_language_and_keyterms(self) -> None:
         reply = json_reply({"results": {"channels": [{"alternatives": [{"transcript": "olá mundo"}]}]}})
         with FakeServer(lambda request: reply) as server:
@@ -209,6 +245,39 @@ class AdapterTest(unittest.TestCase):
         self.assertIn("Zorblax", params["initial_prompt"])
         self.assertIsNone(engine.params(None)["hotwords"])
 
+    def test_requests_shim_only_when_absent(self) -> None:
+        real_find_spec = local_whisper.importlib.util.find_spec
+        with mock.patch.dict(sys.modules):
+            sys.modules.pop("requests", None)
+            sys.modules.pop("requests.exceptions", None)
+            with mock.patch.object(
+                local_whisper.importlib.util,
+                "find_spec",
+                side_effect=lambda name, *a: None if name == "requests" else real_find_spec(name, *a),
+            ):
+                self.assertTrue(local_whisper.shim_requests())
+                self.assertTrue(issubclass(sys.modules["requests"].exceptions.ConnectionError, OSError))
+                self.assertIs(sys.modules["requests.exceptions"], sys.modules["requests"].exceptions)
+                self.assertFalse(local_whisper.shim_requests())
+        # mock.patch.dict restored sys.modules: the shim does not leak into other tests.
+        self.assertTrue("requests" not in sys.modules or getattr(sys.modules["requests"], "__file__", None))
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows DLL search only")
+    def test_cuda_folders_go_on_process_path_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            lib = Path(tmp) / "torch" / "lib"
+            lib.mkdir(parents=True)
+            spec = mock.Mock(origin=str(Path(tmp) / "torch" / "__init__.py"))
+            specs = {"torch": spec, "nvidia": None}
+            with mock.patch.object(local_whisper.importlib.util, "find_spec", side_effect=specs.get), \
+                    mock.patch.dict(local_whisper.os.environ, {"PATH": "C:\\other"}), \
+                    mock.patch.object(local_whisper.os, "add_dll_directory", return_value=None), \
+                    mock.patch.object(local_whisper, "_dll_handles", []):
+                self.assertEqual(local_whisper.register_cuda_dlls(), ["lib"])
+                local_whisper.register_cuda_dlls()
+                parts = local_whisper.os.environ["PATH"].split(local_whisper.os.pathsep)
+        self.assertEqual(parts, [str(lib), "C:\\other"])
+
     def test_registry_reports_missing_keys(self) -> None:
         slots = create_engines(Keys({"GROQ_API_KEY": FAKE_KEY}), send=lambda r, t: None)
         self.assertEqual([slot.id for slot in slots], engine_ids())
@@ -227,6 +296,23 @@ class AdapterTest(unittest.TestCase):
             path.write_text('[engines.gemini]\nmodel = "../evil"\n', encoding="utf-8")
             with self.assertRaises(OptionsError):
                 load_engine_options(path)
+
+    def test_skip_by_decision(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "bench.toml"
+            path.write_text('[engines.skip]\n"deepgram-nova-3" = "by  decision"\n', encoding="utf-8")
+            options = load_engine_options(path)
+            self.assertEqual(options.skip, (("deepgram-nova-3", "by decision"),))
+            keys = Keys({"GROQ_API_KEY": FAKE_KEY, "DEEPGRAM_API_KEY": FAKE_KEY})
+            slots = {slot.id: slot for slot in create_engines(keys, options, send=lambda r, t: None)}
+            self.assertIsNone(slots["deepgram-nova-3"].engine)
+            self.assertEqual(slots["deepgram-nova-3"].unavailable, "skipped: by decision")
+            self.assertIsNotNone(slots["groq-whisper-large-v3"].engine)
+            for bad in ('"nope-engine" = "x"', '"deepgram-nova-3" = ""', '"deepgram-nova-3" = "   "',
+                        '"deepgram-nova-3" = "ok\\u0007"', '"deepgram-nova-3" = 3', f'"deepgram-nova-3" = "{"x" * 121}"'):
+                path.write_text(f"[engines.skip]\n{bad}\n", encoding="utf-8")
+                with self.assertRaises(OptionsError, msg=bad):
+                    load_engine_options(path)
 
 
 class PipelineTest(unittest.TestCase):

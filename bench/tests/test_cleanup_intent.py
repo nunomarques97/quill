@@ -53,6 +53,14 @@ class OllamaClientTest(unittest.TestCase):
         self.assertEqual(payload["options"]["temperature"], 0)
         self.assertNotIn("keep_alive", payload)
 
+    def test_cleanup_reply_is_capped_by_input_length(self) -> None:
+        with FakeOllama(chat=lambda payload: "ok") as ollama:
+            cleaner = Cleaner(OllamaClient(ollama.base_url))
+            cleaner.clean("olá mundo")
+            cleaner.clean(" ".join(["palavra"] * 115))
+        caps = [payload["options"]["num_predict"] for payload in ollama.chat_payloads()]
+        self.assertEqual(caps, [64, 460])
+
     def test_vocabulary_only_when_given(self) -> None:
         client = OllamaClient()
         self.assertNotIn("spell it exactly", Cleaner(client).system_prompt())

@@ -1,0 +1,562 @@
+{
+  "schema": 1,
+  "expected_n": 44,
+  "dataset": {
+    "voice": "real",
+    "n_valid": 44,
+    "invalid_reasons": {},
+    "discarded_takes": 44,
+    "recording_origin": {
+      "microfone": 44
+    }
+  },
+  "results": [
+    {
+      "engine": "faster-whisper-large-v3",
+      "variant": "raw",
+      "status": "ok",
+      "skipped_reason": null,
+      "n": 44,
+      "wer": 0.3417,
+      "term_error_rate": 0.7059,
+      "term_occurrences": 17,
+      "name_error_rate": 0.5263,
+      "name_occurrences": 38,
+      "intent_preserved": 0.25,
+      "intent_judged": 44,
+      "latency_p50_s": 0.9272,
+      "latency_p95_s": 1.2431,
+      "latency_samples": 20
+    },
+    {
+      "engine": "faster-whisper-large-v3",
+      "variant": "hints",
+      "status": "ok",
+      "skipped_reason": null,
+      "n": 44,
+      "wer": 0.2833,
+      "term_error_rate": 0.2353,
+      "term_occurrences": 17,
+      "name_error_rate": 0.2105,
+      "name_occurrences": 38,
+      "intent_preserved": 0.5227,
+      "intent_judged": 44,
+      "latency_p50_s": 1.005,
+      "latency_p95_s": 1.3045,
+      "latency_samples": 20
+    },
+    {
+      "engine": "faster-whisper-large-v3",
+      "variant": "raw+cleanup",
+      "status": "ok",
+      "skipped_reason": null,
+      "n": 44,
+      "wer": 0.3472,
+      "term_error_rate": 0.7059,
+      "term_occurrences": 17,
+      "name_error_rate": 0.5263,
+      "name_occurrences": 38,
+      "intent_preserved": 0.25,
+      "intent_judged": 44,
+      "latency_p50_s": 1.7223,
+      "latency_p95_s": 2.2526,
+      "latency_samples": 20
+    },
+    {
+      "engine": "faster-whisper-large-v3",
+      "variant": "hints+cleanup",
+      "status": "ok",
+      "skipped_reason": null,
+      "n": 44,
+      "wer": 0.2806,
+      "term_error_rate": 0.2353,
+      "term_occurrences": 17,
+      "name_error_rate": 0.2105,
+      "name_occurrences": 38,
+      "intent_preserved": 0.4773,
+      "intent_judged": 44,
+      "latency_p50_s": 1.8058,
+      "latency_p95_s": 2.3716,
+      "latency_samples": 20
+    },
+    {
+      "engine": "faster-whisper-large-v3-turbo",
+      "variant": "raw",
+      "status": "ok",
+      "skipped_reason": null,
+      "n": 44,
+      "wer": 0.6639,
+      "term_error_rate": 0.8824,
+      "term_occurrences": 17,
+      "name_error_rate": 0.5526,
+      "name_occurrences": 38,
+      "intent_preserved": 0.1136,
+      "intent_judged": 44,
+      "latency_p50_s": 0.3642,
+      "latency_p95_s": 0.5025,
+      "latency_samples": 20
+    },
+    {
+      "engine": "faster-whisper-large-v3-turbo",
+      "variant": "hints",
+      "status": "ok",
+      "skipped_reason": null,
+      "n": 44,
+      "wer": 0.3056,
+      "term_error_rate": 0.5294,
+      "term_occurrences": 17,
+      "name_error_rate": 0.2105,
+      "name_occurrences": 38,
+      "intent_preserved": 0.3864,
+      "intent_judged": 44,
+      "latency_p50_s": 0.3141,
+      "latency_p95_s": 0.3831,
+      "latency_samples": 20
+    },
+    {
+      "engine": "faster-whisper-large-v3-turbo",
+      "variant": "raw+cleanup",
+      "status": "ok",
+      "skipped_reason": null,
+      "n": 44,
+      "wer": 1.6,
+      "term_error_rate": 0.8824,
+      "term_occurrences": 17,
+      "name_error_rate": 0.5526,
+      "name_occurrences": 38,
+      "intent_preserved": 0.1364,
+      "intent_judged": 44,
+      "latency_p50_s": 1.1648,
+      "latency_p95_s": 1.5288,
+      "latency_samples": 20
+    },
+    {
+      "engine": "faster-whisper-large-v3-turbo",
+      "variant": "hints+cleanup",
+      "status": "ok",
+      "skipped_reason": null,
+      "n": 44,
+      "wer": 0.3,
+      "term_error_rate": 0.5294,
+      "term_occurrences": 17,
+      "name_error_rate": 0.1842,
+      "name_occurrences": 38,
+      "intent_preserved": 0.3864,
+      "intent_judged": 44,
+      "latency_p50_s": 0.9303,
+      "latency_p95_s": 1.6183,
+      "latency_samples": 20
+    },
+    {
+      "engine": "groq-whisper-large-v3",
+      "variant": "raw",
+      "status": "ok",
+      "skipped_reason": null,
+      "n": 44,
+      "wer": 0.3556,
+      "term_error_rate": 0.6471,
+      "term_occurrences": 17,
+      "name_error_rate": 0.5526,
+      "name_occurrences": 38,
+      "intent_preserved": 0.25,
+      "intent_judged": 44,
+      "latency_p50_s": 0.5867,
+      "latency_p95_s": 1.3517,
+      "latency_samples": 20
+    },
+    {
+      "engine": "groq-whisper-large-v3",
+      "variant": "hints",
+      "status": "ok",
+      "skipped_reason": null,
+      "n": 44,
+      "wer": 0.3,
+      "term_error_rate": 0.2353,
+      "term_occurrences": 17,
+      "name_error_rate": 0.5,
+      "name_occurrences": 38,
+      "intent_preserved": 0.2955,
+      "intent_judged": 44,
+      "latency_p50_s": 0.6064,
+      "latency_p95_s": 0.7386,
+      "latency_samples": 20
+    },
+    {
+      "engine": "groq-whisper-large-v3",
+      "variant": "raw+cleanup",
+      "status": "ok",
+      "skipped_reason": null,
+      "n": 44,
+      "wer": 0.3722,
+      "term_error_rate": 0.6471,
+      "term_occurrences": 17,
+      "name_error_rate": 0.5526,
+      "name_occurrences": 38,
+      "intent_preserved": 0.25,
+      "intent_judged": 44,
+      "latency_p50_s": 1.5297,
+      "latency_p95_s": 1.9017,
+      "latency_samples": 20
+    },
+    {
+      "engine": "groq-whisper-large-v3",
+      "variant": "hints+cleanup",
+      "status": "ok",
+      "skipped_reason": null,
+      "n": 44,
+      "wer": 0.2889,
+      "term_error_rate": 0.2353,
+      "term_occurrences": 17,
+      "name_error_rate": 0.4211,
+      "name_occurrences": 38,
+      "intent_preserved": 0.3182,
+      "intent_judged": 44,
+      "latency_p50_s": 1.5154,
+      "latency_p95_s": 1.8749,
+      "latency_samples": 20
+    },
+    {
+      "engine": "groq-whisper-large-v3-turbo",
+      "variant": "raw",
+      "status": "ok",
+      "skipped_reason": null,
+      "n": 44,
+      "wer": 0.4056,
+      "term_error_rate": 0.8235,
+      "term_occurrences": 17,
+      "name_error_rate": 0.5789,
+      "name_occurrences": 38,
+      "intent_preserved": 0.1818,
+      "intent_judged": 44,
+      "latency_p50_s": 0.3859,
+      "latency_p95_s": 0.4856,
+      "latency_samples": 20
+    },
+    {
+      "engine": "groq-whisper-large-v3-turbo",
+      "variant": "hints",
+      "status": "ok",
+      "skipped_reason": null,
+      "n": 44,
+      "wer": 0.3083,
+      "term_error_rate": 0.5882,
+      "term_occurrences": 17,
+      "name_error_rate": 0.2368,
+      "name_occurrences": 38,
+      "intent_preserved": 0.3864,
+      "intent_judged": 44,
+      "latency_p50_s": 0.4176,
+      "latency_p95_s": 0.4913,
+      "latency_samples": 20
+    },
+    {
+      "engine": "groq-whisper-large-v3-turbo",
+      "variant": "raw+cleanup",
+      "status": "ok",
+      "skipped_reason": null,
+      "n": 44,
+      "wer": 0.4139,
+      "term_error_rate": 0.8235,
+      "term_occurrences": 17,
+      "name_error_rate": 0.5789,
+      "name_occurrences": 38,
+      "intent_preserved": 0.1364,
+      "intent_judged": 44,
+      "latency_p50_s": 1.3349,
+      "latency_p95_s": 1.6044,
+      "latency_samples": 20
+    },
+    {
+      "engine": "groq-whisper-large-v3-turbo",
+      "variant": "hints+cleanup",
+      "status": "ok",
+      "skipped_reason": null,
+      "n": 44,
+      "wer": 0.3028,
+      "term_error_rate": 0.5882,
+      "term_occurrences": 17,
+      "name_error_rate": 0.1842,
+      "name_occurrences": 38,
+      "intent_preserved": 0.4091,
+      "intent_judged": 44,
+      "latency_p50_s": 1.3491,
+      "latency_p95_s": 1.8026,
+      "latency_samples": 20
+    },
+    {
+      "engine": "gemini-gemini-3.5-transcribe",
+      "variant": "raw",
+      "status": "skipped",
+      "skipped_reason": "skipped: free tier limit of 25 requests/day reached after 20 of 44 takes (HTTP 429, 2026-09-28)",
+      "n": 0,
+      "wer": null,
+      "term_error_rate": null,
+      "term_occurrences": 0,
+      "name_error_rate": null,
+      "name_occurrences": 0,
+      "intent_preserved": null,
+      "intent_judged": 0,
+      "latency_p50_s": null,
+      "latency_p95_s": null,
+      "latency_samples": 0
+    },
+    {
+      "engine": "gemini-gemini-3.5-transcribe",
+      "variant": "hints",
+      "status": "skipped",
+      "skipped_reason": "skipped: free tier limit of 25 requests/day reached after 20 of 44 takes (HTTP 429, 2026-09-28)",
+      "n": 0,
+      "wer": null,
+      "term_error_rate": null,
+      "term_occurrences": 0,
+      "name_error_rate": null,
+      "name_occurrences": 0,
+      "intent_preserved": null,
+      "intent_judged": 0,
+      "latency_p50_s": null,
+      "latency_p95_s": null,
+      "latency_samples": 0
+    },
+    {
+      "engine": "gemini-gemini-3.5-transcribe",
+      "variant": "raw+cleanup",
+      "status": "skipped",
+      "skipped_reason": "base variant skipped: skipped: free tier limit of 25 requests/day reached after 20 of 44 takes (HTTP 429, 2026-09-28)",
+      "n": 0,
+      "wer": null,
+      "term_error_rate": null,
+      "term_occurrences": 0,
+      "name_error_rate": null,
+      "name_occurrences": 0,
+      "intent_preserved": null,
+      "intent_judged": 0,
+      "latency_p50_s": null,
+      "latency_p95_s": null,
+      "latency_samples": 0
+    },
+    {
+      "engine": "gemini-gemini-3.5-transcribe",
+      "variant": "hints+cleanup",
+      "status": "skipped",
+      "skipped_reason": "base variant skipped: skipped: free tier limit of 25 requests/day reached after 20 of 44 takes (HTTP 429, 2026-09-28)",
+      "n": 0,
+      "wer": null,
+      "term_error_rate": null,
+      "term_occurrences": 0,
+      "name_error_rate": null,
+      "name_occurrences": 0,
+      "intent_preserved": null,
+      "intent_judged": 0,
+      "latency_p50_s": null,
+      "latency_p95_s": null,
+      "latency_samples": 0
+    },
+    {
+      "engine": "deepgram-nova-3",
+      "variant": "raw",
+      "status": "skipped",
+      "skipped_reason": "skipped: not run by Sponsor decision (2026-09-28); no Deepgram account or key created",
+      "n": 0,
+      "wer": null,
+      "term_error_rate": null,
+      "term_occurrences": 0,
+      "name_error_rate": null,
+      "name_occurrences": 0,
+      "intent_preserved": null,
+      "intent_judged": 0,
+      "latency_p50_s": null,
+      "latency_p95_s": null,
+      "latency_samples": 0
+    },
+    {
+      "engine": "deepgram-nova-3",
+      "variant": "hints",
+      "status": "skipped",
+      "skipped_reason": "skipped: not run by Sponsor decision (2026-09-28); no Deepgram account or key created",
+      "n": 0,
+      "wer": null,
+      "term_error_rate": null,
+      "term_occurrences": 0,
+      "name_error_rate": null,
+      "name_occurrences": 0,
+      "intent_preserved": null,
+      "intent_judged": 0,
+      "latency_p50_s": null,
+      "latency_p95_s": null,
+      "latency_samples": 0
+    },
+    {
+      "engine": "deepgram-nova-3",
+      "variant": "raw+cleanup",
+      "status": "skipped",
+      "skipped_reason": "base variant skipped: skipped: not run by Sponsor decision (2026-09-28); no Deepgram account or key created",
+      "n": 0,
+      "wer": null,
+      "term_error_rate": null,
+      "term_occurrences": 0,
+      "name_error_rate": null,
+      "name_occurrences": 0,
+      "intent_preserved": null,
+      "intent_judged": 0,
+      "latency_p50_s": null,
+      "latency_p95_s": null,
+      "latency_samples": 0
+    },
+    {
+      "engine": "deepgram-nova-3",
+      "variant": "hints+cleanup",
+      "status": "skipped",
+      "skipped_reason": "base variant skipped: skipped: not run by Sponsor decision (2026-09-28); no Deepgram account or key created",
+      "n": 0,
+      "wer": null,
+      "term_error_rate": null,
+      "term_occurrences": 0,
+      "name_error_rate": null,
+      "name_occurrences": 0,
+      "intent_preserved": null,
+      "intent_judged": 0,
+      "latency_p50_s": null,
+      "latency_p95_s": null,
+      "latency_samples": 0
+    }
+  ],
+  "environment": {
+    "warmup": {
+      "faster-whisper-large-v3": {
+        "load_s": 3.499,
+        "warmup_s": 1.015
+      },
+      "faster-whisper-large-v3-turbo": {
+        "load_s": 1.541,
+        "warmup_s": 0.335
+      },
+      "groq-whisper-large-v3": {
+        "load_s": 0.0,
+        "warmup_s": null
+      },
+      "groq-whisper-large-v3-turbo": {
+        "load_s": 0.0,
+        "warmup_s": null
+      }
+    },
+    "ollama": {
+      "model": "qwen3:8b",
+      "load_s": 4.835,
+      "warmup_s": 5.182,
+      "unavailable": null
+    },
+    "snapshots": [
+      {
+        "label": "start",
+        "time": "2026-09-28T12:19:12",
+        "vram": {
+          "gpu": "NVIDIA GeForce RTX 5060 Ti",
+          "total_mib": 16311,
+          "used_mib": 7798,
+          "free_mib": 8253
+        },
+        "ollama": {
+          "loaded": [
+            {
+              "name": "qwen3:8b",
+              "vram_mib": 5320,
+              "size_mib": 5320
+            }
+          ]
+        },
+        "contention": []
+      },
+      {
+        "label": "before cleanup",
+        "time": "2026-09-28T12:21:05",
+        "vram": {
+          "gpu": "NVIDIA GeForce RTX 5060 Ti",
+          "total_mib": 16311,
+          "used_mib": 2447,
+          "free_mib": 13604
+        },
+        "ollama": {
+          "loaded": []
+        },
+        "contention": []
+      },
+      {
+        "label": "after cleanup",
+        "time": "2026-09-28T12:24:54",
+        "vram": {
+          "gpu": "NVIDIA GeForce RTX 5060 Ti",
+          "total_mib": 16311,
+          "used_mib": 8084,
+          "free_mib": 7967
+        },
+        "ollama": {
+          "loaded": [
+            {
+              "name": "qwen3:8b",
+              "vram_mib": 5320,
+              "size_mib": 5320
+            }
+          ]
+        },
+        "contention": []
+      },
+      {
+        "label": "before intent judge",
+        "time": "2026-09-28T12:24:54",
+        "vram": {
+          "gpu": "NVIDIA GeForce RTX 5060 Ti",
+          "total_mib": 16311,
+          "used_mib": 8084,
+          "free_mib": 7967
+        },
+        "ollama": {
+          "loaded": [
+            {
+              "name": "qwen3:8b",
+              "vram_mib": 5320,
+              "size_mib": 5320
+            }
+          ]
+        },
+        "contention": []
+      },
+      {
+        "label": "after intent judge",
+        "time": "2026-09-28T12:28:05",
+        "vram": {
+          "gpu": "NVIDIA GeForce RTX 5060 Ti",
+          "total_mib": 16311,
+          "used_mib": 8385,
+          "free_mib": 7666
+        },
+        "ollama": {
+          "loaded": [
+            {
+              "name": "qwen3:8b",
+              "vram_mib": 5320,
+              "size_mib": 5320
+            }
+          ]
+        },
+        "contention": []
+      }
+    ],
+    "contention": [],
+    "composites": {
+      "count": 10,
+      "repetitions": 2,
+      "duration_s": [
+        6.36,
+        7.704,
+        7.768,
+        10.072,
+        11.908,
+        11.568,
+        14.384,
+        13.616,
+        14.728,
+        14.064
+      ]
+    }
+  }
+}

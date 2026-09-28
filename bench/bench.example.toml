@@ -17,12 +17,19 @@ expected_takes = 44
 # Optional engine settings (defaults shown).
 [engines.gemini]
 # Free-tier Gemini model with audio input; change it when the free tier changes.
-model = "gemini-2.5-flash"
+# gemini-2.5-flash (the code default) is no longer offered to new API keys
+# (HTTP 404, 2026-09-28); the benchmark used the dedicated speech-to-text model.
+model = "gemini-3.5-transcribe"
 # 0 turns thinking off; -1 omits thinkingConfig for models that reject it.
-thinking_budget = 0
+thinking_budget = -1
 
 [engines.deepgram]
 # Nova-3 Portuguese codes: pt, pt-BR, pt-PT.
 language = "pt-PT"
 # Vocabulary hints through keyterm prompting.
 keyterm = true
+
+# Optional: engines left out by a recorded decision. They are reported as
+# SKIPPED with this reason (1-120 printable ASCII characters).
+# [engines.skip]
+# "deepgram-nova-3" = "not run by Sponsor decision"

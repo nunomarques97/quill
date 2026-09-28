@@ -98,7 +98,7 @@ turns one 16 kHz mono PCM16 WAV file into text.
 | `faster-whisper-large-v3-turbo` | same | same |
 | `groq-whisper-large-v3` | Groq `/openai/v1/audio/transcriptions`, language `pt` | `prompt` (kept short: Groq limits it to 224 tokens) |
 | `groq-whisper-large-v3-turbo` | same | same |
-| `gemini-<model>` | Gemini `generateContent` with inline WAV; model configurable, default `gemini-2.5-flash` | vocabulary line in the instruction |
+| `gemini-<model>` | Gemini `generateContent` with inline WAV; model configurable, default `gemini-2.5-flash`. Dedicated `*-transcribe` models use the Interactions API (`language_codes` `pt-PT`, `store: false`) | vocabulary line in the instruction; `custom_vocabulary` (first 100 terms) for `*-transcribe` |
 | `deepgram-nova-3` | Deepgram `/v1/listen`, `nova-3`, language `pt-PT` | `keyterm` (up to 100) |
 
 - faster-whisper is imported only when a local engine loads. Models are read
@@ -119,6 +119,9 @@ Each engine runs four variants: `raw`, `hints`, `raw+cleanup` and
 
 - When an engine cannot run (missing key, package or model, failed load) all
   its variants are SKIPPED with the reason.
+- An engine listed in the optional `[engines.skip]` table of `local/bench.toml`
+  (engine id = reason, for example a recorded decision not to run it) is not
+  built and all its variants are SKIPPED with `skipped: <reason>`.
 - When an engine does not support hints (for example Deepgram with
   `keyterm = false`), `hints` and `hints+cleanup` are SKIPPED with the
   documented reason. Nothing is faked.

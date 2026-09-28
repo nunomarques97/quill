@@ -7,9 +7,10 @@ all of its variants are reported as SKIPPED instead of silently disappearing.
 
 from __future__ import annotations
 
+import re
 import tomllib
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from bench.engines import deepgram, gemini, groq, local_whisper
@@ -26,6 +27,11 @@ class EngineOptions:
     gemini_thinking_budget: int | None = 0
     deepgram_language: str = deepgram.DEFAULT_LANGUAGE
     deepgram_keyterm: bool = True
+    # (engine id, reason) for engines left out by a recorded decision.
+    skip: tuple[tuple[str, str], ...] = ()
+
+
+SKIP_REASON = re.compile(r"[ -~]{1,120}")
 
 
 class OptionsError(Exception):
@@ -33,7 +39,7 @@ class OptionsError(Exception):
 
 
 def load_engine_options(path: Path | None) -> EngineOptions:
-    """Read the optional [engines.gemini] and [engines.deepgram] tables."""
+    """Read the optional [engines.gemini], [engines.deepgram] and [engines.skip] tables."""
     if path is None or not Path(path).is_file():
         return EngineOptions()
     try:
@@ -62,12 +68,24 @@ def load_engine_options(path: Path | None) -> EngineOptions:
     keyterm = dg.get("keyterm", True)
     if not isinstance(keyterm, bool):
         raise OptionsError("[engines.deepgram].keyterm must be true or false")
-    return EngineOptions(
+    options = EngineOptions(
         gemini_model=model,
         gemini_thinking_budget=None if budget == -1 else budget,
         deepgram_language=language,
         deepgram_keyterm=keyterm,
     )
+    skip = engines.get("skip", {})
+    if not isinstance(skip, dict):
+        raise OptionsError("[engines.skip] must be a table of engine id = reason")
+    known = set(engine_ids(options))
+    entries = []
+    for engine_id, reason in skip.items():
+        if engine_id not in known:
+            raise OptionsError("[engines.skip] names an unknown engine id")
+        if not isinstance(reason, str) or not SKIP_REASON.fullmatch(reason) or not reason.strip():
+            raise OptionsError("[engines.skip] reasons must be 1-120 printable ASCII characters")
+        entries.append((engine_id, " ".join(reason.split())))
+    return replace(options, skip=tuple(entries))
 
 
 @dataclass(frozen=True)
@@ -133,6 +151,8 @@ def create_engines(
         slots.append(EngineSlot(deepgram.DeepgramEngine.id, engine))
     else:
         slots.append(EngineSlot(deepgram.DeepgramEngine.id, None, "DEEPGRAM_API_KEY missing from .env"))
+    decided = dict(options.skip)
+    slots = [EngineSlot(slot.id, None, f"skipped: {decided[slot.id]}") if slot.id in decided else slot for slot in slots]
     if only is not None:
         slots = [slot for slot in slots if slot.id in only]
     return slots

@@ -22,7 +22,10 @@
     }
   },
   "delivery": {
-    "mode": "commit",
-    "granularity": "task"
-  }
+    "mode": "push",
+    "granularity": "task",
+    "policyFile": "forja.delivery.json"
+  },
+  "maxSessions": 60,
+  "maxMinutes": 90
 }

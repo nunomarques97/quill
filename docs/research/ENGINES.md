@@ -1,6 +1,6 @@
 # Quill: motores de transcrição e custo mensal (Fase 1)
 
-**Estado: a aguardar a decisão do Sponsor.** Nenhum serviço pago foi adotado e não foi escrito código de produto. Medições feitas a 2026-09-28.
+**Estado: decidido pelo Sponsor a 2026-09-28: opção A, Whisper large-v3 local com vocabulário, 0 EUR/mês.** Nenhum serviço pago foi adotado. Medições feitas a 2026-09-28.
 
 Este documento compara os motores de transcrição candidatos na voz real do Sponsor e prepara a decisão de motor e de custo mensal. Contém só números agregados: nenhum texto falado, nenhum nome de projeto real e nenhum caminho da máquina. Os resultados por frase (referência, hipótese, veredicto de intenção) ficam apenas em `bench/results/`, que o Git ignora. Os números vêm de [engines-summary.json](engines-summary.json); o harness está em [bench/](../../bench/README.md).
 
@@ -10,7 +10,7 @@ Este documento compara os motores de transcrição candidatos na voz real do Spo
 - **Melhor opção cloud (gratuita hoje, paga a partir do limite):** Groq `whisper-large-v3-turbo` com vocabulário: WER 30,8 %, termos 58,8 %, nomes 23,7 %, intenção 38,6 %, p95 0,49 s; no plano pago custaria 0,60 a 3,00 USD por mês para 15 h.
 - **Nenhum motor chega às metas por omissão da Fase 2** (WER ≤ 10 %, intenção ≥ 95 %). O vocabulário é a alavanca que mais ajuda (o erro em termos do large-v3 local desce de 70,6 % para 23,5 %); a limpeza com `qwen3:8b` quase não muda o WER e soma 0,6 a 1,3 s de latência.
 - Gemini não foi medido nos 44 takes (plano gratuito limitado a 25 pedidos por dia) e Deepgram não foi medido por decisão do Sponsor.
-- **Recomendação:** Whisper large-v3 local com vocabulário, 0 EUR/mês. Ver [Decisão](#decisão-a-aguardar-o-sponsor).
+- **Recomendação:** Whisper large-v3 local com vocabulário, 0 EUR/mês. Ver [Decisão](#decisão).
 
 ## Método
 
@@ -145,9 +145,9 @@ Nenhum cenário pago mediu melhor do que o Whisper large-v3 local. Pagar poupari
 - **Remoção de bengalas e repetições não mensurável.** O guião não tem bengalas ("hum") nem repetições, por isso a meta de remover pelo menos 95 % sem apagar conteúdo não pôde ser medida. A Fase 2 precisa de um guião de ditado com hesitações e de um gravador.
 - **Juiz de intenção automático.** O juiz local (`qwen3:8b`) pode errar; a tabela para revisão humana existe em `bench/results/` e deve ser revista antes de fixar metas.
 
-## Decisão (a aguardar o Sponsor)
+## Decisão
 
-**Estado: a aguardar a decisão do Sponsor.** Nada foi adotado nem pago e não foi escrito código de produto.
+**Estado: decidido.** A 2026-09-28 o Sponsor escolheu a opção A (Whisper large-v3 local com vocabulário, 0 EUR/mês). O áudio não sai do PC; Groq, Gemini e Deepgram não são usados pelo produto.
 
 | Opção | Motor | Custo mensal (15 h) | WER | Erro termos EN | Erro nomes | Intenção | p95 |
 |---|---|---|---|---|---|---|---|

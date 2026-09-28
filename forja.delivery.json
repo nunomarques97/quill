@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "destination": {
+    "url": "https://github.com/nunomarques97/quill.git",
+    "branch": "main",
+    "baseBranch": "main"
+  },
+  "pipeline": {
+    "effect": "none",
+    "description": "No CI, hosting or deployment integration. Pushing to main only stores the code on GitHub."
+  },
+  "pipelineFiles": []
+}

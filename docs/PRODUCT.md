@@ -29,6 +29,7 @@ Optional, decided by the research: a key that sends the text straight to Claude 
 - Paid-engine comparison: only accounts with free tiers or free credits (Groq free, Gemini free, Deepgram welcome credit). No money is spent; OpenAI is excluded from the benchmark unless the Sponsor decides otherwise.
 - The benchmark may send the user's test recordings to all tested cloud services, including the Gemini free tier.
 - No paid service is adopted without an explicit Sponsor decision on engine and cost.
+- Engine (decided after the Phase 1 benchmark, see docs/research/ENGINES.md): local Whisper large-v3 with vocabulary hints, on the GPU. Budget: 0 EUR/month. Audio never leaves the PC; no cloud speech engine is used by the product. Local Ollama cleanup stays off the critical path until measured on real dictation.
 
 ## Non-negotiable rules
 

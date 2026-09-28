@@ -7,7 +7,10 @@ or read the real clipboard.
 
 The product layer never moves the keyboard focus: it has no
 SetForegroundWindow, SetFocus or AttachThreadInput. Only the manual typing
-self-test, which creates its own windows, adds those calls in a subclass.
+self-test, which creates its own windows, adds those calls in a subclass. Its
+only mouse input is a button click at the current pointer position
+(click-to-focus); it never moves the pointer. ``LowLevelHooks`` installs the
+trigger hooks and, like ``User32``, is never created by tests.
 """
 
 from __future__ import annotations
@@ -19,23 +22,67 @@ from dataclasses import dataclass
 # Marks every event Quill injects, so Quill's own keyboard hook can skip them.
 QUILL_EXTRA_INFO = 0x5155494C  # "QUIL"
 
+INPUT_MOUSE = 0
 INPUT_KEYBOARD = 1
 KEYEVENTF_EXTENDEDKEY = 0x0001
 KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_UNICODE = 0x0004
 KEYEVENTF_SCANCODE = 0x0008
 
+MOUSEEVENTF_MOVE = 0x0001
+MOUSEEVENTF_LEFTDOWN = 0x0002
+MOUSEEVENTF_LEFTUP = 0x0004
+MOUSEEVENTF_RIGHTDOWN = 0x0008
+MOUSEEVENTF_RIGHTUP = 0x0010
+MOUSEEVENTF_ABSOLUTE = 0x8000
+
+VK_LBUTTON = 0x01
+VK_RBUTTON = 0x02
+VK_MBUTTON = 0x04
+VK_XBUTTON1 = 0x05
+VK_XBUTTON2 = 0x06
 VK_SHIFT = 0x10
 VK_CONTROL = 0x11
 VK_MENU = 0x12
 VK_RETURN = 0x0D
 VK_LWIN = 0x5B
 VK_RWIN = 0x5C
+VK_LSHIFT = 0xA0
+VK_RSHIFT = 0xA1
+VK_LCONTROL = 0xA2
+VK_RCONTROL = 0xA3
+VK_LMENU = 0xA4
+VK_RMENU = 0xA5
 SCAN_SHIFT = 0x2A
 SCAN_RETURN = 0x1C
 
 # Modifiers that turn typed characters into shortcuts while held.
 SHORTCUT_MODIFIERS = (VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN)
+
+# Low-level hooks.
+WH_KEYBOARD_LL = 13
+WH_MOUSE_LL = 14
+HC_ACTION = 0
+WM_QUIT = 0x0012
+WM_KEYDOWN = 0x0100
+WM_KEYUP = 0x0101
+WM_SYSKEYDOWN = 0x0104
+WM_SYSKEYUP = 0x0105
+WM_LBUTTONDOWN = 0x0201
+WM_LBUTTONUP = 0x0202
+WM_RBUTTONDOWN = 0x0204
+WM_RBUTTONUP = 0x0205
+WM_MBUTTONDOWN = 0x0207
+WM_MBUTTONUP = 0x0208
+WM_XBUTTONDOWN = 0x020B
+WM_XBUTTONUP = 0x020C
+XBUTTON1 = 0x0001
+XBUTTON2 = 0x0002
+LLKHF_INJECTED = 0x10
+LLMHF_INJECTED = 0x01
+
+GA_ROOT = 2
+SM_SWAPBUTTON = 23
 
 # Mandatory integrity levels (RID of the token's integrity SID).
 INTEGRITY_UNTRUSTED = 0x0000
@@ -53,6 +100,13 @@ GMEM_MOVEABLE = 0x0002
 
 class Win32Error(OSError):
     """A Win32 call failed."""
+
+
+@dataclass(frozen=True)
+class MouseEvent:
+    """One mouse INPUT record: button flags only, never a pointer move."""
+
+    flags: int
 
 
 @dataclass(frozen=True)
@@ -105,6 +159,26 @@ if sys.platform == "win32":
     class INPUT(ctypes.Structure):
         _fields_ = [("type", wintypes.DWORD), ("u", _INPUTUNION)]
 
+    class KBDLLHOOKSTRUCT(ctypes.Structure):
+        _fields_ = [
+            ("vkCode", wintypes.DWORD),
+            ("scanCode", wintypes.DWORD),
+            ("flags", wintypes.DWORD),
+            ("time", wintypes.DWORD),
+            ("dwExtraInfo", ULONG_PTR),
+        ]
+
+    class MSLLHOOKSTRUCT(ctypes.Structure):
+        _fields_ = [
+            ("pt", wintypes.POINT),
+            ("mouseData", wintypes.DWORD),
+            ("flags", wintypes.DWORD),
+            ("time", wintypes.DWORD),
+            ("dwExtraInfo", ULONG_PTR),
+        ]
+
+    HOOKPROC = ctypes.WINFUNCTYPE(wintypes.LPARAM, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+
     class SID_AND_ATTRIBUTES(ctypes.Structure):
         _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", wintypes.DWORD)]
 
@@ -139,6 +213,10 @@ class User32:
         bind(user32, "IsHungAppWindow", w.BOOL, w.HWND)
         bind(user32, "GetWindowThreadProcessId", w.DWORD, w.HWND, ctypes.POINTER(w.DWORD))
         bind(user32, "GetAsyncKeyState", ctypes.c_short, ctypes.c_int)
+        bind(user32, "GetCursorPos", w.BOOL, ctypes.POINTER(w.POINT))
+        bind(user32, "WindowFromPoint", w.HWND, w.POINT)
+        bind(user32, "GetAncestor", w.HWND, w.HWND, w.UINT)
+        bind(user32, "GetSystemMetrics", ctypes.c_int, ctypes.c_int)
         bind(user32, "EnumWindows", w.BOOL, WNDENUMPROC, w.LPARAM)
         bind(user32, "GetWindowTextW", ctypes.c_int, w.HWND, w.LPWSTR, ctypes.c_int)
         bind(user32, "GetClassNameW", ctypes.c_int, w.HWND, w.LPWSTR, ctypes.c_int)
@@ -151,6 +229,7 @@ class User32:
         bind(user32, "GetClipboardSequenceNumber", w.DWORD)
         bind(user32, "GetClipboardFormatNameW", ctypes.c_int, w.UINT, w.LPWSTR, ctypes.c_int)
         bind(kernel32, "GetCurrentProcess", w.HANDLE)
+        bind(kernel32, "GetCurrentProcessId", w.DWORD)
         bind(kernel32, "OpenProcess", w.HANDLE, w.DWORD, w.BOOL, w.DWORD)
         bind(kernel32, "CloseHandle", w.BOOL, w.HANDLE)
         bind(kernel32, "QueryFullProcessImageNameW", w.BOOL, w.HANDLE, w.DWORD, w.LPWSTR, ctypes.POINTER(w.DWORD))
@@ -177,8 +256,42 @@ class User32:
             record.u.ki = KEYBDINPUT(event.vk, event.scan, event.flags, 0, QUILL_EXTRA_INFO)
         return int(self._user32.SendInput(len(events), array, ctypes.sizeof(INPUT)))
 
+    def send_mouse(self, events: list[MouseEvent]) -> int:
+        """Inject mouse-button events at the current pointer position, tagged with the Quill marker.
+
+        Records carry no coordinates and never MOUSEEVENTF_MOVE or
+        MOUSEEVENTF_ABSOLUTE, so the pointer does not move.
+        """
+        if not events:
+            return 0
+        if any(event.flags & (MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE) for event in events):
+            raise ValueError("Quill never moves the pointer")
+        array = (INPUT * len(events))()
+        for record, event in zip(array, events):
+            record.type = INPUT_MOUSE
+            record.u.mi = MOUSEINPUT(0, 0, 0, event.flags, 0, QUILL_EXTRA_INFO)
+        return int(self._user32.SendInput(len(events), array, ctypes.sizeof(INPUT)))
+
     def last_error(self) -> int:
         return ctypes.get_last_error()
+
+    def cursor_pos(self) -> tuple[int, int] | None:
+        point = wintypes.POINT()
+        if not self._user32.GetCursorPos(ctypes.byref(point)):
+            return None
+        return int(point.x), int(point.y)
+
+    def window_from_point(self, x: int, y: int) -> int:
+        return int(self._user32.WindowFromPoint(wintypes.POINT(x, y)) or 0)
+
+    def root_window(self, hwnd: int) -> int:
+        return int(self._user32.GetAncestor(hwnd, GA_ROOT) or 0)
+
+    def buttons_swapped(self) -> bool:
+        return bool(self._user32.GetSystemMetrics(SM_SWAPBUTTON))
+
+    def own_process_id(self) -> int:
+        return int(self._kernel32.GetCurrentProcessId())
 
     def key_down(self, vk: int) -> bool:
         """The key is physically or logically down right now."""
@@ -333,3 +446,72 @@ class User32:
             self._kernel32.GlobalFree(handle)
             return False
         return True
+
+
+class LowLevelHooks:
+    """Real WH_KEYBOARD_LL / WH_MOUSE_LL installer and the message loop they need.
+
+    Every call runs on the thread that owns the hooks. Tests never create this
+    class; they drive ``quill.hooks`` with a fake installer.
+    """
+
+    def __init__(self) -> None:
+        if sys.platform != "win32":
+            raise Win32Error("Win32 hooks are only available on Windows")
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._user32, self._kernel32 = user32, kernel32
+        w = wintypes
+        bind(user32, "SetWindowsHookExW", w.HHOOK, ctypes.c_int, HOOKPROC, w.HINSTANCE, w.DWORD)
+        bind(user32, "UnhookWindowsHookEx", w.BOOL, w.HHOOK)
+        bind(user32, "CallNextHookEx", w.LPARAM, w.HHOOK, ctypes.c_int, w.WPARAM, w.LPARAM)
+        bind(user32, "GetMessageW", w.BOOL, ctypes.POINTER(w.MSG), w.HWND, w.UINT, w.UINT)
+        bind(user32, "PeekMessageW", w.BOOL, ctypes.POINTER(w.MSG), w.HWND, w.UINT, w.UINT, w.UINT)
+        bind(user32, "PostThreadMessageW", w.BOOL, w.DWORD, w.UINT, w.WPARAM, w.LPARAM)
+        bind(kernel32, "GetCurrentThreadId", w.DWORD)
+        bind(kernel32, "GetModuleHandleW", w.HMODULE, w.LPCWSTR)
+
+    def make_callback(self, function: object) -> object:
+        """Wrap a Python function as a HOOKPROC; the caller keeps it alive while hooked."""
+        return HOOKPROC(function)
+
+    def set_hook(self, kind: int, callback: object) -> int:
+        handle = self._user32.SetWindowsHookExW(kind, callback, self._kernel32.GetModuleHandleW(None), 0)
+        if not handle:
+            raise Win32Error(f"SetWindowsHookExW({kind}) failed (error {ctypes.get_last_error()})")
+        return int(handle)
+
+    def unhook(self, handle: int) -> None:
+        self._user32.UnhookWindowsHookEx(handle)
+
+    def call_next(self, code: int, wparam: int, lparam: int) -> int:
+        return int(self._user32.CallNextHookEx(None, code, wparam, lparam))
+
+    def current_thread_id(self) -> int:
+        return int(self._kernel32.GetCurrentThreadId())
+
+    def ensure_queue(self) -> None:
+        """Create this thread's message queue, so a WM_QUIT posted early is not lost."""
+        message = wintypes.MSG()
+        self._user32.PeekMessageW(ctypes.byref(message), None, 0, 0, 0)
+
+    def run_loop(self) -> None:
+        """Pump messages (the hook callbacks run inside) until WM_QUIT."""
+        message = wintypes.MSG()
+        while self._user32.GetMessageW(ctypes.byref(message), None, 0, 0) > 0:
+            pass
+
+    def post_quit(self, thread_id: int) -> bool:
+        return bool(self._user32.PostThreadMessageW(thread_id, WM_QUIT, 0, 0))
+
+    @staticmethod
+    def keyboard_fields(lparam: int) -> tuple[int, int, int]:
+        """(vk, flags, extra info) of the KBDLLHOOKSTRUCT at ``lparam``."""
+        info = KBDLLHOOKSTRUCT.from_address(lparam)
+        return int(info.vkCode), int(info.flags), int(info.dwExtraInfo)
+
+    @staticmethod
+    def mouse_fields(lparam: int) -> tuple[int, int, int]:
+        """(mouseData, flags, extra info) of the MSLLHOOKSTRUCT at ``lparam``."""
+        info = MSLLHOOKSTRUCT.from_address(lparam)
+        return int(info.mouseData), int(info.flags), int(info.dwExtraInfo)

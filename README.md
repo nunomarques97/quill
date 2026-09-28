@@ -22,9 +22,12 @@ The dictation app is being built in [quill/](quill/) (Python 3.12, standard libr
 
 - `quill/inject.py`: types text into the window captured when the trigger went down, as Unicode `SendInput` events tagged with Quill's marker. It never uses or writes the clipboard (a change made by another program while typing is reported), drops control characters, never produces a bare Enter from text (a line break becomes a space or Shift+Enter), waits for Ctrl/Alt/Windows to be released and checks before every burst that the target still exists, belongs to the same process, responds and is in the foreground. Elevated targets are refused. A plain Enter is only sent by the separate `press_enter(target)` call, used by the send-to-Claude-Code trigger.
 - `quill/clipboard.py`: clipboard snapshots (all formats) with compare and restore.
+- `quill/triggers.py`: the push-to-talk state machine (no Win32). A hold of a bound input emits `start` at once, `confirm` after `min_hold_ms`, then `stop` on release; a shorter hold, another key or button pressed while a keyboard trigger is held (a combo) or the hooks stopping emit `cancel`. Injected events (flagged by Windows or carrying Quill's marker), key auto-repeat, a release without a press and a second trigger while one is held are ignored. A missed release is recovered (live key state for inputs that pass through, a second press, or a 120 s maximum hold), so it never stays stuck. Bound mouse buttons and bound non-modifier keys such as F13 to F24 are swallowed while Quill runs (Back/Forward never fire); Right Ctrl, Right Shift and Right Alt pass through so shortcuts keep working.
+- `quill/hooks.py`: the `WH_KEYBOARD_LL`/`WH_MOUSE_LL` callbacks only classify the event, queue it and return the suppression decision; a worker thread runs the state machine and the application's handler. Decisions and logs name the trigger input only, never other keys.
+- `quill/focus.py`: click-to-focus. When a dictation or send-to-Claude hold is confirmed, it sends one primary-button click, marked as Quill's, at the current pointer position (it never moves the pointer), waits for the window under the pointer to take the foreground and captures it as the target. The command trigger never clicks, so the selection is kept. No click is sent when `click_to_focus` is off, over Quill's own windows, or while a modifier key or another mouse button is down. A trigger on `right_ctrl`, `right_shift` or `right_alt` passes through to Windows, so it never clicks (a click would become a shortcut such as Ctrl+click): it types into the window that already has the focus.
 - `quill/win32.py`: the ctypes layer. It has no call that moves the keyboard focus.
 
-Tests: `py -3.12 -m unittest discover -s quill/tests -t .`. They use a fake Win32 layer and never create windows, install hooks, send input, open the microphone or touch the real clipboard; the real layer is disabled while they run.
+Tests: `py -3.12 -m unittest discover -s quill/tests -t .`. They use a fake Win32 layer and a fake hook installer and never create windows, install hooks, send input, open the microphone or touch the real clipboard; the real layer and the real hook installer are disabled while they run.
 
 ### Manual typing self-test
 
@@ -33,6 +36,14 @@ py -3.12 -m quill.selftest.typing --allow-desktop-input [--targets edit,edge-tex
 ```
 
 It opens its own windows (a Win32 edit box, Edge app windows with a temporary profile, a console, VS Code with a temporary profile), takes the focus and types an invented corpus into each, then compares what arrived and checks that the clipboard is unchanged. Run it only when you choose, and do not touch the keyboard or mouse until it ends (about a minute). It writes an aggregate result, with counts of lost, extra and changed characters and never the typed text, to `local/selftest/typing-<UTC time>.json`. Without `--allow-desktop-input` it exits with code 2 and opens nothing. It is never part of automated tests or checks.
+
+### Manual trigger self-test
+
+```
+py -3.12 -m quill.selftest.triggers --allow-desktop-input [--seconds 120] [--click-to-focus]
+```
+
+It installs the real hooks with the triggers from `local/quill.toml` (or the example) and prints every decision (action, trigger input name, signal and reason, for example `dictation xbutton1 cancel short_hold`) while you press, hold, tap and combine the triggers. While it runs the bound buttons and keys do not do their normal action. With `--click-to-focus` a confirmed dictation or send-to-Claude hold also clicks at the pointer, as the app does; nothing is typed. It ends after `--seconds` or with Ctrl+C and writes counts per action, reason and trigger input (never other keys, positions or window names) to `local/selftest/triggers-<UTC time>.json`. Without `--allow-desktop-input` it exits with code 2 and installs nothing. It is never part of automated tests or checks.
 
 ## Privacy
 

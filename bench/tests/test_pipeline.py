@@ -122,6 +122,62 @@ class MeasureTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             pipeline.write_private(self.root / "elsewhere", "dictation", "raw", [], [], self.results)
 
+    def test_streamed_stage_follows_raw_and_becomes_the_final_stage(self):
+        sets = self.fx.loaded()
+        engine = engine_for(sets, lambda take: take.reference)
+        seen = []
+
+        def streamer(takes, hints):
+            seen.append((len(takes), hints.vocabulary()[:1]))
+            return [(take.clean, 0.1) for take in takes]
+
+        summary = pipeline.measure(sets, "streamed", engine, judge_yes, None, TERMS, self.results / "pipeline" / "run",
+                                   results_dir=self.results, log=lambda line: None, streamer=streamer,
+                                   stream_options={"step_s": 0.5})
+        self.assertEqual(summary["stages"], ["raw", "streamed"])
+        self.assertEqual(summary["engine"]["streaming"], {"step_s": 0.5})
+        self.assertEqual([count for count, _ in seen], [3, 3])
+        dictation = summary["sets"]["dictation"]["stages"]
+        self.assertEqual((dictation["raw"]["filler_removal_rate"], dictation["streamed"]["filler_removal_rate"]), (0.0, 1.0))
+        self.assertEqual(dictation["streamed"]["wer_clean"], 0.0)
+        self.assertTrue((self.results / "pipeline" / "run" / "commands" / "streamed.json").is_file())
+        self.assertEqual(pipeline._final_stage(summary["sets"]["commands"])[0], "streamed")
+        self.assertIn("| ditado | streamed | 3 |", pipeline.render_block(summary))
+        timings = pipeline.split_timings(summary)
+        self.assertIn("transcribe_p95_s", timings["sets"]["dictation"]["streamed"])
+        self.assertNotIn("transcribe_p95_s", dictation["streamed"])
+        with self.assertRaises(ValueError):
+            pipeline.measure(sets, "streamed", engine, judge_yes, None, TERMS, self.results / "pipeline" / "run",
+                             results_dir=self.results, log=lambda line: None)
+        with self.assertRaises(ValueError):
+            pipeline.measure(sets, "cleanup", engine, judge_yes, None, TERMS, self.results / "pipeline" / "run",
+                             results_dir=self.results, log=lambda line: None, streamer=streamer)
+
+    def test_default_streamer_uses_the_product_engine_and_tuning(self):
+        from quill import streaming, whisper
+
+        self.assertEqual(pipeline.STREAM_MODEL, whisper.DEFAULT_MODEL)
+        self.assertEqual(pipeline.ENGINE_MODEL, "large-v3")  # the raw baseline is unchanged
+        seen = []
+        fake_stream = lambda model, takes, vocabulary, options: seen.append((model, options)) or []
+        baseline = mock.Mock(model="large-v3", whisper=object())
+        with mock.patch("bench.streaming.stream_takes", fake_stream):
+            stream, options = pipeline.default_streamer(baseline)
+            stream([], mock.Mock(vocabulary=lambda: []))
+            self.assertEqual(options["model"], "large-v3-turbo")
+            self.assertEqual({k: v for k, v in options.items() if k != "model"},
+                             dataclasses.asdict(streaming.options_for("large-v3-turbo")))
+            model, tuning = seen[-1]
+            self.assertIsInstance(model, whisper.Whisper)
+            self.assertEqual((model.model, model.loaded), ("large-v3-turbo", False))
+            self.assertEqual(tuning, streaming.options_for("large-v3-turbo"))
+            stream.close()
+            same = mock.Mock(model="large-v3-turbo", whisper=object())
+            stream, _ = pipeline.default_streamer(same)
+            stream([], mock.Mock(vocabulary=lambda: []))
+            self.assertIs(seen[-1][0], same.whisper)
+            stream.close()  # the shared model stays with the engine
+
     def test_judge_failure_and_unavailable(self):
         def broken(reference, hypothesis):
             raise OllamaError("judge timed out")
@@ -151,6 +207,14 @@ class MeasureTest(unittest.TestCase):
         doc = self.root / "FASE.md"
         doc.write_text("# Relatório\n", encoding="utf-8")
         lines = []
+        streamers_closed = []
+
+        def streamer_factory(engine):
+            def stream(takes, hints):
+                return [(t.clean, 0.2) for t in takes]
+
+            stream.close = lambda: streamers_closed.append(1)
+            return stream, {"step_s": 0.5}
 
         def run(*argv, engine=None):
             lines.clear()
@@ -159,10 +223,18 @@ class MeasureTest(unittest.TestCase):
                     list(argv),
                     engine_factory=lambda: engine,
                     judge_factory=lambda: (judge_yes, None),
+                    streamer_factory=streamer_factory,
                     results_dir=self.results,
                     out=lines.append,
                 )
 
+        engine = engine_for(self.fx.loaded(), lambda take: take.reference)
+        self.assertEqual(run("--stage", "streamed", "--summary", str(summary_path), engine=engine), 0)
+        self.assertEqual(engine.closed, 1)
+        self.assertEqual(streamers_closed, [1])
+        streamed = json.loads(summary_path.read_text(encoding="utf-8"))
+        self.assertEqual(streamed["stages"], ["raw", "streamed"])
+        self.assertNotIn("transcribe_p95_s", streamed["sets"]["dictation"]["stages"]["streamed"])
         engine = engine_for(self.fx.loaded(), lambda take: take.clean)
         self.assertEqual(run("--stage", "raw", "--summary", str(summary_path), engine=engine), 0)
         self.assertEqual(engine.closed, 1)
@@ -205,8 +277,14 @@ class TargetTest(unittest.TestCase):
         return [line for met, line in pipeline.check_targets(summary, targets) if not met]
 
     def test_all_met(self):
-        summary = summary_with(latency={"p95_s": 1.2, "max_audio_s": 15.0}, stages=pipeline.STAGE_ORDER)
+        summary = summary_with(latency={"p95_s": 0.45, "max_audio_s": 15.0}, stages=pipeline.STAGE_ORDER)
         self.assertEqual(self.failed(summary, *pipeline.TARGET_NAMES), [])
+
+    def test_latency_target_is_half_a_second(self):
+        self.assertEqual(pipeline.MAX_LATENCY_P95_S, 0.5)
+        self.assertEqual(self.failed(summary_with(latency={"p95_s": 0.5, "max_audio_s": 15.0}), "latency"), [])
+        self.assertEqual(self.failed(summary_with(latency={"p95_s": 0.51, "max_audio_s": 15.0}), "latency"),
+                         ["FAIL latency: p95 0.51 s (target <= 0.5 s, utterances up to 15.0 s)"])
 
     def test_overall_gap_reports_measured_and_target(self):
         failed = self.failed(summary_with(dictation={"wer_clean": 0.283, "intent_preserved": 0.523}), "overall")
@@ -232,7 +310,7 @@ class TargetTest(unittest.TestCase):
         self.assertEqual(len(self.failed(summary, "vocabulary")), 2)
         summary = summary_with(stages=("raw", "vocabulary"), commands={"name_error_rate": 0.2})
         self.assertEqual(self.failed(summary, "vocabulary"), ["FAIL vocabulary: commands project-name error 20.0 % (target <= 10 %)"])
-        self.assertEqual(len(self.failed(summary_with(latency={"p95_s": 1.6, "max_audio_s": 15.0}), "latency")), 1)
+        self.assertEqual(len(self.failed(summary_with(latency={"p95_s": 0.6, "max_audio_s": 15.0}), "latency")), 1)
         self.assertEqual(len(self.failed(summary_with(), "unknown")), 1)
 
 

@@ -48,6 +48,7 @@ class ExampleTest(ConfigCase):
         self.assertEqual(settings.min_hold_ms, 250)
         self.assertTrue(settings.click_to_focus)
         self.assertEqual(settings.indicator_position, "pointer")
+        self.assertEqual(settings.engine_model, "large-v3-turbo")
         self.assertEqual(settings.ollama_url, "http://127.0.0.1:11434")
         self.assertEqual(settings.ollama_model, "qwen3:8b")
         self.assertEqual(settings.cleanup_mode, "rules")
@@ -91,6 +92,9 @@ class MergeTest(ConfigCase):
             "[triggers.command]\nbuttons = [\"middle\"]\nkeys = [\"right_alt\"]\n"
             "[triggers.send_claude]\nbuttons = [\"xbutton1\", \"xbutton2\"]\nkeys = [\"right_ctrl\"]\n")
         self.assertEqual([item.vk for item in settings.trigger("dictation").inputs], list(range(0x7C, 0x88)))
+
+    def test_precise_engine_model_is_selectable(self) -> None:
+        self.assertEqual(self.load("[engine]\nmodel = \"large-v3\"\n").engine_model, "large-v3")
 
     def test_command_and_send_triggers_can_be_disabled(self) -> None:
         settings = self.load("[triggers.command]\nkeys = []\n[triggers.send_claude]\nbuttons = []\nkeys = []\n")
@@ -153,6 +157,8 @@ class RejectTest(ConfigCase):
         self.rejected("[input]\nclick_to_focus = \"yes\"\n", "input.click_to_focus")
         self.rejected("[indicator]\nposition = \"top\"\n", "indicator.position")
         self.rejected("[cleanup]\nmode = \"cloud\"\n", "cleanup.mode")
+        self.rejected("[engine]\nmodel = \"tiny\"\n", "engine.model")
+        self.rejected("[engine]\nmodel = 3\n", "engine.model")
         self.rejected("[ollama]\nmodel = \"qwen3:8b; rm\"\n", "ollama.model", "rm")
         self.rejected("[profiles.vscode]\n", "profiles.vscode")
         self.rejected("[profiles.vscode]\ntitles = [\"\"]\n", "profiles.vscode.titles[0]")

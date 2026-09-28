@@ -34,6 +34,9 @@ py -3.12 -m bench.record                            # record the dictation scrip
 py -3.12 -m bench.record --redo dt-05,dt-07         # record takes again
 py -3.12 -m bench.pipeline --set all --dry-run      # counts of both sets, no GPU
 .venv\Scripts\python -m bench.pipeline --set all --stage raw --summary docs/research/phase2-summary.json
+.venv\Scripts\python -m bench.pipeline --set all --stage streamed --summary docs/research/phase2-summary.json
+.venv\Scripts\python -m bench.streaming --set all --mode deterministic   # streamed text quality
+.venv\Scripts\python -m bench.streaming --set all --mode realtime        # release-to-final latency
 py -3.12 -m bench.pipeline --summary docs/research/phase2-summary.json --require complete --require overall
 py -3.12 -m bench.pipeline --summary docs/research/phase2-summary.json --write-doc docs/research/FASE2.md
 py -3.12 -m bench.pipeline --summary docs/research/phase2-summary.json --check-doc docs/research/FASE2.md
@@ -124,9 +127,15 @@ with nothing recorded reports 0 recorded and exits 0; only a structural error
 
 `--stage raw` loads faster-whisper large-v3 (float16, CUDA) once, warms it up,
 and transcribes every valid take with the vocabulary hints (`initial_prompt`
-and `hotwords`). Later stages (`cleanup`, `vocabulary`, `corrections`,
-`profiles`) are cumulative and added by later tasks. Per set and stage the
-summary holds:
+and `hotwords`). `raw` stays the Phase 2 baseline. `--stage streamed` runs `raw` and then
+replays every take through the product's streaming transcription
+(`quill.streaming`, see [Streaming replay](#streaming-replay)) on the
+deterministic schedule, with the product's engine model and its tuning
+(`large-v3-turbo` by default, loaded once next to large-v3); its text is the
+source of every later stage. The streaming model and options used are
+recorded under `engine.streaming`. Later stages (`cleanup`,
+`vocabulary`, `corrections`, `profiles`) are cumulative and added by later
+tasks. Per set and stage the summary holds:
 
 - `wer_verbatim` and `wer_clean`: corpus WER against the verbatim and the
   clean reference (equal for the commands set, which has no markup);
@@ -144,13 +153,44 @@ aggregate-only and refused when a phrase or name would appear in it.
 `--require TARGET` (repeatable) reads the summary and exits 1, printing
 measured-vs-target aggregates, when a target is unmet or a set is missing or
 incomplete: `complete` (both sets measured, n equals the valid takes),
-`latency` (key-release p95 <= 1.5 s, measured by the app task), `cleanup`
+`latency` (release-to-final p95 <= 0.5 s for utterances up to 15 s, the
+Sponsor target; see [Streaming replay](#streaming-replay)), `cleanup`
 (dictation removal >= 95 % and 0 content words deleted), `vocabulary` (name
 and term error <= 10 % per set), `corrections` (100 % of learned recurrences
 fixed, 0 new errors) and `overall` (final-text WER <= 10 %, intent >= 95 %).
 `--write-doc DOC` inserts the Portuguese table between
 `<!-- pipeline:summary:start -->` and `<!-- pipeline:summary:end -->`;
 `--check-doc DOC` exits 1 when that block differs from the summary.
+
+### Streaming replay
+
+`bench.streaming` feeds each real take, read in place, to `quill.streaming`
+in 50 ms chunks (one MME buffer) and releases right after the last chunk.
+
+- `--mode deterministic` waits until the worker is idle after every chunk,
+  so every partial runs at the same audio time and the final text is
+  reproducible run to run. It measures the WER of the streamed text against
+  the clean reference and prints it next to the committed raw baseline.
+- `--mode realtime` feeds at the pace of the recording with the model warm
+  (one warm-up take first); stale partials are dropped as in the app. It
+  reports release-to-final p50/p95/max for takes up to 15 s per set and for
+  both sets, and a GPU snapshot before and after (utilization, free memory,
+  models loaded in the shared Ollama, read-only).
+- `--model` picks the local model (default `large-v3-turbo`, the product's
+  engine; `large-v3` is the precise mode) and with it the product's tuning
+  for that model (`quill.streaming.options_for`). With `large-v3-turbo`,
+  partials every 0.5 s are only shown and the release transcribes the whole
+  utterance with beam 5 (`commit` off). With `large-v3`, text is committed
+  at pauses and the release transcribes only the rest.
+- Every `StreamOptions` field has a flag that replaces one field of that
+  tuning (`--step-s`, `--partial-beam`, `--final-beam`, `--commit-margin-s`,
+  `--context-chars`, `--tail-pad-s`, `--pause-commit`, `--agreement`,
+  `--commit`, ...). `--agreement true` also commits words two partials
+  agree on (shorter tails, worse text).
+
+Per-take text and every timing go only to
+`bench/results/streaming/<run>/<mode>.json`; the console prints aggregates.
+Timings are never written to committed files.
 
 ## Normalizer
 

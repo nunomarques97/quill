@@ -22,6 +22,8 @@ import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 
+from quill.whisper import DEFAULT_MODEL, PRECISE_MODEL
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EXAMPLE_CONFIG = REPO_ROOT / "quill.example.toml"
 LOCAL_DIR = REPO_ROOT / "local"
@@ -31,6 +33,7 @@ ACTIONS = ("dictation", "command", "send_claude")
 PROFILE_NAMES = ("claude-code", "vscode", "whatsapp", "email")
 INDICATOR_POSITIONS = ("pointer", "bottom-center")
 CLEANUP_MODES = ("rules", "llm")
+ENGINE_MODELS = (DEFAULT_MODEL, PRECISE_MODEL)
 MIN_HOLD_RANGE = (50, 2000)
 
 # Virtual-key codes of the inputs a trigger may use.
@@ -54,6 +57,7 @@ SCHEMA: dict[str, object] = {
     "triggers": {action: {"buttons": None, "keys": None} for action in ACTIONS},
     "input": {"min_hold_ms": None, "click_to_focus": None},
     "audio": {"microphone": None},
+    "engine": {"model": None},
     "indicator": {"position": None},
     "ollama": {"url": None, "model": None},
     "cleanup": {"mode": None},
@@ -101,6 +105,7 @@ class Config:
     min_hold_ms: int
     click_to_focus: bool
     microphone: str
+    engine_model: str
     indicator_position: str
     ollama_url: str
     ollama_model: str
@@ -295,6 +300,7 @@ def validate(data: dict[str, object]) -> Config:
         min_hold_ms=_min_hold(_get(data, "input.min_hold_ms")),
         click_to_focus=_bool(_get(data, "input.click_to_focus"), "input.click_to_focus"),
         microphone=_text(_get(data, "audio.microphone"), "audio.microphone"),
+        engine_model=_choice(_get(data, "engine.model"), "engine.model", ENGINE_MODELS),
         indicator_position=_choice(_get(data, "indicator.position"), "indicator.position", INDICATOR_POSITIONS),
         ollama_url=_ollama_url(_get(data, "ollama.url")),
         ollama_model=_model(_get(data, "ollama.model")),

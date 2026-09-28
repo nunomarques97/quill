@@ -3,14 +3,20 @@
 Usage:
     py -3.12 -m bench.pipeline --set all --dry-run
     .venv\\Scripts\\python -m bench.pipeline --set all --stage raw --summary PATH
+    .venv\\Scripts\\python -m bench.pipeline --set all --stage streamed --summary PATH
     py -3.12 -m bench.pipeline --summary PATH --require complete --require overall
     py -3.12 -m bench.pipeline --summary PATH --write-doc DOC.md
     py -3.12 -m bench.pipeline --summary PATH --check-doc DOC.md
 
 Two sets are measured: ``commands`` (the 44 short takes of the reference
 project) and ``dictation`` (the dictation script recorded with bench.record).
-Stages are cumulative; this module implements ``raw`` (warm faster-whisper
-large-v3 float16 with vocabulary hints) and later stages extend it.
+Stages are cumulative. ``raw`` transcribes each whole take once (warm
+faster-whisper large-v3 float16 with vocabulary hints): the Phase 2 baseline.
+``streamed`` is the product's source text: the take replayed through
+``quill.streaming`` with the product's engine model and its tuning
+(large-v3-turbo by default, Sponsor decision 2026-09-29) on the
+deterministic audio-time schedule (``bench.streaming``), so its final text is
+reproducible. Later stages start from the ``streamed`` text.
 
 ``--dry-run`` prints counts only and needs no GPU. Measurement writes per-take
 text only under bench/results/pipeline/<run>/; the summary JSON holds
@@ -45,19 +51,23 @@ from bench.metrics import (
     write_summary,
 )
 from bench.settings import RESULTS_DIR, Settings, SettingsError, load_settings
+from quill.whisper import DEFAULT_MODEL
 
 SETS = ("commands", "dictation")
 # Cumulative stages, in order. Only the ones in IMPLEMENTED_STAGES can run.
-STAGE_ORDER = ("raw", "cleanup", "vocabulary", "corrections", "profiles")
-IMPLEMENTED_STAGES = ("raw",)
+STAGE_ORDER = ("raw", "streamed", "cleanup", "vocabulary", "corrections", "profiles")
+IMPLEMENTED_STAGES = ("raw", "streamed")
 TARGET_NAMES = ("complete", "latency", "cleanup", "vocabulary", "corrections", "overall")
 SUMMARY_SCHEMA = 1
 DEFAULT_SUMMARY = RESULTS_DIR / "pipeline" / "summary.json"
+# The baseline engine of the raw stage; the streamed stage uses the product's.
 ENGINE_MODEL = "large-v3"
 ENGINE_COMPUTE = "float16"
+STREAM_MODEL = DEFAULT_MODEL
 
 # Phase 2 targets (docs/PRODUCT.md and the Phase 2 goal). Never lowered here.
-MAX_LATENCY_P95_S = 1.5
+# Latency: release of the trigger to the final text (Sponsor target).
+MAX_LATENCY_P95_S = 0.5
 MAX_LATENCY_AUDIO_S = 15.0
 MIN_REMOVAL_RATE = 0.95
 MAX_CONTENT_DELETED = 0
@@ -242,6 +252,33 @@ def default_engine() -> Engine:
     return LocalWhisperEngine(ENGINE_MODEL, compute_type=ENGINE_COMPUTE)
 
 
+# Streams every take of a set and returns (text, seconds) per take, in order.
+Streamer = Callable[[Sequence[Take], Hints], list[tuple[str, float]]]
+
+
+def default_streamer(engine: Engine) -> tuple[Streamer, dict]:
+    """The product streaming path (its engine model and tuning), and those settings.
+
+    The model is the raw engine's when they are the same, otherwise a second
+    local model loaded once; ``stream.close`` releases it.
+    """
+    from dataclasses import asdict
+
+    from bench.streaming import stream_takes
+    from quill.streaming import options_for
+    from quill.whisper import Whisper
+
+    options = options_for(STREAM_MODEL)
+    shared = getattr(engine, "model", None) == STREAM_MODEL
+    model = engine.whisper if shared else Whisper(STREAM_MODEL, compute_type=ENGINE_COMPUTE)
+
+    def stream(takes: Sequence[Take], hints: Hints) -> list[tuple[str, float]]:
+        return stream_takes(model, takes, hints.vocabulary(), options)
+
+    stream.close = (lambda: None) if shared else model.close
+    return stream, {"model": STREAM_MODEL, **asdict(options)}
+
+
 def default_judge() -> tuple[Callable | None, str | None]:
     from bench.cleanup import OllamaClient
     from bench.intent import IntentJudge
@@ -264,10 +301,15 @@ def measure(
     results_dir: Path = RESULTS_DIR,
     clock: Callable[[], float] = time.perf_counter,
     log: Callable[[str], None] = print,
+    streamer: Streamer | None = None,
+    stream_options: dict | None = None,
 ) -> dict:
-    """Run ``stage`` on every set with the engine kept warm; returns the summary."""
+    """Run the stages up to ``stage`` on every set with the engine kept warm; returns the summary."""
     if stage not in IMPLEMENTED_STAGES:
         raise ValueError(f"stage not implemented yet: {stage}")
+    stages = STAGE_ORDER[: STAGE_ORDER.index(stage) + 1]
+    if "streamed" in stages and streamer is None:
+        raise ValueError("the streamed stage needs a streamer")
     names = sorted({name for _, dataset in sets.values() for name in dataset.names})
     hints = build_hints(names, terms)
     first = next((take for _, dataset in sets.values() for take in dataset.takes), None)
@@ -283,19 +325,25 @@ def measure(
         "schema": SUMMARY_SCHEMA,
         "kind": "pipeline",
         "engine": {"model": ENGINE_MODEL, "compute_type": ENGINE_COMPUTE, "hints": True, **warm},
-        "stages": list(STAGE_ORDER[: STAGE_ORDER.index(stage) + 1]),
+        "stages": list(stages),
         "sets": {},
         "latency": None,
     }
+    if "streamed" in stages and stream_options is not None:
+        summary["engine"]["streaming"] = dict(stream_options)
     for set_name, (set_settings, dataset) in sets.items():
-        samples = transcribe_set(engine, hints, dataset.takes, clock)
-        intent, note, rows = judge_samples(samples, judge, terms, unavailable)
-        write_private(run_dir, set_name, stage, samples, rows, results_dir)
-        summary["sets"][set_name] = {
-            "dataset": dataset_block(set_settings, dataset),
-            "stages": {stage: stage_metrics(samples, terms, set_settings.markup, intent, note)},
-        }
-        log(f"{set_name} / {stage}: n={len(samples)}" + (f" ({note})" if note else ""))
+        block: dict = {"dataset": dataset_block(set_settings, dataset), "stages": {}}
+        summary["sets"][set_name] = block
+        for current in stages:
+            if current == "raw":
+                samples = transcribe_set(engine, hints, dataset.takes, clock)
+            else:  # streamed: the product source for every later stage
+                streamed = streamer(dataset.takes, hints)
+                samples = [Sample(take, text, seconds) for take, (text, seconds) in zip(dataset.takes, streamed, strict=True)]
+            intent, note, rows = judge_samples(samples, judge, terms, unavailable)
+            write_private(run_dir, set_name, current, samples, rows, results_dir)
+            block["stages"][current] = stage_metrics(samples, terms, set_settings.markup, intent, note)
+            log(f"{set_name} / {current}: n={len(samples)}" + (f" ({note})" if note else ""))
     return summary
 
 
@@ -481,6 +529,7 @@ def main(
     *,
     engine_factory: Callable[[], Engine] = default_engine,
     judge_factory: Callable[[], tuple[Callable | None, str | None]] = default_judge,
+    streamer_factory: Callable[[Engine], tuple[Streamer, dict]] = default_streamer,
     results_dir: Path = RESULTS_DIR,
     out: Callable[[str], None] = print,
 ) -> int:
@@ -515,10 +564,15 @@ def main(
             engine = engine_factory()
             judge, unavailable = judge_factory()
             run_dir = Path(results_dir) / "pipeline" / time.strftime("%Y%m%d-%H%M%S")
+            streamer, stream_options = streamer_factory(engine) if args.stage != "raw" else (None, None)
             try:
-                summary = measure(sets, args.stage, engine, judge, unavailable, load_terms(), run_dir, results_dir=results_dir, log=out)
+                summary = measure(sets, args.stage, engine, judge, unavailable, load_terms(), run_dir, results_dir=results_dir,
+                                  log=out, streamer=streamer, stream_options=stream_options)
             finally:
                 engine.close()
+                close = getattr(streamer, "close", None)
+                if close is not None:
+                    close()
             run_dir.mkdir(parents=True, exist_ok=True)
             (run_dir / "timings.json").write_text(json.dumps(split_timings(summary), indent=2), encoding="utf-8")
             texts = [text for _, dataset in sets.values() for text in dataset.reference_texts()]

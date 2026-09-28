@@ -35,6 +35,13 @@ click_to_focus = true
 # MME input device name (MME truncates names to 31 characters; a prefix matches).
 microphone = "Headset Microphone (Example Headset)"
 
+[engine]
+# Local Whisper model, read from models/ (never downloaded).
+# "large-v3-turbo" (default): the final text about half a second after release.
+# "large-v3" (precise mode): slower release, better on short commands and
+# English terms.
+model = "large-v3-turbo"
+
 [indicator]
 # "pointer" (beside the mouse pointer) or "bottom-center".
 position = "pointer"

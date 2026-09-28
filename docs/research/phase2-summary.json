@@ -4,10 +4,32 @@
   "engine": {
     "model": "large-v3",
     "compute_type": "float16",
-    "hints": true
+    "hints": true,
+    "streaming": {
+      "model": "large-v3-turbo",
+      "step_s": 0.5,
+      "commit": false,
+      "agreement": false,
+      "partial_beam": 1,
+      "final_beam": 5,
+      "commit_margin_s": 1.0,
+      "context_chars": 200,
+      "max_window_s": 20.0,
+      "tail_pad_s": 0.3,
+      "speculate": true,
+      "pause_commit": true,
+      "pause_commit_min_s": 1.5,
+      "min_speech_s": 0.2,
+      "lead_s": 0.2,
+      "min_speech_rms": 0.001,
+      "floor_ratio": 4.0,
+      "tokens_per_s": 10.0,
+      "min_new_tokens": 24
+    }
   },
   "stages": [
-    "raw"
+    "raw",
+    "streamed"
   ],
   "sets": {
     "commands": {
@@ -35,6 +57,23 @@
           "name_error_rate": 0.2105,
           "name_occurrences": 38,
           "intent_preserved": 0.5227,
+          "intent_judged": 44,
+          "intent_note": null,
+          "filler_spans": null,
+          "filler_removal_rate": null,
+          "content_words": null,
+          "content_deleted": null,
+          "max_audio_s": 6.272
+        },
+        "streamed": {
+          "n": 44,
+          "wer_verbatim": 0.3,
+          "wer_clean": 0.3,
+          "term_error_rate": 0.4706,
+          "term_occurrences": 17,
+          "name_error_rate": 0.1842,
+          "name_occurrences": 38,
+          "intent_preserved": 0.3864,
           "intent_judged": 44,
           "intent_note": null,
           "filler_spans": null,
@@ -70,6 +109,23 @@
           "name_error_rate": 0.0,
           "name_occurrences": 9,
           "intent_preserved": 0.5556,
+          "intent_judged": 36,
+          "intent_note": null,
+          "filler_spans": 56,
+          "filler_removal_rate": 0.6429,
+          "content_words": 960,
+          "content_deleted": 19,
+          "max_audio_s": 18.048
+        },
+        "streamed": {
+          "n": 36,
+          "wer_verbatim": 0.1652,
+          "wer_clean": 0.1302,
+          "term_error_rate": 0.0227,
+          "term_occurrences": 44,
+          "name_error_rate": 0.1111,
+          "name_occurrences": 9,
+          "intent_preserved": 0.6667,
           "intent_judged": 36,
           "intent_note": null,
           "filler_spans": 56,

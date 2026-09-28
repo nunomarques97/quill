@@ -31,6 +31,12 @@ Optional, decided by the research: a key that sends the text straight to Claude 
 - No paid service is adopted without an explicit Sponsor decision on engine and cost.
 - Engine (decided after the Phase 1 benchmark, see docs/research/ENGINES.md): local Whisper large-v3 with vocabulary hints, on the GPU. Budget: 0 EUR/month. Audio never leaves the PC; no cloud speech engine is used by the product. Local Ollama cleanup stays off the critical path until measured on real dictation.
 
+## Sponsor decisions (2026-09-29)
+
+- Default engine model: local Whisper large-v3-turbo (already in `models/`, 0 EUR/month, nothing installed), with the streaming setting that meets the latency target. Measured on the real recordings, large-v3 could not reach a release-to-final p95 of 0.5 s with any streaming setting; turbo does. The 0.5 s target stays. See docs/research/FASE2.md.
+- large-v3 stays available as a precise mode, selected with `[engine] model = "large-v3"` in the ignored `local/quill.toml`.
+- Safety net: if after the personal-vocabulary stage the project-name or English-term error with turbo stays above 10 % on either real set, this is reported to the Sponsor so the default can return to large-v3.
+
 ## Non-negotiable rules
 
 - Nothing is installed without the Sponsor approving the exact command.

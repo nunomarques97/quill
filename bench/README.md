@@ -1,13 +1,19 @@
 # Quill engine benchmark
 
 Reproducible speech-to-text benchmark on the user's real Portuguese recordings.
-Python 3.12, standard library only (`tomllib`, `wave`, `json`, `unittest`).
+Python 3.12. Everything runs on the standard library (`tomllib`, `wave`,
+`json`, `urllib`, `unittest`) except the local faster-whisper engines, whose
+pinned packages live in `bench/requirements.txt` and are installed only into
+the ignored `.venv` after the Sponsor approves the commands.
 
 ## Setup
 
 1. Copy `bench/bench.example.toml` to `local/bench.toml` (ignored by Git).
 2. Fill in the absolute paths of the recordings folder, the recording script
    and the reference project's `config.toml`. They stay on this machine.
+   The optional `[engines.gemini]` and `[engines.deepgram]` tables change the
+   Gemini model id and the Deepgram language or keyterm use.
+3. Run `py -3.12 -m bench.run --preflight` and follow what it lists.
 
 The recordings are read in place and never copied into this repository.
 
@@ -15,13 +21,17 @@ The recordings are read in place and never copied into this repository.
 
 ```
 py -3.12 -m unittest discover -s bench/tests -t .   # offline unit tests
+py -3.12 -m bench.run --preflight                   # what is still missing
 py -3.12 -m bench.run --dry-run                     # dataset counts only
+.venv\Scripts\python -m bench.run                   # full benchmark
+.venv\Scripts\python -m bench.run --engines groq-whisper-large-v3
 py -3.12 -m bench.privacy_guard                     # scan publishable files
 py -3.12 -m bench.report --check docs/research/ENGINES.md
 ```
 
 Tests use invented phrases only. They never play sound, open the microphone
-or read the real recordings.
+or read the real recordings. They run offline with fake engines, a local fake
+HTTP server that stands in for the provider hosts, and a fake Ollama.
 
 ## Dataset
 
@@ -72,10 +82,131 @@ numbers written as digits do not match numbers written as words.
   sequences). Error rate = 1 - found / expected.
 - **Project-name error rate**: the same per-occurrence recall, using only the
   names resolved at runtime for each take. The names are never committed.
-- **Intent preserved**: share of takes judged as preserving intent. The method
-  is defined together with the engine adapters.
+- **Intent preserved**: share of takes judged as preserving intent; see
+  [Intent preserved](#intent-preserved).
 - **Latency p50/p95**: nearest-rank percentiles, the ceil(p/100 * n)-th
   smallest value.
+
+## Engines
+
+All engines implement `bench.engines.base.Engine`: `transcribe(wav, hints)`
+turns one 16 kHz mono PCM16 WAV file into text.
+
+| id | engine | vocabulary hints |
+|---|---|---|
+| `faster-whisper-large-v3` | local, CUDA float16, beam 5, language `pt` | `initial_prompt` and `hotwords` |
+| `faster-whisper-large-v3-turbo` | same | same |
+| `groq-whisper-large-v3` | Groq `/openai/v1/audio/transcriptions`, language `pt` | `prompt` (kept short: Groq limits it to 224 tokens) |
+| `groq-whisper-large-v3-turbo` | same | same |
+| `gemini-<model>` | Gemini `generateContent` with inline WAV; model configurable, default `gemini-2.5-flash` | vocabulary line in the instruction |
+| `deepgram-nova-3` | Deepgram `/v1/listen`, `nova-3`, language `pt-PT` | `keyterm` (up to 100) |
+
+- faster-whisper is imported only when a local engine loads. Models are read
+  from the ignored `models/` folder with `local_files_only`; the benchmark
+  never downloads a model. On Windows the CUDA libraries shipped in the torch
+  and nvidia wheels are registered before the import.
+- Cloud engines use `urllib` only. Deepgram's Nova-3 Portuguese codes (`pt`,
+  `pt-BR`, `pt-PT`) and keyterm support were checked in its documentation on
+  2026-09-28.
+- The hints vocabulary is built at runtime: the project names resolved for the
+  dataset first, then the generic terms in `bench/terms_en.txt`. It is never
+  written to committed files.
+
+## Variants
+
+Each engine runs four variants: `raw`, `hints`, `raw+cleanup` and
+`hints+cleanup`.
+
+- When an engine cannot run (missing key, package or model, failed load) all
+  its variants are SKIPPED with the reason.
+- When an engine does not support hints (for example Deepgram with
+  `keyterm = false`), `hints` and `hints+cleanup` are SKIPPED with the
+  documented reason. Nothing is faked.
+- Any engine error during a variant SKIPS that whole variant: partial results
+  are never mixed with complete ones.
+
+## Cleanup
+
+`bench/cleanup.py` sends each engine output to local Ollama at
+`http://127.0.0.1:11434` with `qwen3:8b`, thinking disabled, temperature 0 and
+one fixed prompt (punctuation, capitalization, remove fillers and accidental
+repetitions, keep English terms and names, never translate or add). In
+`hints+cleanup` the prompt also lists the hints vocabulary.
+
+Ollama is shared with other projects. The client only calls `/api/version`,
+`/api/tags`, `/api/ps` and `/api/chat`; it never pulls, deletes or unloads a
+model and never sends `keep_alive`. Before and after the cleanup phase and the
+intent phase the run records free VRAM (`nvidia-smi`) and the loaded models
+(`/api/ps`). `qwen3:14b`, or any other model using 4 GiB or more of VRAM, is
+reported as VRAM contention. When `qwen3:8b` is not installed or cannot load,
+the cleanup variants are SKIPPED with the reason.
+
+## Intent preserved
+
+A phrase counts as preserved only when both hold:
+
+1. **Slot rule**: every project name and every term from `bench/terms_en.txt`
+   that occurs in the reference occurs at least as often in the hypothesis,
+   after normalization.
+2. **Local judge**: `qwen3:8b` (thinking off, temperature 0, JSON output)
+   answers `yes` to the fixed prompt `JUDGE_SYSTEM` in `bench/intent.py`:
+   someone acting on the hypothesis would do the same action with the same
+   meaning (same command, target, names, terms, negation and numbers),
+   ignoring punctuation, fillers and small wording differences.
+
+The judge only runs when the slot rule holds, and it runs locally, so texts
+never leave the PC for judging. If the judge fails on any phrase, no phrase of
+that variant is counted and the summary notes why. For every variant a
+human-checkable table (`id`, `reference`, `hypothesis`, `verdict`, `reason`
+and an empty `human` column) is written to
+`bench/results/runs/<run>/intent/`, never elsewhere.
+
+## Latency
+
+The takes are short commands, so latency uses composites: real takes
+concatenated with 0.3 s of low-level noise between them, 10 composites with
+durations spread across 5-15 s, built deterministically (fixed seed). No
+synthetic speech is used.
+
+- Latency runs from the moment the whole composite is in memory (simulated key
+  release) to the final text: the engine call including the network for cloud
+  engines, plus the cleanup call for cleanup variants.
+- Every composite runs 2 times per engine and variant (20 samples); the
+  summary reports p50 and p95 over them.
+- Model load and the first (warm-up) call are measured and reported apart.
+  Cloud engines skip the warm-up call so no extra audio is sent.
+- Rate pacing happens before the clock starts. A sample whose HTTP call needed
+  a retry is measured again, so waits never count as latency.
+
+## Cache and rate limits
+
+Cloud answers (per take and per latency sample) are cached as JSON under
+`bench/results/cache/`, keyed by a hash of the audio hash, engine id and
+parameters, so a rerun never resends audio. The cache holds only text and
+timings. Requests are paced for the free tiers (Groq one request per 3.2 s,
+Gemini one per 6.5 s). HTTP 429 and 5xx are retried with `Retry-After` or
+exponential backoff; a wait over 120 s or a fifth failure SKIPS that
+engine/variant.
+
+## Keys and network
+
+- Keys are read from the ignored `.env` only (names in `.env.example`), never
+  from the process environment.
+- Key values never appear in logs, exceptions, cache files or results: reprs
+  list names only and every error message is redacted. Tests assert this on
+  the error paths.
+- Only `api.groq.com`, `generativelanguage.googleapis.com` and
+  `api.deepgram.com` are contacted, over HTTPS on port 443, with verified TLS,
+  no proxy and no redirects. Gemini gets its key in a header, never in the URL.
+
+## Preflight
+
+`py -3.12 -m bench.run --preflight` lists every missing item: the `.venv`
+virtual environment, the pinned packages in `bench/requirements.txt`, the two
+local models in `models/`, Ollama and `qwen3:8b`, and each key in `.env`.
+Every missing item comes with the exact command and a one-line reason, or for
+keys numbered steps for the Sponsor. It installs nothing, prints no key values
+and exits 0.
 
 ## Summary and report
 

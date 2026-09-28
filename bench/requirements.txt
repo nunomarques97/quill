@@ -1,0 +1,17 @@
+# Quill benchmark: packages for the local faster-whisper engines only.
+# Everything else in bench/ uses the Python 3.12 standard library.
+# Install into the repository's own ignored virtual environment, never globally
+# (bench.run --preflight prints the exact commands).
+#
+# Versions match the environment already proven on the RTX 5060 Ti (Blackwell,
+# sm_120) in the reference project: CTranslate2 finds cuBLAS/cuDNN in the
+# torch CUDA 12.8 wheel. The Windows torch wheels on PyPI are CPU-only, so the
+# CUDA 12.8 wheel comes from the PyTorch index.
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+faster-whisper==1.1.1
+ctranslate2==4.8.2
+numpy==2.4.6
+torch==2.9.1+cu128
+# Provides the `hf` command used to download the two models into models/.
+huggingface_hub==1.32.0

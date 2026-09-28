@@ -13,3 +13,16 @@ reference_config = "/path/to/reference-project/config.toml"
 [dataset]
 # Number of valid takes the benchmark requires.
 expected_takes = 44
+
+# Optional engine settings (defaults shown).
+[engines.gemini]
+# Free-tier Gemini model with audio input; change it when the free tier changes.
+model = "gemini-2.5-flash"
+# 0 turns thinking off; -1 omits thinkingConfig for models that reject it.
+thinking_budget = 0
+
+[engines.deepgram]
+# Nova-3 Portuguese codes: pt, pt-BR, pt-PT.
+language = "pt-PT"
+# Vocabulary hints through keyterm prompting.
+keyterm = true

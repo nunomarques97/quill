@@ -1,0 +1,28 @@
+{
+  "routes": {
+    "plan": {
+      "provider": "claude",
+      "model": "claude-opus-5-5",
+      "effort": "high"
+    },
+    "develop": {
+      "provider": "claude",
+      "model": "claude-opus-5-5",
+      "effort": "high"
+    },
+    "develop.fast": {
+      "provider": "claude",
+      "model": "claude-opus-5-5",
+      "effort": "medium"
+    },
+    "review": {
+      "provider": "claude",
+      "model": "claude-opus-5-5",
+      "effort": "high"
+    }
+  },
+  "delivery": {
+    "mode": "commit",
+    "granularity": "task"
+  }
+}

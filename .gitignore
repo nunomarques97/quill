@@ -1,0 +1,74 @@
+# Quill: never commit credentials, audio, transcripts, personal data or models.
+
+# Credentials
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.jks
+*.keystore
+google-services.json
+credentials.json
+*token*
+*secret*
+
+# Audio and recordings (private by nature)
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.opus
+*.webm
+*.m4a
+*.aac
+recordings/
+audio/
+captures/
+
+# Real transcripts and benchmark outputs that contain spoken text
+transcripts/
+*transcript*
+bench/results/
+
+# Personal data: vocabulary, learned corrections, style samples, local config
+local/
+config.local.*
+CLAUDE.local.md
+
+# Models and caches
+models/
+*.gguf
+*.onnx
+*.bin
+*.safetensors
+*.pt
+.cache/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+
+# Node
+node_modules/
+
+# Logs and tool state
+logs/
+*.log
+tmp/
+.forja/
+
+# OS and editors
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/

@@ -1,0 +1,75 @@
+# Quill configuration example. Every value here is invented.
+#
+# Copy the lines you want to change to local/quill.toml (ignored by Git):
+# that file is read over this one, table by table, so it only needs the
+# values that differ. Check a file with:
+#   py -3.12 -m quill.config --check local/quill.toml
+
+# Push-to-talk triggers: hold to talk, release to stop.
+# Mouse buttons: "xbutton1" (back), "xbutton2" (forward), "middle".
+# Keys: "f1" to "f24", "right_ctrl", "right_alt", "right_shift", "pause",
+# "scroll_lock", "insert", "apps". F13 to F24 suit a Stream Deck style
+# button. An input can belong to one trigger only.
+[triggers.dictation]
+buttons = ["xbutton1"]
+keys = ["f13", "right_ctrl"]
+
+# Hold with text selected and speak an instruction to rewrite the selection.
+# The command trigger never clicks, so the selection is kept.
+[triggers.command]
+buttons = []
+keys = ["f14"]
+
+# Dictate and then press Enter, only when the target is Claude Code.
+[triggers.send_claude]
+buttons = ["xbutton2"]
+keys = ["f15"]
+
+[input]
+# A shorter hold is a tap: it is ignored and nothing is clicked or typed.
+min_hold_ms = 250
+# Click at the pointer when a dictation hold starts, to focus the field under it.
+click_to_focus = true
+
+[audio]
+# MME input device name (MME truncates names to 31 characters; a prefix matches).
+microphone = "Headset Microphone (Example Headset)"
+
+[indicator]
+# "pointer" (beside the mouse pointer) or "bottom-center".
+position = "pointer"
+
+[ollama]
+# Local Ollama only: the address must be loopback.
+url = "http://127.0.0.1:11434"
+model = "qwen3:8b"
+
+[cleanup]
+# "rules" (deterministic, default) or "llm" (local Ollama model).
+mode = "rules"
+
+# Personal data. Paths are relative to the repository and must stay inside
+# the ignored local/ folder.
+[paths]
+vocabulary = "local/vocabulary.toml"
+corrections = "local/corrections.json"
+style = "local/style"
+
+# Active-window profiles, checked in this order; the first match wins and a
+# window that matches none uses the default profile. Profile names:
+# "claude-code", "vscode", "whatsapp", "email". Within a profile every listed
+# field must match; a field matches when any entry does. processes and
+# classes compare whole names, titles compare substrings (both ignore case).
+# A profile in local/quill.toml replaces the profile of the same name here.
+[profiles.claude-code]
+processes = ["WindowsTerminal.exe"]
+titles = ["Claude Code"]
+
+[profiles.vscode]
+processes = ["Code.exe"]
+
+[profiles.whatsapp]
+processes = ["WhatsApp.exe"]
+
+[profiles.email]
+processes = ["olk.exe", "OUTLOOK.EXE"]

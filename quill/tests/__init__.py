@@ -1,0 +1,13 @@
+"""Product tests. They never create windows, install hooks, send input, open the
+microphone or touch the real clipboard: importing this package disables the
+real Win32 layer, so any test that reaches it fails instead of acting.
+"""
+
+from quill import win32
+
+
+def _forbidden(self: object, *args: object, **kwargs: object) -> None:
+    raise AssertionError("quill tests must use a fake Win32 layer, never the real User32")
+
+
+win32.User32.__init__ = _forbidden  # type: ignore[method-assign]

@@ -15,7 +15,10 @@ drops them (it silently removes a low-level hook that is too slow):
   the factory it is given; tests pass a fake and never install a hook.
 
 ``TriggerHooks`` wires them together and can be started, stopped and
-started again. Logs name trigger inputs and reasons only, never other keys.
+started again. An optional ``on_event`` observer sees every key and button
+event on the worker thread (the app's manual-edit detection and correction
+key); it keeps what it needs in memory. Logs name trigger inputs and reasons
+only, never other keys.
 """
 
 from __future__ import annotations
@@ -132,6 +135,9 @@ class HookRouter:
 
 SignalHandler = Callable[[Signal], None]
 InputObserver = Callable[[InputEvent, Binding, bool], None]
+# Sees every key and mouse-button event (manual-edit detection, correction key).
+# It keeps what it needs in memory and never logs keys.
+EventObserver = Callable[[InputEvent], None]
 
 _STOP = object()
 
@@ -140,12 +146,15 @@ class TriggerWorker:
     """Runs the trigger machine on its own thread and dispatches its signals in order."""
 
     def __init__(self, machine: TriggerMachine, handler: SignalHandler, events: queue.SimpleQueue,
-                 clock_ms: Callable[[], float] = monotonic_ms, on_input: InputObserver | None = None) -> None:
+                 clock_ms: Callable[[], float] = monotonic_ms, on_input: InputObserver | None = None,
+                 on_event: EventObserver | None = None) -> None:
         self.machine = machine
         self.handler = handler
         self.events = events
         self.clock_ms = clock_ms
         self.on_input = on_input
+        self.on_event = on_event
+        self.observer_errors = 0
         self.handler_errors = 0
         self.machine_errors = 0
         self._thread: threading.Thread | None = None
@@ -184,6 +193,7 @@ class TriggerWorker:
                 if item is not None:
                     event, suppressed = item
                     self._observe(event, suppressed)
+                    self._notify(event)
                     signals += self.machine.feed(event)
                 # Timers (and the live key-state check) run once the queue is drained.
                 deadline = self.machine.next_deadline()
@@ -208,6 +218,15 @@ class TriggerWorker:
             self.on_input(event, binding, suppressed)
         except Exception:  # noqa: BLE001
             log.exception("input observer failed")
+
+    def _notify(self, event: InputEvent) -> None:
+        if self.on_event is None:
+            return
+        try:
+            self.on_event(event)
+        except Exception as exc:  # noqa: BLE001 - neither the event nor the message is logged: they may carry keys
+            self.observer_errors += 1
+            log.error("event observer failed (%s)", type(exc).__name__)
 
     def _dispatch(self, signals: list[Signal]) -> None:
         for signal in signals:
@@ -343,6 +362,7 @@ class TriggerHooks:
     on_ignore: Callable[[str, Binding], None] | None = None
     on_input: InputObserver | None = None
     machine_options: Mapping[str, float] | None = None
+    on_event: EventObserver | None = None
 
     def __post_init__(self) -> None:
         self.worker: TriggerWorker | None = None
@@ -362,7 +382,7 @@ class TriggerHooks:
         events: queue.SimpleQueue = queue.SimpleQueue()
         machine = TriggerMachine(self.bindings, self.min_hold_ms, key_state=self.key_state,
                                  on_ignore=self.on_ignore, **dict(self.machine_options or {}))
-        worker = TriggerWorker(machine, self.handler, events, self.clock_ms, self.on_input)
+        worker = TriggerWorker(machine, self.handler, events, self.clock_ms, self.on_input, self.on_event)
         hooks = HookThread(HookRouter(self.bindings, events, self.clock_ms), self.factory)
         worker.start()
         try:

@@ -6,13 +6,53 @@ Put the cursor in any window, hold a key, speak European Portuguese (with Englis
 
 ## Status
 
-Early stage. The first milestone is an engine benchmark on real recordings of the user's voice, to choose the speech-to-text engine and the monthly cost. See [docs/PRODUCT.md](docs/PRODUCT.md).
+Phase 2: the dictation app runs locally (see "Running Quill" below); command mode and the Sponsor-run acceptance measurements are still open. Product brief: [docs/PRODUCT.md](docs/PRODUCT.md); Phase 2 results: [docs/research/FASE2.md](docs/research/FASE2.md).
 
 The benchmark harness lives in [bench/](bench/README.md). Its results, the engine comparison and the pending engine/cost decision (in European Portuguese) are in [docs/research/ENGINES.md](docs/research/ENGINES.md); the aggregate numbers are in [docs/research/engines-summary.json](docs/research/engines-summary.json).
 
+## Running Quill
+
+Quill runs locally: Whisper through faster-whisper on the GPU, with the personal vocabulary as hints, and an optional local Ollama model for the cleanup. Audio never leaves the PC. It needs the ignored `.venv` (with `faster-whisper`) and the model files in the ignored `models/` folder; see [bench/README.md](bench/README.md) for how they were set up. Run every command from the repository folder with the `.venv` interpreter.
+
+1. Put your own settings in `local/quill.toml` (ignored by Git), starting from [quill.example.toml](quill.example.toml): at least the `[audio] microphone` name (a prefix of the MME name; `py -3.12 -m bench.record --list-devices` lists them without opening any). Check the file with `py -3.12 -m quill.config --check local/quill.toml`.
+2. Check readiness. It lists the model files, the `.venv` packages, whether the configured microphone exists (by name; it is not opened), the vocabulary, the Ollama model, the start-with-Windows entry and the learned corrections. It installs no hook, opens no window and does not open the microphone:
+
+   ```
+   .venv\Scripts\python -m quill --check
+   ```
+
+3. Start Quill. The model loads once (a few seconds; the indicator shows the loading state, and a press meanwhile records nothing):
+
+   ```
+   .venv\Scripts\python -m quill
+   ```
+
+   Ctrl+C in that console, or `.venv\Scripts\python -m quill --stop` from another one, ends it. Only one Quill runs at a time: a second start exits with code 3.
+
+4. Optionally start Quill with Windows. These manual commands add or remove one value, `Quill`, under the current user's `Software\Microsoft\Windows\CurrentVersion\Run` key. The entry runs `.venv\Scripts\pythonw.exe` (no console window) with this folder's `quill\__main__.py`, both resolved when the command runs; run it again after moving the folder. Nothing else writes the registry.
+
+   ```
+   .venv\Scripts\python -m quill --install-startup
+   .venv\Scripts\python -m quill --remove-startup
+   ```
+
+### Using it
+
+- **Dictation** (default: hold mouse button 4, or F13, or Right Ctrl): the microphone starts at the press, so no word is lost. After `min_hold_ms` Quill clicks once at the pointer to focus the text field under it (not for Right Ctrl, which types where the focus already is). Speak; the words appear live in the indicator. On release the rest is transcribed, cleaned (fillers, repetitions, punctuation), corrected with the personal vocabulary and the learned corrections, shaped by the active window's profile and typed into the window captured at the press. It never presses Enter.
+- **Send to Claude Code** (default: mouse button 5 or F15): the same, then one Enter, only when the text was typed completely and the target matches the `claude-code` profile. In any other window the text is typed without Enter and the indicator says so.
+- **Command** (default: F14): rewriting the selection with the local model is not available yet; the indicator says so and nothing is recorded.
+- A tap shorter than `min_hold_ms`, or another key pressed while a keyboard trigger is held (for example Right Ctrl+C), cancels: nothing is clicked or typed. While Quill runs, the bound mouse buttons and F keys do not do their normal action.
+- A new press while the previous text is still being finalized starts recording at once; texts are typed strictly in order, each one once, into its own target. When a target closed, the foreground window changed, the microphone or the engine failed, or Ollama is down (the cleanup falls back to the rules), the indicator shows the error in European Portuguese and the next dictation is unaffected.
+- **Correcting**: select the corrected text of the last dictation and press the correction key (default F16), or just edit it by hand right after it was typed. A replacement seen in two dictations is applied automatically from then on. Review what was learned with `py -3.12 -m quill.review` (a reminder appears weekly in `--check`).
+- **Indicator**: a non-activating, click-through overlay beside the pointer (or at the bottom center, `[indicator] position`), with the states *A carregar*, *A ouvir* with the live words and the voice level, *A transcrever*, *Enviado para o Claude Code*, *Modo comando* and *Erro* with its message. It never takes the focus.
+
+Logs go to `local/logs/quill.log` (ignored, rotated at 1 MB): events, reason codes and timings per session, including the release-to-typed time, never spoken or typed text.
+
+Sponsor-facing usage steps in European Portuguese: [docs/USAR.md](docs/USAR.md).
+
 ## The `quill` package
 
-The dictation app is being built in [quill/](quill/) (Python 3.12, standard library and ctypes Win32 only; the speech engine's packages are imported later, inside the `.venv`). So far:
+The dictation app lives in [quill/](quill/) (Python 3.12, standard library and ctypes Win32 only; the speech engine's packages are imported later, inside the `.venv`). `quill/app.py` wires the parts below (plus streaming recognition, cleanup, vocabulary, corrections, profiles and the indicator) and `quill/session.py` runs each push-to-talk hold as an ordered session; `quill/startup.py` manages the start-with-Windows entry. Among the parts:
 
 - `quill/config.py`: settings. The committed [quill.example.toml](quill.example.toml) holds invented defaults; your own values go in `local/quill.toml` (ignored by Git), which is read over the example table by table. It sets the push-to-talk triggers (dictation, command, send to Claude Code; mouse buttons `xbutton1`, `xbutton2`, `middle` and keys `f1` to `f24`, `right_ctrl` and a few others), `min_hold_ms`, click-to-focus, the microphone name, the indicator position, the active-window profiles, the local Ollama model and the cleanup mode. Unknown field names, an input bound to two triggers, a non-loopback Ollama address and personal-data paths outside `local/` are rejected; errors name the field, never its value. Check a file with:
 

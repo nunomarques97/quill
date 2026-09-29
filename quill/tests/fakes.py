@@ -53,6 +53,10 @@ class FakeWin32:
         self.mouse_short_by = 0
         # Hook run after each mouse SendInput call (index of the call).
         self.after_mouse: Callable[[int], None] = lambda index: None
+        # Window descriptions for the active-window profiles.
+        self.images: dict[int, str] = {}
+        self.classes: dict[int, str] = {}
+        self.titles: dict[int, str] = {}
 
     # input
     def send_input(self, events: list[KeyEvent]) -> int:
@@ -105,6 +109,17 @@ class FakeWin32:
 
     def process_integrity(self, pid: int) -> int | None:
         return self.integrity.get(pid)
+
+    def process_image(self, pid: int) -> str:
+        if pid not in self.images:
+            raise OSError("fake: process not readable")
+        return self.images[pid]
+
+    def window_class(self, hwnd: int) -> str:
+        return self.classes.get(hwnd, "")
+
+    def window_text(self, hwnd: int) -> str:
+        return self.titles.get(hwnd, "")
 
     # clipboard
     def clipboard_sequence(self) -> int:
@@ -270,3 +285,159 @@ class FakeHooks:
 
     def mouse(self, wparam: int, mouse_data: int = 0, flags: int = 0, extra: int = 0, code: int = 0) -> int:
         return self._call(WH_MOUSE_LL, wparam, (mouse_data, flags, extra), code)
+
+
+class FakeIndicator:
+    """Records every indicator call as a tuple; ``states`` lists the shown states."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+        self.lock = threading.Lock()
+        self.starts = self.stops = 0
+        self.fail = False  # every call raises (a broken overlay)
+
+    def _record(self, *call: object) -> None:
+        with self.lock:
+            self.calls.append(call)
+        if self.fail:
+            raise OSError("fake indicator failure")
+
+    def start(self) -> None:
+        self.starts += 1
+        self._record("start")
+
+    def stop(self) -> None:
+        self.stops += 1
+        self._record("stop")
+
+    def show(self, state: str, text: str = "", hide_after_s: float | None = None) -> None:
+        self._record("show", state, text)
+
+    def set_text(self, text: str) -> None:
+        self._record("text", text)
+
+    def set_level(self, level: float) -> None:
+        self._record("level", level)
+
+    def hide(self) -> None:
+        self._record("hide")
+
+    @property
+    def states(self) -> list[str]:
+        with self.lock:
+            return [call[1] if call[0] == "show" else call[0] for call in self.calls
+                    if call[0] in ("show", "hide")]
+
+    @property
+    def last(self) -> tuple:
+        with self.lock:
+            shown = [call for call in self.calls if call[0] in ("show", "hide")]
+        return shown[-1] if shown else ()
+
+
+class FakeCapture:
+    """An MME capture that delivers the PCM a test pushes; never opens a device."""
+
+    def __init__(self, owner: "FakeCaptures", on_data: Callable[[bytes], None]) -> None:
+        self.owner = owner
+        self.on_data = on_data
+        self.started = self.stopped = False
+
+    def start(self) -> None:
+        if self.owner.fail_start:
+            raise OSError("fake: microphone missing")
+        self.started = True
+        if self.owner.on_start is not None:
+            self.owner.on_start(self)
+
+    def push(self, pcm: bytes, chunk: int = 3200) -> None:
+        for index in range(0, len(pcm), chunk):
+            self.on_data(pcm[index : index + chunk])
+
+    def stop(self) -> None:
+        self.stopped = True
+        if self.owner.fail_stop:
+            raise OSError("fake: microphone unplugged")
+
+
+class FakeCaptures:
+    """The capture factory: one ``FakeCapture`` per press, kept in ``made``."""
+
+    def __init__(self) -> None:
+        self.made: list[FakeCapture] = []
+        self.fail_start = False
+        self.fail_stop = False
+        self.on_start: Callable[[FakeCapture], None] | None = None
+
+    def __call__(self, on_data: Callable[[bytes], None]) -> FakeCapture:
+        capture = FakeCapture(self, on_data)
+        self.made.append(capture)
+        return capture
+
+    @property
+    def open(self) -> list[FakeCapture]:
+        return [c for c in self.made if c.started and not c.stopped]
+
+
+class FakeKernel:
+    """Named mutexes and events of ``quill.app.InstanceLock``, shared by the locks given the same fake."""
+
+    def __init__(self) -> None:
+        self.objects: dict[int, str] = {}
+        self.events: dict[str, threading.Event] = {}
+        self.closed: list[int] = []
+        self._next = 1
+
+    def _open(self, name: str) -> int:
+        handle = self._next
+        self._next += 1
+        self.objects[handle] = name
+        return handle
+
+    def create_mutex(self, name: str) -> tuple[int, bool]:
+        existed = name in self.objects.values()
+        return self._open(name), existed
+
+    def create_event(self, name: str) -> int:
+        self.events.setdefault(name, threading.Event())
+        return self._open(name)
+
+    def set_event(self, name: str) -> bool:
+        if name not in self.objects.values():
+            return False
+        self.events[name].set()
+        return True
+
+    def wait(self, handle: int, timeout_s: float) -> bool:
+        return self.events[self.objects[handle]].wait(timeout_s)
+
+    def close(self, handle: int) -> None:
+        self.closed.append(handle)
+        name = self.objects.pop(handle)
+        if name in self.events and name not in self.objects.values():
+            del self.events[name]
+
+
+class FakeRegistry:
+    """The current user's Run key as a dict."""
+
+    def __init__(self, values: dict[str, str] | None = None) -> None:
+        self.values = dict(values or {})
+        self.writes: list[tuple[str, str]] = []
+        self.fail: OSError | None = None
+
+    def read(self, name: str) -> str | None:
+        if self.fail:
+            raise self.fail
+        return self.values.get(name)
+
+    def write(self, name: str, value: str) -> None:
+        if self.fail:
+            raise self.fail
+        self.writes.append((name, value))
+        self.values[name] = value
+
+    def delete(self, name: str) -> bool:
+        if self.fail:
+            raise self.fail
+        return self.values.pop(name, None) is not None

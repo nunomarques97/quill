@@ -30,7 +30,9 @@ until nothing changes, so cleaning twice gives the same text:
 Rules are generic Portuguese dictation rules, never keyed to a script.
 
 The optional ``llm`` mode asks a local Ollama model (``qwen3:8b``) to clean
-the text and then applies the rules to its reply. Any failure (Ollama down,
+the text and then applies the rules to its reply. ``style`` (the active-window
+profile's instruction and the user's style samples, ``quill.profiles``) is
+added to its prompt; the rules mode never reads it. Any failure (Ollama down,
 timeout, an empty or implausible reply) falls back to the rules, so a
 dictation is never lost. The client is injected: any object with
 ``chat(model, system, user, max_tokens=...)`` returning an object with a
@@ -368,6 +370,7 @@ class Cleanup:
         model: str = LLM_MODEL,
         keep: Iterable[str] = (),
         clock: Callable[[], float] = time.perf_counter,
+        style: str = "",
     ) -> None:
         if mode not in ("rules", "llm"):
             raise ValueError("cleanup mode must be rules or llm")
@@ -378,9 +381,13 @@ class Cleanup:
         self.model = model
         self.keep = tuple(keep)
         self._clock = clock
+        # The active-window profile's instruction and style samples
+        # (``quill.profiles.style_prompt``); used only by the llm mode.
+        self.style = style.strip()
 
     def system_prompt(self) -> str:
-        return LLM_SYSTEM + (KEEP_LINE + ", ".join(self.keep) + "." if self.keep else "")
+        prompt = LLM_SYSTEM + (KEEP_LINE + ", ".join(self.keep) + "." if self.keep else "")
+        return prompt + ("\n" + self.style if self.style else "")
 
     def __call__(self, text: str) -> CleanupResult:
         if self.mode == "rules" or not text.strip():

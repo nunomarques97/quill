@@ -69,7 +69,12 @@ key = "f16"
 edit_window_s = 30
 
 # Personal data. Paths are relative to the repository and must stay inside
-# the ignored local/ folder.
+# the ignored local/ folder. style is a folder of writing samples:
+# <profile>.txt (for example whatsapp.txt), or default.txt for every profile
+# without its own file, with samples separated by a blank line. They are
+# added to the local model's prompt only when [cleanup] mode = "llm"; with
+# the rules cleanup the profile rules below are the style. Count them with:
+#   py -3.12 -m quill.profiles --check
 [paths]
 vocabulary = "local/vocabulary.toml"
 corrections = "local/corrections.json"
@@ -81,8 +86,19 @@ style = "local/style"
 # field must match; a field matches when any entry does. processes and
 # classes compare whole names, titles compare substrings (both ignore case).
 # A profile in local/quill.toml replaces the profile of the same name here.
+# A process that cannot be read (an elevated window) matches no process list.
+#
+# Each profile shapes the final text; words are never changed:
+#   claude-code, vscode: technical prompt style, always a final period;
+#   whatsapp: informal, no final period;
+#   email: full sentences, a comma after an opening greeting ("Bom dia, ...");
+#   any other window (default): a final period, as the cleanup gives.
+#
+# claude-code is also what the send_claude trigger checks before pressing
+# Enter: a terminal or editor process plus "Claude Code" in the title (VS Code
+# shows it while the Claude Code tab is active, so this profile comes first).
 [profiles.claude-code]
-processes = ["WindowsTerminal.exe"]
+processes = ["WindowsTerminal.exe", "Code.exe"]
 titles = ["Claude Code"]
 
 [profiles.vscode]

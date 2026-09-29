@@ -41,6 +41,8 @@ py -3.12 -m bench.pipeline --compare-cleanup bench/results/pipeline/<run>   # ru
 py -3.12 -m quill.vocabulary --check                # validate local/vocabulary.toml; counts only
 .venv\Scripts\python -m bench.pipeline --set all --stage corrections --summary docs/research/phase2-summary.json
 py -3.12 -m quill.review --list                     # learned corrections (local/corrections.json)
+.venv\Scripts\python -m bench.pipeline --set all --stage profiles --summary docs/research/phase2-summary.json
+py -3.12 -m quill.profiles --check                  # style samples per profile (local/style/); counts only
 py -3.12 -m bench.intent --run bench/results/pipeline/<run> --reviews bench/results/intent-review/<file>.json [--rejudge]
 .venv\Scripts\python -m bench.streaming --set all --mode deterministic   # streamed text quality
 .venv\Scripts\python -m bench.streaming --set all --mode realtime        # release-to-final latency
@@ -148,8 +150,10 @@ post-recognition matcher (`quill.vocabulary.Matcher`) to the cleaned text; see
 [Personal vocabulary](#personal-vocabulary); this and every later stage use
 the personal vocabulary. `--stage corrections` runs all four and then
 simulates learning from corrections on the vocabulary text; see
-[Learning from corrections](#learning-from-corrections). The `profiles` stage
-is added by a later task. Per set and stage the summary holds:
+[Learning from corrections](#learning-from-corrections). `--stage profiles`
+runs all five and then applies the active-window profile rules to the
+corrected text; see [Window profiles](#window-profiles). It is the final text
+of the application. Per set and stage the summary holds:
 
 - `wer_verbatim` and `wer_clean`: corpus WER against the verbatim and the
   clean reference (equal for the commands set, which has no markup);
@@ -168,6 +172,8 @@ is added by a later task. Per set and stage the summary holds:
   `recurrences_fixed_rate`, `recurrences_not_yet_active`, `new_errors`,
   `corrections_applied`, `takes_with_corrections` and the final
   `learned_active`/`learned_pending`/`learned_conflicts` counts (see below);
+- `profiles` stage only: `profile_changes` (takes whose text the rules
+  changed) and `profile_takes` (takes per profile);
 - `p50_s`/`p95_s` of the transcription time (moved to the ignored
   `timings.json` of the run, never into the committed summary).
 
@@ -230,6 +236,25 @@ them, or a conflict), and `new_errors` the reference words the take had right
 (target 0). The errors themselves are listed with the same alignment without
 the rewrite guard, so every error of a take is checked. Only counts go to
 the summary; the corrected texts go to `corrections.json` of the run.
+
+### Window profiles
+
+The product picks a profile from the foreground window (`quill/profiles.py`:
+process image name, window class and title against the `[profiles.*]`
+matchers of the config, first match wins, `default` otherwise; an unreadable
+process never matches a process list). The profile rules change only
+punctuation and sentence-start capitals, never a word: `claude-code` and
+`vscode` (technical) always end with a sentence mark and a trailing ellipsis
+becomes a period; `whatsapp` (informal) drops a single final period; `email`
+(full sentences) adds the comma after an opening greeting and ends every text
+with a mark; `default` keeps the cleanup's punctuation.
+
+The `profiles` stage gives each dictation take the profile of its script
+`estilo` column and each commands take (no `estilo`) the `default` profile.
+The WER, term, name, removal and deletion metrics ignore punctuation and case,
+so they equal the `corrections` row; only the intent judge sees the change.
+Style samples (`local/style/`) feed the local LLM cleanup only, which is off
+by default, so the stage measures the rules alone.
 
 ### Personal vocabulary
 

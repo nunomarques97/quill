@@ -10,6 +10,7 @@ Usage:
     py -3.12 -m bench.pipeline --compare-cleanup bench/results/pipeline/<run>
     .venv\\Scripts\\python -m bench.pipeline --set all --stage vocabulary --summary PATH [--vocabulary FILE]
     .venv\\Scripts\\python -m bench.pipeline --set all --stage corrections --summary PATH [--vocabulary FILE]
+    .venv\\Scripts\\python -m bench.pipeline --set all --stage profiles --summary PATH [--vocabulary FILE]
 
 Two sets are measured: ``commands`` (the 44 short takes of the reference
 project) and ``dictation`` (the dictation script recorded with bench.record).
@@ -41,6 +42,13 @@ recurrence is an error in a take whose replacement was already active; the
 row adds ``recurrences_fixed_rate`` (target 100 %) and ``new_errors``
 (reference words that the take had right and the applied replacements made
 wrong; target 0).
+``profiles`` applies the active-window profile rules (``quill.profiles``) to
+the ``corrections`` text: each dictation take gets the profile of its script
+``estilo`` column (claude-code, vscode, whatsapp or email) and every take
+without one (the commands set) the ``default`` profile. The rules change
+punctuation and sentence-start capitals only; the row adds
+``profile_changes`` (takes whose text changed) and ``profile_takes`` (takes
+per profile). It is the final text of the application.
 
 ``--compare-cleanup RUN`` needs no GPU: it reads the streamed outputs saved by
 an earlier run and compares the rules with the local qwen3:8b cleanup
@@ -83,13 +91,14 @@ from bench.normalize import normalize_words
 from bench.settings import RESULTS_DIR, Settings, SettingsError, load_settings
 from quill.cleanup import Cleanup, CleanupResult, clean_text
 from quill.corrections import ACTIVE, Corrections, Replacement, derive, phrase_key
+from quill.profiles import DEFAULT as DEFAULT_PROFILE, apply_profile
 from quill.vocabulary import EMPTY as NO_VOCABULARY, LOCAL_VOCABULARY, Matcher, Vocabulary, VocabularyError, hint_list, hints_within_limit, load_vocabulary
 from quill.whisper import DEFAULT_MODEL
 
 SETS = ("commands", "dictation")
 # Cumulative stages, in order. Only the ones in IMPLEMENTED_STAGES can run.
 STAGE_ORDER = ("raw", "streamed", "cleanup", "vocabulary", "corrections", "profiles")
-IMPLEMENTED_STAGES = ("raw", "streamed", "cleanup", "vocabulary", "corrections")
+IMPLEMENTED_STAGES = STAGE_ORDER
 TARGET_NAMES = ("complete", "latency", "cleanup", "vocabulary", "corrections", "overall")
 SUMMARY_SCHEMA = 1
 DEFAULT_SUMMARY = RESULTS_DIR / "pipeline" / "summary.json"
@@ -360,6 +369,21 @@ def correct_samples(samples: Sequence[Sample], clock: Callable[[], float]) -> tu
     return corrected, info
 
 
+def profile_samples(samples: Sequence[Sample], keep: Sequence[str], clock: Callable[[], float]) -> tuple[list[Sample], dict]:
+    """The profiles stage: each take's script ``estilo`` profile (``default`` without one)."""
+    shaped: list[Sample] = []
+    changed = 0
+    takes: Counter = Counter()
+    for sample in samples:
+        profile = sample.take.style or DEFAULT_PROFILE
+        started = clock()
+        text = apply_profile(sample.hypothesis, profile, keep)
+        shaped.append(Sample(sample.take, text, sample.seconds + clock() - started))
+        changed += text != sample.hypothesis
+        takes[profile] += 1
+    return shaped, {"profile_changes": changed, "profile_takes": dict(sorted(takes.items()))}
+
+
 def product_hints(vocabulary: Vocabulary, names: Sequence[str], terms: Sequence[str]) -> Hints:
     """The product's hint order: personal names, resolved names, personal terms, generic terms."""
     return Hints(names=tuple(hint_list(vocabulary, sorted(names), terms)))
@@ -588,6 +612,8 @@ def measure(
                 samples = clean_samples(before, hints.vocabulary(), clock)
             elif current == "corrections":  # online learning on the vocabulary text
                 samples, corrections_info = correct_samples(samples, clock)
+            elif current == "profiles":  # the window profile rules on the corrected text
+                samples, profiles_info = profile_samples(samples, personal.vocabulary(), clock)
             else:  # vocabulary: the cleaned text, streamed again first when the hints change
                 if restream:
                     streamed = streamer(dataset.takes, personal)
@@ -602,6 +628,8 @@ def measure(
                 block["stages"][current]["vocabulary_changes"] = changes
             if current == "corrections":
                 block["stages"][current].update(corrections_info)
+            if current == "profiles":
+                block["stages"][current].update(profiles_info)
             log(f"{set_name} / {current}: n={len(samples)}" + (f" ({note})" if note else ""))
     return summary
 

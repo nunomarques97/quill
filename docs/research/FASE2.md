@@ -1,6 +1,6 @@
 # Quill: medições da Fase 2 com a voz real
 
-**Estado: baseline medida a 2026-09-28** (tarefa T2); **transcrição por blocos medida a 2026-09-29** (tarefa T3, etapa `streamed`); **juiz de intenção revisto e limpeza do texto medida a 2026-09-29** (tarefa T4, etapa `cleanup`); **vocabulário pessoal medido a 2026-09-29** (tarefa T5, etapa `vocabulary`); **aprendizagem de correções medida a 2026-09-29** (tarefa T6, etapa `corrections`). Motor decidido pelo Sponsor: Whisper local (faster-whisper, float16, CUDA, RTX 5060 Ti) com vocabulário (`initial_prompt` e `hotwords`), 0 EUR/mês; o áudio não sai do PC. A baseline (`raw`) é do large-v3. Desde a decisão do Sponsor de 2026-09-29, o modelo por omissão da aplicação é o large-v3-turbo, porque só ele cumpre a meta de latência; o large-v3 fica como modo preciso (ver [Transcrição por blocos](#transcrição-por-blocos-etapa-streamed)). A etapa seguinte (perfis) acrescenta linhas a este documento.
+**Estado: baseline medida a 2026-09-28** (tarefa T2); **transcrição por blocos medida a 2026-09-29** (tarefa T3, etapa `streamed`); **juiz de intenção revisto e limpeza do texto medida a 2026-09-29** (tarefa T4, etapa `cleanup`); **vocabulário pessoal medido a 2026-09-29** (tarefa T5, etapa `vocabulary`); **aprendizagem de correções medida a 2026-09-29** (tarefa T6, etapa `corrections`); **perfis da janela ativa medidos a 2026-09-29** (tarefa T7, etapa `profiles`). Motor decidido pelo Sponsor: Whisper local (faster-whisper, float16, CUDA, RTX 5060 Ti) com vocabulário (`initial_prompt` e `hotwords`), 0 EUR/mês; o áudio não sai do PC. A baseline (`raw`) é do large-v3. Desde a decisão do Sponsor de 2026-09-29, o modelo por omissão da aplicação é o large-v3-turbo, porque só ele cumpre a meta de latência; o large-v3 fica como modo preciso (ver [Transcrição por blocos](#transcrição-por-blocos-etapa-streamed)). A etapa `profiles` é o texto final da aplicação.
 
 Este documento contém só números agregados: nenhum texto falado, nenhum nome de projeto real e nenhum caminho da máquina. Os resultados por frase ficam apenas em `bench/results/`, que o Git ignora. Os números vêm de [phase2-summary.json](phase2-summary.json); o harness está em [bench/](../../bench/README.md#pipeline-evaluation).
 
@@ -14,7 +14,8 @@ Este documento contém só números agregados: nenhum texto falado, nenhum nome 
 - **Decisão do Sponsor (2026-09-29), depois da T5:** o large-v3-turbo continua a ser o motor por omissão. As metas de nomes e termos (≤ 10 %) aplicam-se ao conjunto de ditado, que é o uso real do produto, e estão cumpridas; o conjunto curto de comandos passa a ser um indicador reportado, não uma meta que bloqueia. Ver [Decisão sobre o conjunto de comandos](#decisão-sobre-o-conjunto-de-comandos).
 - **Correções aprendidas (T6, etapa `corrections`):** simulando, pela ordem fixa das gravações, um utilizador que corrige cada texto, com a regra do produto (aplica sozinha uma troca vista em dois ditados), todas as repetições de erros já aprendidos foram corrigidas (18 de 18 nos comandos e 1 de 1 no ditado) e nenhuma palavra certa passou a errada (meta 0). O WER dos comandos desce de 29,7 % para 24,7 % e o do ditado de 10,6 % para 10,5 %; termos, nomes e intenção não mudam. Ver [Correções aprendidas](#correções-aprendidas-etapa-corrections).
 - **Metas cumpridas no ditado:** erro em termos e em nomes ≤ 10 %; hesitações e repetições removidas ≥ 95 % e 0 palavras de conteúdo apagadas pela limpeza; correções aprendidas (100 % das repetições corrigidas, 0 erros novos), também nos comandos.
-- **Metas por cumprir:** WER final ≤ 10 % e intenção ≥ 95 % nos dois conjuntos. A digitação sem perdas ainda não tem medição (tarefa T11).
+- **Perfis da janela ativa (T7, etapa `profiles`):** cada ditado recebe as regras do perfil da janela de destino (Claude Code e VS Code técnicos, WhatsApp informal, email com frases completas). As regras só mudam pontuação e maiúsculas, por isso nenhuma métrica muda: mudaram 9 dos 36 ditados (os do WhatsApp perdem o ponto final) e nenhum comando. Ver [Perfis da janela ativa](#perfis-da-janela-ativa-etapa-profiles).
+- **Metas por cumprir, no texto final (etapa `profiles`):** WER final ≤ 10 % (ditado 10,5 %, comandos 24,7 %) e intenção ≥ 95 % (ditado 58,3 %, comandos 36,4 %). Foram ao Sponsor como decisão, com a distância e as opções. **Decisão do Sponsor (2026-09-29), opção B:** acabar agora a aplicação e voltar a medir depois de algumas semanas de uso real; as metas não baixam e esta distância fica registada como aberta. Ver [Decisão do Sponsor: WER final e intenção](#decisão-do-sponsor-wer-final-e-intenção). A digitação sem perdas ainda não tem medição (tarefa T11).
 - **Latência do largar do gatilho ao texto final (T3):** cumpre a meta de p95 ≤ 0,5 s com o large-v3-turbo, o novo motor por omissão; com o large-v3 nenhuma afinação a cumpria. Em troca, os comandos ficam piores com o turbo (termos ingleses 47,1 % e nomes 18,4 %), o que a T5 tem de recuperar (ver [Transcrição por blocos](#transcrição-por-blocos-etapa-streamed)).
 
 ## Conjuntos
@@ -50,11 +51,13 @@ Tabela gerada a partir de [phase2-summary.json](phase2-summary.json) por `py -3.
 | comandos | cleanup | 44 | 30,0 % | 30,0 % | 47,1 % | 18,4 % | 29,5 % | — | — | — |
 | comandos | vocabulary | 44 | 29,7 % | 29,7 % | 47,1 % | 15,8 % | 36,4 % | — | — | — |
 | comandos | corrections | 44 | 24,7 % | 24,7 % | 47,1 % | 15,8 % | 36,4 % | — | — | — |
+| comandos | profiles | 44 | 24,7 % | 24,7 % | 47,1 % | 15,8 % | 36,4 % | — | — | — |
 | ditado | raw | 36 | 16,9 % | 13,5 % | 2,3 % | 0,0 % | 47,2 % | 64,3 % | 19 | — |
 | ditado | streamed | 36 | 16,5 % | 13,0 % | 2,3 % | 11,1 % | 52,8 % | 64,3 % | 19 | — |
 | ditado | cleanup | 36 | 17,8 % | 11,0 % | 2,3 % | 11,1 % | 55,6 % | 96,4 % | 20 | 0 |
 | ditado | vocabulary | 36 | 17,4 % | 10,6 % | 2,3 % | 0,0 % | 58,3 % | 96,4 % | 19 | — |
 | ditado | corrections | 36 | 17,3 % | 10,5 % | 2,3 % | 0,0 % | 58,3 % | 96,4 % | 19 | — |
+| ditado | profiles | 36 | 17,3 % | 10,5 % | 2,3 % | 0,0 % | 58,3 % | 96,4 % | 19 | — |
 
 | Conjunto | Erros já aprendidos que se repetem | Corrigidos | Taxa corrigida | Repetições antes de ativar | Erros novos | Substituições aplicadas | Ativas / pendentes / em conflito no fim |
 |---|---|---|---|---|---|---|---|
@@ -161,14 +164,28 @@ Leitura dos resultados (tabela acima, etapa `corrections` contra `vocabulary`):
 - **Palavras gramaticais.** Uma medição de ensaio, feita por engano sem o vocabulário pessoal (texto do ditado um pouco diferente) e ainda sem a regra das palavras gramaticais, deu 1 erro novo no ditado: a troca de uma preposição contraída do plural para o singular, aprendida em duas frases, estragou uma terceira frase onde a forma original estava certa. Com a regra, esse erro desaparece nesse texto. No texto final, com ou sem a regra, os resultados das repetições e dos erros novos são os mesmos; a regra só evita que trocas deste tipo cheguem a ficar ativas (mais tarde, no produto).
 - **Risco que a revisão cobre.** Uma troca ativa de uma palavra comum (como a saudação dos comandos) muda essa palavra em todo o texto seguinte. Nas 80 gravações não estragou nenhuma palavra certa, mas a revisão semanal serve para eliminar uma troca que não se queira.
 
+## Perfis da janela ativa (etapa `profiles`)
+
+A aplicação escolhe um perfil pela janela em primeiro plano quando o gatilho é premido (`quill/profiles.py`): nome do processo, classe e título da janela, comparados com os perfis de `[profiles.*]` em `local/quill.toml` (formato em [quill.example.toml](../../quill.example.toml)), pela ordem do ficheiro. O primeiro perfil que corresponde ganha; uma janela que não corresponde a nenhum usa o perfil `default`. Um processo que o Windows não deixa ler (uma janela elevada) nunca corresponde a uma lista de processos: o perfil não é adivinhado só pelo título.
+
+- **Claude Code:** processo do terminal ou do editor (`WindowsTerminal.exe` ou `Code.exe` no exemplo) e «Claude Code» no título. Vem antes do VS Code, porque o VS Code mostra esse título quando o separador do Claude Code está ativo. É este perfil que o gatilho de envio consulta antes de carregar em Enter.
+- **Regras de cada perfil:** só mudam pontuação, espaços e a maiúscula no início das frases; nunca acrescentam, tiram ou trocam palavras, e aplicá-las duas vezes dá o mesmo texto. Claude Code e VS Code (técnico): termina sempre com sinal de fim de frase e as reticências finais passam a ponto. WhatsApp (informal): sem ponto final (ficam `?`, `!` e reticências). Email (frases completas): cada frase termina com sinal, as reticências finais passam a ponto e uma saudação inicial seguida de texto recebe a vírgula («Bom dia, …»). Outras janelas: a pontuação da limpeza.
+- **Estilo de escrita:** exemplos de textos do Sponsor em `local/style/` (ignorada pelo Git; `<perfil>.txt` ou `default.txt`, exemplos separados por uma linha em branco) entram no prompt do modelo local só quando a limpeza está em modo `llm`, com a instrução do perfil; `py -3.12 -m quill.profiles --check` mostra só quantos exemplos há. Com a limpeza por regras, que é a opção por omissão desde a T4, os exemplos não são lidos e o estilo é o das regras do perfil. Por isso a etapa mede só as regras; não havia exemplos de estilo em `local/style/` nesta medição.
+- **Como se mediu:** cada gravação do ditado recebe o perfil da coluna `estilo` do guião (9 por perfil); os comandos não têm estilo e recebem o perfil `default`. As etapas anteriores foram medidas outra vez e deram exatamente os mesmos valores da T6.
+
+Leitura dos resultados (tabela acima, etapa `profiles` contra `corrections`):
+
+- **Nenhuma métrica muda, como esperado.** O WER, os termos, os nomes, as hesitações e as palavras apagadas ignoram pontuação e maiúsculas. Mudaram 9 textos do ditado (os 9 do WhatsApp perdem o ponto final) e 0 dos comandos. O juiz de intenção viu os textos novos e não mudou nenhum veredicto: 21 de 36 no ditado e 16 de 44 nos comandos.
+- **Por perfil, no ditado** (só contagens): WER limpo 9,1 % no Claude Code, 10,5 % no VS Code, 12,9 % no WhatsApp e 10,2 % no email; intenção preservada 5, 6, 4 e 6 em 9. As mensagens informais são as mais curtas e as que têm mais erros de reconhecimento por palavra.
+
 ## Distância às metas da Fase 2
 
-Valores da etapa `corrections`, o texto final da aplicação até agora (large-v3-turbo, limpeza por regras, vocabulário pessoal e correções aprendidas); entre parênteses, a baseline `raw` do large-v3. Intenção medida com o juiz revisto. As metas não baixam; cada linha diz que tarefa a trata.
+Valores da etapa `profiles`, o texto final da aplicação (large-v3-turbo, limpeza por regras, vocabulário pessoal, correções aprendidas e perfis); entre parênteses, a baseline `raw` do large-v3. Intenção medida com o juiz revisto. As metas não baixam; cada linha diz que tarefa a trata.
 
 | Meta | Comandos | Ditado | Distância | Tarefa |
 |---|---|---|---|---|
-| WER final (referência limpa) ≤ 10 % | 24,7 % (28,3 %) | 10,5 % (13,5 %) | comandos +14,7 pp; ditado +0,5 pp | T7 |
-| Intenção preservada ≥ 95 % | 36,4 % (45,5 %) | 58,3 % (47,2 %) | comandos −58,6 pp; ditado −36,7 pp | T7 |
+| WER final (referência limpa) ≤ 10 % | 24,7 % (28,3 %) | 10,5 % (13,5 %) | comandos +14,7 pp (89 erros em 360 palavras; a meta pede no máximo 36); ditado +0,5 pp (101 erros em 960 palavras; a meta pede no máximo 96) | aberta: nova medição depois do uso real (decisão do Sponsor, T7) |
+| Intenção preservada ≥ 95 % | 36,4 % (45,5 %) | 58,3 % (47,2 %) | comandos −58,6 pp (16 de 44; a meta pede 42); ditado −36,7 pp (21 de 36; a meta pede 35) | aberta: nova medição depois do uso real (decisão do Sponsor, T7) |
 | Erro em nomes de projeto ≤ 10 % (meta no ditado; comandos como indicador) | 15,8 % (21,1 %) | 0,0 % (0,0 %) | ditado cumprida; comandos +5,8 pp (6 nomes em 38), só indicador | T5; a T6 não mudou os comandos |
 | Erro em termos ingleses ≤ 10 % (meta no ditado; comandos como indicador) | 47,1 % (23,5 %) | 2,3 % (2,3 %) | ditado cumprida; comandos +37,1 pp (8 termos em 17), só indicador | T5; a T6 não mudou os comandos |
 | Hesitações e repetições removidas ≥ 95 % | não se aplica | 96,4 % (64,3 %) | cumprida | T4 e T5 |
@@ -177,4 +194,28 @@ Valores da etapa `corrections`, o texto final da aplicação até agora (large-v
 | 0 caracteres perdidos ou duplicados na digitação | não medido | não medido | — | T11 |
 | Correções aprendidas: 100 % das repetições corrigidas, 0 erros novos | 18 de 18, 0 novos | 1 de 1, 0 novos | cumprida | T6 |
 
-A meta de intenção é a mais distante nos dois conjuntos. O juiz foi revisto à mão na T4 e era brando, não exigente: com o juiz revisto a distância aumentou, e a revisão manual dá valores ainda mais baixos (25,0 % nos comandos e 47,2 % no ditado, na etapa `streamed`). A distância vem sobretudo de erros de reconhecimento (palavras e nomes trocados), que a limpeza não corrige. Se no fim das camadas de adaptação (T7) o WER final e a intenção continuarem fora das metas, o resultado vai ao Sponsor como decisão, com a distância medida e as opções, sem baixar as metas.
+A meta de intenção é a mais distante nos dois conjuntos. O juiz foi revisto à mão na T4 e era brando, não exigente: com o juiz revisto a distância aumentou, e a revisão manual dá valores ainda mais baixos (25,0 % nos comandos e 47,2 % no ditado, na etapa `streamed`). A distância vem sobretudo de erros de reconhecimento (palavras e nomes trocados), que a limpeza não corrige. No fim das camadas de adaptação (T7), o WER final e a intenção continuam fora das metas nos dois conjuntos; o resultado foi ao Sponsor como decisão, sem baixar as metas, e o Sponsor escolheu voltar a medir depois do uso real (ver a secção seguinte).
+
+## Decisão do Sponsor: WER final e intenção
+
+**Distância medida no texto final (etapa `profiles`).**
+
+- **Ditado:** WER 10,5 %: 101 erros em 960 palavras; para chegar a 10 % são precisos 5 erros a menos. Intenção 58,3 %: 21 de 36 frases; a meta pede 35. Das 15 frases falhadas, 14 foram rejeitadas pelo juiz e 1 pela regra de nomes e termos. Só 3 das 36 frases saem sem nenhum erro de palavras e 11 têm exatamente um erro.
+- **Comandos:** WER 24,7 %: 89 erros em 360 palavras; a meta pede no máximo 36. Intenção 36,4 %: 16 de 44; a meta pede 42. Das 28 falhadas, 12 falham a regra de nomes e termos, 4 estão cortadas no fim e 12 foram rejeitadas pelo juiz.
+- **Causa:** erros de reconhecimento (palavras e nomes ouvidos de outra forma). A limpeza, o vocabulário, as correções e os perfis já não apagam nem trocam palavras certas; o que falta é o Whisper ouvir melhor a voz do Sponsor. Numa frase de 20 palavras, um WER de 10 % são 2 palavras erradas, e um só erro basta muitas vezes para mudar a intenção; por isso uma intenção de 95 % pede muito menos erros do que o WER de 10 %.
+
+**O que já foi medido e não resolve** (não são opções):
+
+- Modo preciso (large-v3): no ditado deu WER limpo 13,8 % contra 13,0 % do turbo na etapa `streamed`, e cerca de 1,1 s do largar ao texto final (falha a meta de 0,5 s).
+- Limpeza com o `qwen3:8b`: mais 5,5 pp de intenção no ditado, mas apaga 13 palavras de conteúdo (meta 0) e soma 0,97 s no p95.
+- Motores cloud (Fase 1): nenhum dos medidos foi melhor do que o large-v3 local, e o Sponsor decidiu 0 EUR e o áudio sempre no PC.
+
+**Opções apresentadas ao Sponsor:**
+
+- **A. Afinar o Whisper à voz do Sponsor, no PC (0 EUR).** Treinar o large-v3-turbo com gravações novas do Sponsor (nunca as dos conjuntos de medida, que ficam só para avaliar). É a única opção que ataca a causa. Custos: instalar pacotes de treino no `.venv` (os comandos exatos vão num pedido de aprovação próprio), gravar 1 a 2 horas de leitura e algumas horas de GPU. O ganho não está medido: decide-se com um ensaio pequeno e um critério de continuar ou parar medido nestes dois conjuntos.
+- **B. Manter o motor e medir em uso real.** O vocabulário pessoal e as correções aprendidas crescem com o uso; voltar a medir daqui a algumas semanas, com gravações novas. As metas de WER e intenção continuam por cumprir até lá.
+- **C. O Sponsor redefine onde as metas se aplicam.** Por exemplo, tratar os comandos curtos também como indicador para o WER e a intenção, como já decidiu para nomes e termos a 2026-09-29. Mesmo assim, o ditado continua fora das metas (WER 10,5 % e intenção 58,3 %). Só o Sponsor pode mudar metas; este documento não as baixa.
+
+A recomendação foi A, como ensaio com critério de paragem, com B em paralelo.
+
+**Decisão do Sponsor (2026-09-29): opção B.** Acabar agora a aplicação (indicador, aplicação, modo comando e aceitação) e voltar a medir depois de algumas semanas de uso real, com o vocabulário e as correções que o uso diário for criando. Essas correções passam a ser o material de um ensaio posterior de afinação local (opção A), sem sessões de gravação extra. Nada é instalado agora. As metas não baixam: o WER final ≤ 10 % e a intenção ≥ 95 % continuam por cumprir nos dois conjuntos e esta distância fica registada como aberta até à nova medição.

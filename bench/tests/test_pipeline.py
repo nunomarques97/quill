@@ -152,7 +152,7 @@ class MeasureTest(unittest.TestCase):
             pipeline.measure(sets, "streamed", engine, judge_yes, None, TERMS, self.results / "pipeline" / "run",
                              results_dir=self.results, log=lambda line: None)
         with self.assertRaises(ValueError):
-            pipeline.measure(sets, "profiles", engine, judge_yes, None, TERMS, self.results / "pipeline" / "run",
+            pipeline.measure(sets, "unknown", engine, judge_yes, None, TERMS, self.results / "pipeline" / "run",
                              results_dir=self.results, log=lambda line: None, streamer=streamer)
 
     def test_cleanup_stage_cleans_the_streamed_text(self):
@@ -252,6 +252,36 @@ class MeasureTest(unittest.TestCase):
         self.assertIn("| ditado | corrections | 3 |", block)
         self.assertIn("| Conjunto | Erros já aprendidos que se repetem |", block)
         self.assertEqual([line for met, line in pipeline.check_targets(summary, ["corrections"]) if not met], [])
+
+    def test_profiles_stage_applies_each_take_style_and_is_the_final_stage(self):
+        sets = self.fx.loaded()
+        engine = engine_for(sets, lambda take: take.reference)
+
+        def streamer(takes, hints):
+            return [(take.clean, 0.1) for take in takes]
+
+        summary = pipeline.measure(sets, "profiles", engine, judge_yes, None, TERMS, self.results / "pipeline" / "run",
+                                   results_dir=self.results, log=lambda line: None, streamer=streamer)
+        self.assertEqual(summary["stages"], list(pipeline.STAGE_ORDER))
+        dictation = summary["sets"]["dictation"]["stages"]
+        row = dictation["profiles"]
+        self.assertEqual(row["profile_takes"], {"claude-code": 1, "email": 1, "whatsapp": 1})
+        self.assertEqual(row["profile_changes"], 1)  # the WhatsApp message loses its final period
+        self.assertEqual(summary["sets"]["commands"]["stages"]["profiles"]["profile_takes"], {"default": 3})
+        # Punctuation and capitals only: the words and every word metric stay the same.
+        for key in ("wer_clean", "wer_verbatim", "filler_removal_rate", "content_deleted", "name_error_rate"):
+            self.assertEqual(row[key], dictation["corrections"][key], key)
+        rows = json.loads((self.results / "pipeline" / "run" / "dictation" / "profiles.json").read_text(encoding="utf-8"))
+        corrected = json.loads((self.results / "pipeline" / "run" / "dictation" / "corrections.json").read_text(encoding="utf-8"))
+        self.assertEqual(corrected[1]["hypothesis"], "Olá, amanhã levo o bolo verde.")
+        self.assertEqual(rows[1]["hypothesis"], "Olá, amanhã levo o bolo verde")
+        self.assertEqual(rows[0]["hypothesis"], corrected[0]["hypothesis"])
+        self.assertEqual(pipeline._final_stage(summary["sets"]["dictation"])[0], "profiles")
+        self.assertIn("| ditado | profiles | 3 |", pipeline.render_block(summary))
+        failed = [line for met, line in pipeline.check_targets(summary, ["overall", "cleanup", "vocabulary", "corrections"])
+                  if not met]
+        self.assertEqual(failed, [])
+        self.assertIn("(profiles; target", " ".join(line for _, line in pipeline.check_targets(summary, ["overall"])))
 
     def test_personal_vocabulary_streams_again_with_the_product_hints(self):
         from quill.vocabulary import parse_vocabulary

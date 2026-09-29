@@ -32,7 +32,8 @@
     "streamed",
     "cleanup",
     "vocabulary",
-    "corrections"
+    "corrections",
+    "profiles"
   ],
   "sets": {
     "commands": {
@@ -151,6 +152,28 @@
           "learned_active": 3,
           "learned_pending": 31,
           "learned_conflicts": 4
+        },
+        "profiles": {
+          "n": 44,
+          "wer_verbatim": 0.2472,
+          "wer_clean": 0.2472,
+          "term_error_rate": 0.4706,
+          "term_occurrences": 17,
+          "name_error_rate": 0.1579,
+          "name_occurrences": 38,
+          "intent_preserved": 0.3636,
+          "intent_judged": 44,
+          "intent_note": null,
+          "filler_spans": null,
+          "filler_removal_rate": null,
+          "content_words": null,
+          "content_deleted": null,
+          "content_deleted_by_cleanup": null,
+          "max_audio_s": 6.272,
+          "profile_changes": 0,
+          "profile_takes": {
+            "default": 44
+          }
         }
       }
     },
@@ -270,6 +293,31 @@
           "learned_active": 1,
           "learned_pending": 49,
           "learned_conflicts": 0
+        },
+        "profiles": {
+          "n": 36,
+          "wer_verbatim": 0.1729,
+          "wer_clean": 0.1052,
+          "term_error_rate": 0.0227,
+          "term_occurrences": 44,
+          "name_error_rate": 0.0,
+          "name_occurrences": 9,
+          "intent_preserved": 0.5833,
+          "intent_judged": 36,
+          "intent_note": null,
+          "filler_spans": 56,
+          "filler_removal_rate": 0.9643,
+          "content_words": 960,
+          "content_deleted": 19,
+          "content_deleted_by_cleanup": null,
+          "max_audio_s": 18.048,
+          "profile_changes": 9,
+          "profile_takes": {
+            "claude-code": 9,
+            "email": 9,
+            "vscode": 9,
+            "whatsapp": 9
+          }
         }
       }
     }

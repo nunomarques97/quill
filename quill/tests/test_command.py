@@ -39,20 +39,29 @@ def user_clip():
 
 
 class FakeClient:
-    """A fake Ollama chat client; ``on_chat`` runs during the call (the rewrite is in flight)."""
+    """A fake Ollama chat client; ``on_chat`` runs during the call (the rewrite is in flight).
 
-    def __init__(self, reply=REWRITE, error=None, on_chat=None):
+    ``reply`` is one reply for every call, or a list of replies in call order;
+    ``error`` is raised by every call, or by the calls listed in ``fail_calls``
+    (1-based).
+    """
+
+    def __init__(self, reply=REWRITE, error=None, on_chat=None, fail_calls=None):
         self.reply = reply
         self.error = error
         self.on_chat = on_chat
+        self.fail_calls = fail_calls
         self.calls = []
 
-    def chat(self, model, system, user, max_tokens=None):
-        self.calls.append(SimpleNamespace(model=model, system=system, user=user, max_tokens=max_tokens))
+    def chat(self, model, system, user, max_tokens=None, history=()):
+        self.calls.append(SimpleNamespace(model=model, system=system, user=user, max_tokens=max_tokens,
+                                          history=tuple(history)))
         if self.on_chat is not None:
             self.on_chat()
-        if self.error is not None:
+        if self.error is not None and (self.fail_calls is None or len(self.calls) in self.fail_calls):
             raise self.error
+        if isinstance(self.reply, list):
+            return SimpleNamespace(content=self.reply[len(self.calls) - 1])
         return SimpleNamespace(content=self.reply)
 
 
@@ -145,6 +154,214 @@ class RewriterTest(unittest.TestCase):
     def test_text_is_not_in_the_repr(self):
         result = C.CommandRewriter(FakeClient(), "m").rewrite(SELECTION, INSTRUCTION)
         self.assertNotIn("relatório", repr(result))
+
+    def test_prompt_states_the_shorten_list_and_translation_rules(self):
+        for rule in ("recognition errors", "sounds like a rewriting verb", "clearly shorter", "far fewer words",
+                     "one item per line", 'starting with "- "', "exactly as they are written in the text",
+                     "no plural, no verb ending, no translation"):
+            self.assertIn(rule, C.REWRITE_SYSTEM)
+
+
+# ---------------------------------------------------------------- second attempt
+
+LONG = ("A equipa de vendas vai reunir na quarta-feira para rever as metas do trimestre e depois envia um resumo "
+        "a todos os departamentos até sexta.")
+SHORT = "Vendas revêm as metas na quarta e enviam o resumo até sexta."
+SAME_LENGTH = ("A equipa de vendas reúne na quarta-feira para rever as metas do trimestre e depois envia um resumo "
+               "a todos os departamentos até sexta-feira.")
+PT_TERMS = "Depois do commit, corre o build e abre o dashboard."
+EN_TERMS = "After the commit, run the build and open the dashboard."
+
+
+class InstructionTest(unittest.TestCase):
+    def test_shorten_requests(self):
+        for instruction in ("encurta isto", "E curta o texto", "resume em duas linhas", "faz um resumo",
+                            "corta para metade", "reduz isto", "abrevia", "sintetiza", "põe mais curto",
+                            "make it shorter", "shorten this", "summarize it"):
+            with self.subTest(instruction=instruction):
+                self.assertTrue(C.asks_to_shorten(instruction))
+        for instruction in ("põe isto mais formal", "torna isto mais cortês", "fala da cortesia", "traduz para inglês",
+                            "faz uma lista"):
+            with self.subTest(instruction=instruction):
+                self.assertFalse(C.asks_to_shorten(instruction))
+
+    def test_list_requests(self):
+        for instruction in ("faz uma lista", "põe em tópicos", "transforma em itens", "separa em alíneas",
+                            "make a bullet list"):
+            with self.subTest(instruction=instruction):
+                self.assertTrue(C.asks_for_list(instruction))
+        for instruction in ("torna isto mais realista", "encurta isto", "põe mais formal"):
+            with self.subTest(instruction=instruction):
+                self.assertFalse(C.asks_for_list(instruction))
+
+    def test_missed_requests(self):
+        self.assertEqual(C.missed_requests(LONG, "encurta isto", SAME_LENGTH), [C.RETRY_NOT_SHORTER])
+        self.assertEqual(C.missed_requests(LONG, "encurta isto", SHORT), [])
+        self.assertEqual(C.missed_requests(LONG, "faz uma lista", SAME_LENGTH), [C.RETRY_NOT_LIST])
+        self.assertEqual(C.missed_requests(LONG, "faz uma lista", "- vendas na quarta\n- resumo até sexta"), [])
+        self.assertEqual(C.missed_requests(LONG, "põe mais formal", SAME_LENGTH), [])
+        # A one-word selection cannot become a list of two items.
+        self.assertEqual(C.missed_requests("pão", "faz uma lista", "Pão."), [])
+
+    def test_lost_terms_only_in_a_non_english_selection(self):
+        terms = ("commit", "build", "dashboard", "deploy")
+        self.assertEqual(C.lost_terms(PT_TERMS, "After committing, run the build and open the dashboard.", terms),
+                         ("commit",))
+        self.assertEqual(C.lost_terms(PT_TERMS, EN_TERMS, terms), ())
+        # In an English text the same words are ordinary words that a translation may translate.
+        self.assertEqual(C.lost_terms(EN_TERMS, "Depois do envio, compila e abre o painel.", terms), ())
+        self.assertEqual(C.missed_requests(PT_TERMS, "traduz para inglês", "After committing, run the build and "
+                                           "open the dashboard.", terms), [C.RETRY_TERMS])
+
+
+class Clock:
+    """Advances ``step`` seconds on every read."""
+
+    def __init__(self, step=0.5):
+        self.now = 0.0
+        self.step = step
+
+    def __call__(self):
+        self.now += self.step
+        return self.now
+
+
+class SecondAttemptTest(unittest.TestCase):
+    def rewrite(self, replies, selection=LONG, instruction="põe isto mais formal", terms=(), **client):
+        self.client = FakeClient(replies, **client)
+        rewriter = C.CommandRewriter(self.client, "m", clock=Clock(), terms=lambda: terms)
+        with self.assertLogs("quill.command", "INFO") as logs:
+            result = rewriter.rewrite(selection, instruction)
+            C.log.info("end")  # assertLogs needs one record
+        text = "\n".join(logs.output)
+        for secret in (selection, instruction, *[r for r in replies if isinstance(r, str)]):
+            self.assertNotIn(secret, text)
+        return result
+
+    def test_good_first_reply_makes_one_call(self):
+        result = self.rewrite([SAME_LENGTH])
+        self.assertEqual((result.reason, result.attempts, result.retry), (C.REWRITTEN, 1, ()))
+        self.assertEqual(len(self.client.calls), 1)
+        self.assertEqual(self.client.calls[0].history, ())
+
+    def test_unchanged_reply_gets_one_more_call_with_the_first_as_history(self):
+        result = self.rewrite([LONG, SAME_LENGTH])
+        self.assertEqual((result.reason, result.text, result.attempts, result.retry),
+                         (C.REWRITTEN, SAME_LENGTH, 2, (C.RETRY_UNCHANGED,)))
+        first, second = self.client.calls
+        self.assertEqual(second.system, C.REWRITE_SYSTEM)
+        self.assertEqual(second.history, ((first.user, LONG),))
+        self.assertEqual(second.user, "Instruction: põe isto mais formal Requirement: the reply is the text unchanged, "
+                                      f"but the instruction asks for a change.\n<text>\n{LONG}\n</text>")
+        self.assertEqual(second.max_tokens, first.max_tokens)
+
+    def test_invalid_reply_gets_one_more_call(self):
+        result = self.rewrite(["Aqui está o texto reescrito: " + SAME_LENGTH, SAME_LENGTH])
+        self.assertEqual((result.reason, result.text, result.retry), (C.REWRITTEN, SAME_LENGTH, (C.RETRY_INVALID,)))
+        self.assertIn("without preamble", self.client.calls[1].user)
+
+    def test_the_attempts_are_bounded_and_refusals_still_refuse(self):
+        preamble = "Aqui está o texto reescrito: " + SAME_LENGTH
+        for replies, reason, detail in (([preamble, preamble], C.INVALID_REWRITE, C.PREAMBLE),
+                                        ([preamble, "```\n" + SAME_LENGTH + "\n```"], C.INVALID_REWRITE, C.PREAMBLE),
+                                        ([LONG, LONG], C.UNCHANGED, ""),
+                                        ([LONG, preamble], C.UNCHANGED, ""),
+                                        ([SAME_LENGTH * 10, SAME_LENGTH * 10], C.INVALID_REWRITE, C.TOO_LONG)):
+            with self.subTest(reason=reason, detail=detail):
+                result = self.rewrite(replies)
+                self.assertEqual((result.reason, result.detail, result.text, result.attempts),
+                                 (reason, detail, None, 2))
+                self.assertEqual(len(self.client.calls), 2)
+
+    def test_not_shorter_asks_for_a_word_limit(self):
+        result = self.rewrite([SAME_LENGTH, SHORT], instruction="encurta isto")
+        self.assertEqual((result.reason, result.text, result.retry), (C.REWRITTEN, SHORT, (C.RETRY_NOT_SHORTER,)))
+        limit = int(C.SHORTER_RATIO * len(LONG.split()))
+        self.assertIn(f"at most {limit} words", self.client.calls[1].user)
+
+    def test_a_second_reply_that_is_no_better_keeps_the_first(self):
+        other = SAME_LENGTH.replace("reúne", "vai reunir")
+        for second in (other, "Aqui está o texto reescrito: " + SHORT, LONG):
+            with self.subTest(second=second[:30]):
+                result = self.rewrite([SAME_LENGTH, second], instruction="encurta isto")
+                self.assertEqual((result.reason, result.text, result.attempts), (C.REWRITTEN, SAME_LENGTH, 2))
+
+    def test_not_a_list(self):
+        items = "- reunião de vendas na quarta\n- resumo até sexta"
+        result = self.rewrite([SAME_LENGTH, items], instruction="faz uma lista")
+        self.assertEqual((result.text, result.retry), (items, (C.RETRY_NOT_LIST,)))
+        self.assertIn('starting with "- "', self.client.calls[1].user)
+
+    def test_lost_term_is_named_in_the_second_attempt(self):
+        inflected = "After committing, run the build and open the dashboard."
+        result = self.rewrite([inflected, EN_TERMS], selection=PT_TERMS, instruction="traduz para inglês",
+                              terms=("commit", "build", "dashboard"))
+        self.assertEqual((result.text, result.retry), (EN_TERMS, (C.RETRY_TERMS,)))
+        self.assertIn('exactly as written in the text: "commit"', self.client.calls[1].user)
+
+    def test_english_selection_needs_no_kept_terms(self):
+        result = self.rewrite(["Depois do envio, compila e abre o painel."], selection=EN_TERMS,
+                              instruction="traduz para português", terms=("commit", "build", "dashboard"))
+        self.assertEqual((result.reason, result.attempts), (C.REWRITTEN, 1))
+
+    def test_second_call_failure_keeps_the_first_outcome(self):
+        result = self.rewrite([SAME_LENGTH, SHORT], instruction="encurta isto", error=TimeoutError(), fail_calls={2})
+        self.assertEqual((result.reason, result.text, result.attempts), (C.REWRITTEN, SAME_LENGTH, 2))
+        result = self.rewrite([LONG, SHORT], error=OSError("down"), fail_calls={2})
+        self.assertEqual((result.reason, result.text), (C.UNCHANGED, None))
+
+    def test_ollama_down_is_not_retried(self):
+        result = self.rewrite([SAME_LENGTH], error=OSError("down"))
+        self.assertEqual((result.reason, result.attempts), (C.OLLAMA_UNAVAILABLE, 1))
+        self.assertEqual(len(self.client.calls), 1)
+
+    def test_no_second_attempt_after_a_slow_first_call(self):
+        client = FakeClient([LONG, SAME_LENGTH])
+        rewriter = C.CommandRewriter(client, "m", clock=Clock(step=C.RETRY_BUDGET_S + 1))
+        result = rewriter.rewrite(LONG, "põe isto mais formal")
+        self.assertEqual((result.reason, result.attempts, result.retry), (C.UNCHANGED, 1, (C.RETRY_UNCHANGED,)))
+        self.assertEqual(len(client.calls), 1)
+
+
+class ChatHistoryTest(unittest.TestCase):
+    """The product client sends earlier turns between the system prompt and the new message."""
+
+    def payloads(self, **kwargs):
+        from quill.ollama import OllamaClient
+
+        sent = []
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                return b'{"message": {"content": "ok"}}'
+
+        class Opener:
+            def open(self, request, timeout):
+                sent.append(__import__("json").loads(request.data.decode("utf-8")))
+                return Response()
+
+        client = OllamaClient("http://127.0.0.1:11434")
+        client._opener = Opener()
+        self.assertEqual(client.chat("m", "system", "again", max_tokens=9, **kwargs).content, "ok")
+        return sent[0]
+
+    def test_without_history(self):
+        payload = self.payloads()
+        self.assertEqual(payload["messages"], [{"content": "system", "role": "system"},
+                                               {"content": "again", "role": "user"}])
+        self.assertEqual(payload["options"], {"temperature": 0, "seed": 0, "num_predict": 9})
+        self.assertNotIn("keep_alive", payload)
+
+    def test_with_history(self):
+        payload = self.payloads(history=(("first", "reply"),))
+        self.assertEqual([(m["role"], m["content"]) for m in payload["messages"]],
+                         [("system", "system"), ("user", "first"), ("assistant", "reply"), ("user", "again")])
 
 
 # ---------------------------------------------------------------- command mode
@@ -579,6 +796,21 @@ class CommandAppTest(app_tests.AppCase):
         self.assertEqual(client.calls[0].model, self.config.ollama_model)
         self.assertIn(COMMAND, self.indicator.states)
         self.assertEqual(self.indicator.last, ("hide",))
+
+    def test_unchanged_first_reply_gets_the_second_attempt_and_kept_terms_follow_the_vocabulary(self):
+        from quill.vocabulary import Entry, Vocabulary
+
+        client = FakeClient([SELECTION, REWRITE])
+        quill = self.command_app(client)
+        self.assertEqual(tuple(quill.command.rewriter.terms()), quill.pipeline.keep)
+        quill.pipeline.use_vocabulary(Vocabulary(terms=(Entry("termo-inventado", "term"),)))
+        self.assertIn("termo-inventado", quill.command.rewriter.terms())
+        outcome = self.command_hold(quill)
+        self.assertEqual(outcome.reason, C.REWRITTEN)
+        self.assertEqual(self.api.received_text(), REWRITE)
+        self.assertEqual(len(client.calls), 2)
+        self.assertEqual(client.calls[1].history, ((client.calls[0].user, SELECTION),))
+        self.assertEqual(self.api.enter_presses(), [])
 
     def test_ollama_down_leaves_the_selection(self):
         quill = self.command_app(FakeClient(error=OSError("fake: Ollama down")))

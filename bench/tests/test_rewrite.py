@@ -44,15 +44,17 @@ def rows_by_id(text=SCRIPT):
 
 
 class FakeOllama:
-    """The product client's interface: chat(model, system, user, max_tokens)."""
+    """The product client's interface: chat(model, system, user, max_tokens, history)."""
 
     def __init__(self, replies=None, error=None):
         self.replies = dict(REPLIES if replies is None else replies)
         self.error = error
         self.calls = []
+        self.histories = []
 
-    def chat(self, model, system, user, max_tokens=None):
+    def chat(self, model, system, user, max_tokens=None, history=()):
         self.calls.append(user)
+        self.histories.append(tuple(history))
         if self.error is not None:
             raise self.error
         selection = user.split("<text>\n", 1)[1].rsplit("\n</text>", 1)[0]
@@ -256,6 +258,10 @@ class MeasureTest(unittest.TestCase):
         self.assertEqual(summary["reasons"], {command.INVALID_REWRITE: 1, command.REWRITTEN: 2, command.UNCHANGED: 1})
         self.assertEqual(summary["invalid_details"], {command.PREAMBLE: 1})
         self.assertEqual((summary["checks_passed"], summary["judge_yes"], summary["correct"]), (1, 0, 0))
+        # The product asked the model twice for the refused and the unchanged reply, never more.
+        self.assertEqual([r.attempts for r in results], [2, 1, 1, 2])
+        self.assertEqual((summary["second_attempts"], summary["second_attempt_reasons"]),
+                         (2, {command.RETRY_INVALID: 1, command.RETRY_UNCHANGED: 1}))
 
     def test_ollama_down_is_counted(self):
         results = R.measure(self.takes, self.rows, self.heard, rewriter(FakeOllama(error=OSError("down"))),
@@ -352,11 +358,15 @@ class MainTest(unittest.TestCase):
         self.hints = hints
         return stream, {"model": "fake"}
 
+    def rewriter_factory(self, terms):
+        self.kept_terms = list(terms)
+        return rewriter(self.client), "qwen3:8b"
+
     def run_main(self, *extra, client=None):
         self.client = client or FakeOllama()
         return R.main(["--config", str(self.config), "--vocabulary", str(self.root / "none.toml"), *extra],
                       streamer_factory=self.streamer_factory,
-                      rewriter_factory=lambda: (rewriter(self.client), "qwen3:8b"),
+                      rewriter_factory=self.rewriter_factory,
                       judge_factory=lambda: (FakeJudge(), None), results_dir=self.results_dir, out=self.lines.append)
 
     def test_measures_and_writes_aggregates_only(self):
@@ -364,11 +374,13 @@ class MainTest(unittest.TestCase):
         self.assertEqual(self.run_main(), 0)
         self.assertTrue(self.closed)
         self.assertIn("deploy", [h.casefold() for h in self.hints])  # the product hints include the English terms
+        self.assertIn("deploy", self.kept_terms)  # and the rewriter keeps the product's terms
         run = next((self.results_dir / "rewrite").iterdir())
         summary = json.loads((run / "summary.json").read_text(encoding="utf-8"))
         self.assertEqual((summary["kind"], summary["takes"], summary["correct"], summary["rewrite_model"]),
                          ("rewrite", 4, 4, "qwen3:8b"))
         self.assertEqual(summary["dataset"], {"script_rows": 4, "recorded": 4, "pending": 0, "invalid": 0})
+        self.assertEqual((summary["second_attempts"], summary["second_attempt_reasons"]), (0, {}))
         self.assertTrue((run / "table.md").is_file() and (run / "takes.json").is_file())
         printed = "\n".join(self.lines)
         self.assertIn("correct 4/4", printed)

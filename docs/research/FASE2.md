@@ -1,6 +1,6 @@
 # Quill: medições da Fase 2 com a voz real
 
-**Estado: baseline medida a 2026-09-28** (tarefa T2); **transcrição por blocos medida a 2026-09-29** (tarefa T3, etapa `streamed`); **juiz de intenção revisto e limpeza do texto medida a 2026-09-29** (tarefa T4, etapa `cleanup`); **vocabulário pessoal medido a 2026-09-29** (tarefa T5, etapa `vocabulary`); **aprendizagem de correções medida a 2026-09-29** (tarefa T6, etapa `corrections`); **perfis da janela ativa medidos a 2026-09-29** (tarefa T7, etapa `profiles`); **modo comando e verificações manuais no desktop medidos a 2026-09-29** (tarefa T11). Motor decidido pelo Sponsor: Whisper local (faster-whisper, float16, CUDA, RTX 5060 Ti) com vocabulário (`initial_prompt` e `hotwords`), 0 EUR/mês; o áudio não sai do PC. A baseline (`raw`) é do large-v3. Desde a decisão do Sponsor de 2026-09-29, o modelo por omissão da aplicação é o large-v3-turbo, porque só ele cumpre a meta de latência; o large-v3 fica como modo preciso (ver [Transcrição por blocos](#transcrição-por-blocos-etapa-streamed)). A etapa `profiles` é o texto final da aplicação.
+**Estado: baseline medida a 2026-09-28** (tarefa T2); **transcrição por blocos medida a 2026-09-29** (tarefa T3, etapa `streamed`); **juiz de intenção revisto e limpeza do texto medida a 2026-09-29** (tarefa T4, etapa `cleanup`); **vocabulário pessoal medido a 2026-09-29** (tarefa T5, etapa `vocabulary`); **aprendizagem de correções medida a 2026-09-29** (tarefa T6, etapa `corrections`); **perfis da janela ativa medidos a 2026-09-29** (tarefa T7, etapa `profiles`); **modo comando e verificações manuais no desktop medidos a 2026-09-29** (tarefa T11); **modo comando da Fase 3 medido a 2026-09-29** (18 de 20 pedidos pelo Sponsor, medidos 20 de 20). Motor decidido pelo Sponsor: Whisper local (faster-whisper, float16, CUDA, RTX 5060 Ti) com vocabulário (`initial_prompt` e `hotwords`), 0 EUR/mês; o áudio não sai do PC. A baseline (`raw`) é do large-v3. Desde a decisão do Sponsor de 2026-09-29, o modelo por omissão da aplicação é o large-v3-turbo, porque só ele cumpre a meta de latência; o large-v3 fica como modo preciso (ver [Transcrição por blocos](#transcrição-por-blocos-etapa-streamed)). A etapa `profiles` é o texto final da aplicação.
 
 Este documento contém só números agregados: nenhum texto falado, nenhum nome de projeto real e nenhum caminho da máquina. Os resultados por frase ficam apenas em `bench/results/`, que o Git ignora. Os números vêm de [phase2-summary.json](phase2-summary.json); o harness está em [bench/](../../bench/README.md#pipeline-evaluation).
 
@@ -18,6 +18,7 @@ Este documento contém só números agregados: nenhum texto falado, nenhum nome 
 - **Metas por cumprir, no texto final (etapa `profiles`):** WER final ≤ 10 % (ditado 10,5 %, comandos 24,7 %) e intenção ≥ 95 % (ditado 58,3 %, comandos 36,4 %). Foram ao Sponsor como decisão, com a distância e as opções. **Decisão do Sponsor (2026-09-29), opção B:** acabar agora a aplicação e voltar a medir depois de algumas semanas de uso real; as metas não baixam e esta distância fica registada como aberta. Ver [Decisão do Sponsor: WER final e intenção](#decisão-do-sponsor-wer-final-e-intenção).
 - **Digitação, gatilhos e indicador no desktop real (T11):** o Sponsor correu os self-tests manuais. A digitação escreveu 4190 de 4190 caracteres em 5 janelas, sem nenhum perdido, a mais ou trocado (meta 0), e o clipboard ficou igual; o indicador nunca ficou em primeiro plano (0 de 1026 amostras). Ver [Modo comando e verificações manuais](#modo-comando-e-verificações-manuais-t11).
 - **Modo comando (T11), nas 20 instruções faladas pelo Sponsor:** 16 de 20 reescritas corretas (80,0 %); WER da instrução 20,8 %. **Decisão do Sponsor (2026-09-29):** a meta do modo comando é ≥ 90 % de reescritas corretas nestas 20 instruções; os 80,0 % ficam registados como valor medido e a distância (2 reescritas) fica aberta para a próxima execução, como a do WER e da intenção. Ver [Modo comando e verificações manuais](#modo-comando-e-verificações-manuais-t11).
+- **Modo comando na Fase 3: 20 de 20 reescritas corretas (100,0 %), meta ≥ 90 % cumprida.** Um prompt mais claro (instrução mal ouvida, encurtar, lista, termos técnicos iguais ao traduzir) e no máximo uma segunda tentativa quando a resposta vem igual, é recusada ou falha o que a instrução pede. A verificação dos termos a preservar não foi aliviada. Medido duas vezes com as mesmas contagens; 2 das 20 reescritas usaram a segunda tentativa. Ver [Modo comando na Fase 3](#modo-comando-na-fase-3).
 - **Latência do largar do gatilho ao texto final (T3):** cumpre a meta de p95 ≤ 0,5 s com o large-v3-turbo, o novo motor por omissão; com o large-v3 nenhuma afinação a cumpria. Em troca, os comandos ficam piores com o turbo (termos ingleses 47,1 % e nomes 18,4 %), o que a T5 tem de recuperar (ver [Transcrição por blocos](#transcrição-por-blocos-etapa-streamed)).
 
 ## Conjuntos
@@ -66,18 +67,18 @@ Tabela gerada a partir de [phase2-summary.json](phase2-summary.json) por `py -3.
 | comandos | 18 | 18 | 100,0 % | 4 | 0 | 18 | 3 / 31 / 4 |
 | ditado | 1 | 1 | 100,0 % | 2 | 0 | 1 | 1 / 49 / 0 |
 
-| Modo comando | n | WER da instrução | Instruções sem erros | Aceites pelo produto | Verificações passadas | Juiz sim | Corretas |
-|---|---|---|---|---|---|---|---|
-| large-v3-turbo + qwen3:8b | 20 | 20,8 % | 5 de 20 | 19 de 20 | 16 de 20 | 16 de 16 | 16 de 20 |
+| Modo comando | n | WER da instrução | Instruções sem erros | Aceites pelo produto | Verificações passadas | Juiz sim | Corretas | Segundas tentativas |
+|---|---|---|---|---|---|---|---|---|
+| large-v3-turbo + qwen3:8b | 20 | 20,8 % | 5 de 20 | 20 de 20 | 20 de 20 | 20 de 20 | 20 de 20 | 2 de 20 |
 
 | Caso | n | Verificações passadas | Corretas |
 |---|---|---|---|
 | corrigir | 3 | 3 | 3 |
-| encurtar | 3 | 1 | 1 |
+| encurtar | 3 | 3 | 3 |
 | formal | 3 | 3 | 3 |
 | informal | 1 | 1 | 1 |
-| inglês | 4 | 3 | 3 |
-| lista | 2 | 1 | 1 |
+| inglês | 4 | 4 | 4 |
+| lista | 2 | 2 | 2 |
 | português | 2 | 2 | 2 |
 | simplificar | 1 | 1 | 1 |
 | simpático | 1 | 1 | 1 |
@@ -225,7 +226,7 @@ Valores da etapa `profiles`, o texto final da aplicação (large-v3-turbo, limpe
 | Latência p95 ≤ 0,5 s do largar do gatilho ao texto final (até 15 s; meta do Sponsor) | cumprida | cumprida | cumprida com o large-v3-turbo nos dois conjuntos juntos, ao ritmo real e com a GPU livre; com o large-v3 (modo preciso) não; os tempos ficam só em `bench/results/` | T3 |
 | 0 caracteres perdidos ou duplicados na digitação | não se aplica | não se aplica | cumprida: 0 perdidos, 0 a mais e 0 trocados em 4190 caracteres, em 5 janelas (self-test manual do Sponsor) | T11 |
 | Correções aprendidas: 100 % das repetições corrigidas, 0 erros novos | 18 de 18, 0 novos | 1 de 1, 0 novos | cumprida | T6 |
-| Modo comando: reescritas corretas ≥ 90 % nas 20 instruções faladas (meta do Sponsor, 2026-09-29) | não se aplica | não se aplica | 80,0 % (16 de 20) nas instruções de reescrita: −10,0 pp (a meta pede 18 de 20) | aberta: próxima execução (decisão do Sponsor, T11) |
+| Modo comando: reescritas corretas ≥ 90 % nas 20 instruções faladas (meta do Sponsor, 2026-09-29) | não se aplica | não se aplica | cumprida na Fase 3: 100,0 % (20 de 20; a meta pede 18 de 20); na T11 eram 80,0 % (16 de 20) | Fase 3, modo comando |
 
 A meta de intenção é a mais distante nos dois conjuntos. O juiz foi revisto à mão na T4 e era brando, não exigente: com o juiz revisto a distância aumentou, e a revisão manual dá valores ainda mais baixos (25,0 % nos comandos e 47,2 % no ditado, na etapa `streamed`). A distância vem sobretudo de erros de reconhecimento (palavras e nomes trocados), que a limpeza não corrige. No fim das camadas de adaptação (T7), o WER final e a intenção continuam fora das metas nos dois conjuntos; o resultado foi ao Sponsor como decisão, sem baixar as metas, e o Sponsor escolheu voltar a medir depois do uso real (ver a secção seguinte).
 
@@ -281,7 +282,7 @@ As tabelas do modo comando e das verificações manuais estão no bloco gerado d
 
 **Método do modo comando.** O Sponsor gravou as 20 instruções do guião `bench/dictation/guiao-reescrita-pt.md` (1 take rejeitado e gravado outra vez). A seleção de cada linha é um texto inventado. `bench.rewrite` passa cada gravação pelo caminho do produto: a instrução é transcrita por blocos com o large-v3-turbo, no calendário por tempo de áudio, e a reescrita é feita pelo `qwen3:8b` local com o prompt e a validação do produto (temperatura 0). Depois vêm as verificações determinísticas (língua, termos a preservar, texto mais curto, lista ou texto mudado) e o juiz local. A medição foi corrida duas vezes e todas as contagens foram iguais; só os tempos mudaram.
 
-Leitura dos resultados:
+Leitura dos resultados da T11 (a tabela gerada mostra agora os valores da Fase 3; ver [Modo comando na Fase 3](#modo-comando-na-fase-3)):
 
 - **16 de 20 reescritas corretas (80,0 %).** O produto aceitou 19 das 20 respostas do modelo; 16 passaram as verificações, e o juiz disse sim a todas essas 16. Correção, formalidade, tom informal e simpático, simplificação e tradução para português acertaram em todas as gravações.
 - **2 das 4 falhas vêm do reconhecimento da instrução.** Numa instrução de encurtar e noutra de fazer uma lista, uma palavra-chave da instrução foi mal ouvida, e o modelo devolveu um texto que não encurtava nem era uma lista.
@@ -305,3 +306,22 @@ Leitura dos resultados:
 - **Premir e largar imediatos vindos do rato ou do seu software: não excluída.** Na aplicação, o mesmo botão do mesmo rato dá toques longos, por isso o rato não faz sempre isto. Continua possível um comportamento que só aparece em certas condições, por exemplo um perfil do software do rato ligado ao programa em primeiro plano (no self-test, a consola).
 
 O self-test guarda agora (versão 2), por gatilho, a duração de cada toque físico em intervalos (menos de 100 ms, 100 a 249 ms, 250 a 499 ms, 500 a 999 ms, 1 a 3 s, 3 s ou mais), ao lado do `min_hold_ms`, e o atraso dos callbacks (p95, máximo e intervalos), sem teclas, posições nem nomes de janelas. Na próxima repetição pelo Sponsor: se os toques longos do botão 4 confirmarem, com atraso alto ou não, o problema está resolvido ou não se repetiu; se ficarem abaixo de 100 ms com atraso baixo, é o rato ou o seu software que manda a largada logo a seguir ao premir, e não o Quill.
+
+## Modo comando na Fase 3
+
+**Causas das 4 falhas da T11.** Nas duas instruções mal ouvidas, o verbo de encurtar saiu como duas palavras portuguesas e a palavra «passos» de uma lista saiu como outra palavra; o prompt não dizia ao modelo que lesse a instrução como o pedido de reescrita mais provável. Na instrução de encurtar bem ouvida, o modelo devolveu o texto igual e não havia nova tentativa. Na tradução para inglês, o modelo escreveu um termo técnico a preservar com uma terminação verbal inglesa; o prompt não dizia que os termos se copiam tal como estão.
+
+**O que mudou no produto (melhorias genéricas, sem frases do guião):**
+
+- **Prompt mais claro.** Diz que a instrução pode ter erros de reconhecimento e que uma palavra que soa a verbo de reescrita é esse verbo; que encurtar dá um texto claramente mais curto, com muito menos palavras, e respeita um tamanho pedido; que uma lista tem um item por linha, cada um começado por «- », sem linha de introdução; e que, ao traduzir, nomes, código e termos técnicos se copiam exatamente como estão no texto (sem plural, sem terminação verbal, sem tradução).
+- **No máximo uma segunda tentativa.** Quando a primeira resposta é recusada pela validação, vem igual à seleção, não é mais curta (mais de 80 % das palavras) quando a instrução pede para encurtar, não é uma lista quando a instrução pede uma lista, ou perdeu um nome ou termo técnico do vocabulário que estava na seleção (só quando a seleção não é inglesa), o produto faz mais uma chamada: a mesma conversa, com a primeira resposta como vez do modelo e uma nota com o que faltou. A segunda resposta passa pela mesma validação e só substitui a primeira quando é melhor; se a segunda chamada falhar, fica o resultado da primeira. Não há segunda tentativa quando a primeira chamada passou de 10 s, nem quando o Ollama está em baixo. Os pedidos de encurtar e de lista são reconhecidos por radicais de palavras em português e inglês, não por frases.
+- **Termos a preservar.** Os nomes e termos que a reescrita tem de manter vêm do vocabulário do produto (nomes pessoais, termos pessoais e termos genéricos) e seguem o vocabulário recarregado.
+- **Sem alteração:** a validação da resposta (preâmbulo, notas, fences, eco, tamanho) e a verificação exata dos termos na medição continuam iguais.
+
+**Dicas do Whisper para a instrução: testadas e não adotadas.** As palavras de comando como hotwords fizeram o WER da instrução subir para 43 % (repetições em ciclo); um prompt genérico de verbos deu 24,5 %, pior do que os 20,8 % atuais. Um prompt com frases de instrução deu 18,9 %, mas o Whisper passou a copiar frases parecidas com as do guião, o que é sobreajuste. A transcrição da instrução ficou como estava.
+
+**Resultado** (tabela gerada acima): 20 de 20 reescritas corretas nas duas medições, todas as contagens iguais. O produto aceitou as 20 respostas; as 20 passaram as verificações e o juiz disse sim a todas. As duas instruções mal ouvidas passaram só com o novo prompt; a de encurtar que vinha igual e a tradução com o termo flexionado passaram na segunda tentativa. O WER da instrução ficou em 20,8 %, porque o reconhecimento não mudou.
+
+**Latência** (só neste documento, porque muda de execução para execução): o p95 do modelo foi cerca de 0,6 s (0,59 e 0,61 s) e o p95 do largar do gatilho até à reescrita pronta cerca de 0,8 s (0,78 e 0,81 s), contra 0,8 s e 1,0 s na T11. A segunda tentativa só acrescenta tempo às reescritas que a usam: mais uma chamada ao modelo, e nessas duas o modelo demorou no total cerca de 0,5 s e 1,3 s.
+
+**Risco.** As melhorias foram medidas nas mesmas 20 instruções que revelaram as falhas. Para limitar o sobreajuste, as regras são genéricas, os testes usam instruções e textos inventados, e a mesma contagem saiu em duas medições. A confirmação final é o uso real do Sponsor.

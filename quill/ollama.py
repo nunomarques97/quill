@@ -16,6 +16,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 ALLOWED_CALLS = frozenset({("GET", "/api/tags"), ("POST", "/api/chat")})
@@ -76,14 +77,22 @@ class OllamaClient:
         models = self._call("GET", "/api/tags", timeout_s=timeout_s).get("models")
         return [m["name"] for m in models or [] if isinstance(m, dict) and isinstance(m.get("name"), str)]
 
-    def chat(self, model: str, system: str, user: str, max_tokens: int | None = None) -> ChatReply:
-        """One deterministic chat turn with thinking disabled; ``max_tokens`` caps the reply."""
+    def chat(self, model: str, system: str, user: str, max_tokens: int | None = None,
+             history: Sequence[tuple[str, str]] = ()) -> ChatReply:
+        """One deterministic chat turn with thinking disabled; ``max_tokens`` caps the reply.
+
+        ``history`` holds earlier (user message, assistant reply) turns of the
+        same conversation, sent before ``user``.
+        """
         options: dict = {"temperature": 0, "seed": 0}
         if max_tokens is not None:
             options["num_predict"] = max_tokens
+        messages = [{"content": system, "role": "system"}]
+        for asked, answered in history:
+            messages += [{"content": asked, "role": "user"}, {"content": answered, "role": "assistant"}]
         payload = {
             "model": model,
-            "messages": [{"content": system, "role": "system"}, {"content": user, "role": "user"}],
+            "messages": messages + [{"content": user, "role": "user"}],
             "stream": False,
             "think": False,
             "options": options,

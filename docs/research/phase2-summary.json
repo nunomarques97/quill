@@ -338,29 +338,28 @@
     "takes": 20,
     "instruction_wer": 0.2075,
     "instruction_exact": 5,
-    "valid": 19,
+    "valid": 20,
     "reasons": {
-      "command_rewritten": 19,
-      "command_unchanged": 1
+      "command_rewritten": 20
     },
     "checks": {
       "changed": 15,
-      "language": 19,
-      "list": 1,
-      "preserved": 18,
-      "shorter": 1
+      "language": 20,
+      "list": 2,
+      "preserved": 20,
+      "shorter": 3
     },
     "checks_applicable": {
       "changed": 15,
-      "language": 19,
+      "language": 20,
       "list": 2,
-      "preserved": 19,
-      "shorter": 2
+      "preserved": 20,
+      "shorter": 3
     },
-    "checks_passed": 16,
-    "judged": 16,
-    "judge_yes": 16,
-    "correct": 16,
+    "checks_passed": 20,
+    "judged": 20,
+    "judge_yes": 20,
+    "correct": 20,
     "by_kind": {
       "corrigir": {
         "takes": 3,
@@ -369,8 +368,8 @@
       },
       "encurtar": {
         "takes": 3,
-        "checks_passed": 1,
-        "correct": 1
+        "checks_passed": 3,
+        "correct": 3
       },
       "formal": {
         "takes": 3,
@@ -384,13 +383,13 @@
       },
       "inglês": {
         "takes": 4,
-        "checks_passed": 3,
-        "correct": 3
+        "checks_passed": 4,
+        "correct": 4
       },
       "lista": {
         "takes": 2,
-        "checks_passed": 1,
-        "correct": 1
+        "checks_passed": 2,
+        "correct": 2
       },
       "português": {
         "takes": 2,
@@ -407,6 +406,11 @@
         "checks_passed": 1,
         "correct": 1
       }
+    },
+    "second_attempts": 2,
+    "second_attempt_reasons": {
+      "not_shorter": 1,
+      "terms_changed": 1
     }
   },
   "acceptance": {

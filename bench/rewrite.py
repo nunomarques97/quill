@@ -25,6 +25,9 @@ Measured:
   JSON yes/no) reads the script instruction, the selection and the rewrite.
   A take is correct when the checks pass and the judge says yes; without the
   judge, correctness is reported as not judged;
+- second attempts: how many takes the product asked the model twice, and why
+  (codes of ``quill.command``: unchanged, invalid, not shorter, not a list,
+  a kept term changed); the rewrite time includes both calls;
 - latency p50/p95: release to final instruction text (streamed), the model's
   rewrite, and their sum. The command's two clipboard copies and the typing
   need the desktop and are not part of it (the app logs them per command).
@@ -228,9 +231,10 @@ class RecordingClient:
         self.client = client
         self.last = ""
 
-    def chat(self, model: str, system: str, user: str, max_tokens: int | None = None) -> object:
+    def chat(self, model: str, system: str, user: str, max_tokens: int | None = None,
+             history: Sequence[tuple[str, str]] = ()) -> object:
         self.last = ""
-        reply = self.client.chat(model, system, user, max_tokens=max_tokens)
+        reply = self.client.chat(model, system, user, max_tokens=max_tokens, history=history)
         self.last = reply.content
         return reply
 
@@ -255,6 +259,8 @@ class TakeResult:
     judge_reason: str = field(default="", repr=False)
     asr_s: float = 0.0
     rewrite_s: float = 0.0
+    attempts: int = 1
+    retry: tuple[str, ...] = ()
 
     @property
     def valid(self) -> bool:
@@ -302,7 +308,8 @@ def measure(
                     log(f"judge stopped: {exc}")
         results.append(TakeResult(
             take.id, row.kind, row.language, take.clean, heard, row.selection, reply, outcome.text, outcome.reason,
-            outcome.detail, checks, missing, judged, judge_reason, asr_s, outcome.seconds))
+            outcome.detail, checks, missing, judged, judge_reason, asr_s, outcome.seconds, outcome.attempts,
+            outcome.retry))
     if judge_failed:
         results = [replace(r, judged=None, judge_reason="") for r in results]
     return results
@@ -352,6 +359,8 @@ def aggregate(results: Sequence[TakeResult], dataset: Dataset | None = None) -> 
         "correct": correct if judge_complete else None,
         "correct_rate": _rate(correct, n) if judge_complete else None,
         "by_kind": by_kind,
+        "second_attempts": sum(r.attempts > 1 for r in results),
+        "second_attempt_reasons": dict(sorted(Counter(code for r in results for code in r.retry).items())),
         "latency": {
             "instruction_p50_s": _seconds([r.asr_s for r in results], 50),
             "instruction_p95_s": _seconds([r.asr_s for r in results], 95),
@@ -390,6 +399,7 @@ def write_private(run_dir: Path, results: Sequence[TakeResult], results_dir: Pat
         "selection": r.selection, "reply": r.reply, "rewrite": r.rewrite, "reason": r.reason, "detail": r.detail,
         "checks": r.checks, "missing": list(r.missing), "judge": r.judged, "judge_reason": r.judge_reason,
         "correct": r.correct, "asr_s": round(r.asr_s, 3), "rewrite_s": round(r.rewrite_s, 3),
+        "attempts": r.attempts, "retry": list(r.retry),
     } for r in results]
     takes_path = run_dir / "takes.json"
     takes_path.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -398,11 +408,14 @@ def write_private(run_dir: Path, results: Sequence[TakeResult], results_dir: Pat
         "",
         "Para cada linha, leia a instrução, a seleção e a reescrita, e escreva `sim` na coluna Sponsor quando a",
         "reescrita faz o que a instrução pede sem mudar o sentido, ou `não` com o motivo. `válida` é a validação",
-        "do produto; `verificações` são as regras determinísticas; `juiz` é o veredicto do modelo local.",
+        "do produto; `verificações` são as regras determinísticas; `juiz` é o veredicto do modelo local;",
+        "`tentativas` diz se o produto pediu uma segunda resposta ao modelo e porquê.",
         "Este ficheiro tem texto falado: fica só em bench/results/ (ignorado pelo Git).",
         "",
-        "| id | caso | instrução | ouvido | seleção | reescrita | válida | verificações | juiz | correta | Sponsor |",
-        "|----|------|-----------|--------|---------|-----------|--------|--------------|------|---------|---------|",
+        "| id | caso | instrução | ouvido | seleção | reescrita | válida | verificações | juiz | tentativas | correta "
+        "| Sponsor |",
+        "|----|------|-----------|--------|---------|-----------|--------|--------------|------|------------|---------"
+        "|---------|",
     ]
     for r in results:
         checks = ", ".join(f"{name} {'ok' if ok else 'falhou'}" for name, ok in r.checks.items())
@@ -413,8 +426,10 @@ def write_private(run_dir: Path, results: Sequence[TakeResult], results_dir: Pat
         valid = "sim" if r.valid else f"não ({r.reason}{': ' + r.detail if r.detail else ''})"
         correct = {True: "sim", False: "não", None: NONE_MARK}[r.correct]
         shown = r.rewrite if r.rewrite is not None else r.reply
+        attempts = str(r.attempts) + (f" ({', '.join(r.retry)})" if r.retry else "")
         lines.append("| " + " | ".join(_cell(value) for value in (
-            r.id, r.kind, r.instruction, r.heard, r.selection, shown, valid, checks, judge, correct)) + " |  |")
+            r.id, r.kind, r.instruction, r.heard, r.selection, shown, valid, checks, judge, attempts, correct))
+            + " |  |")
     table_path = run_dir / "table.md"
     table_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return takes_path, table_path
@@ -456,14 +471,15 @@ def default_streamer(hints: Sequence[str]) -> tuple[Streamer, dict]:
     return stream, {"model": STREAM_MODEL, **asdict(options)}
 
 
-def default_rewriter() -> tuple[CommandRewriter, str]:
-    """The product's command-mode rewriter (its Ollama URL and model from quill's config)."""
+def default_rewriter(terms: Sequence[str] = ()) -> tuple[CommandRewriter, str]:
+    """The product's command-mode rewriter (its Ollama URL and model from quill's config) with the kept terms."""
     from quill.config import load_config
     from quill.ollama import OllamaClient
 
     config = load_config()
     client = RecordingClient(OllamaClient(config.ollama_url, timeout_s=command.COMMAND_TIMEOUT_S))
-    return CommandRewriter(client, config.ollama_model), config.ollama_model
+    kept = tuple(terms)
+    return CommandRewriter(client, config.ollama_model, terms=lambda: kept), config.ollama_model
 
 
 def default_judge() -> tuple[Callable | None, str | None]:
@@ -510,6 +526,7 @@ def report_lines(summary: dict) -> list[str]:
         f"valid {summary['valid']}/{summary['takes']}; checks passed {summary['checks_passed']}/{summary['takes']}; "
         + (f"correct {summary['correct']}/{summary['takes']} ({_pct(correct)})" if correct is not None
            else "correct: not judged"),
+        f"second attempts {summary.get('second_attempts', 0)}/{summary['takes']}",
         "latency p50/p95 s: instruction {} / {}, rewrite {} / {}, total {} / {}".format(
             latency["instruction_p50_s"], latency["instruction_p95_s"], latency["rewrite_p50_s"],
             latency["rewrite_p95_s"], latency["total_p50_s"], latency["total_p95_s"]),
@@ -520,7 +537,7 @@ def main(
     argv: list[str] | None = None,
     *,
     streamer_factory: Callable[[Sequence[str]], tuple[Streamer, dict]] = default_streamer,
-    rewriter_factory: Callable[[], tuple[CommandRewriter, str]] = default_rewriter,
+    rewriter_factory: Callable[[Sequence[str]], tuple[CommandRewriter, str]] = default_rewriter,
     judge_factory: Callable[[], tuple[Callable | None, str | None]] = default_judge,
     results_dir: Path = RESULTS_DIR,
     clock: Callable[[], float] = time.perf_counter,
@@ -528,7 +545,7 @@ def main(
 ) -> int:
     from bench.metrics import load_terms
     from bench.pipeline import product_hints
-    from quill.vocabulary import LOCAL_VOCABULARY, VocabularyError, load_vocabulary
+    from quill.vocabulary import LOCAL_VOCABULARY, VocabularyError, hint_list, load_vocabulary
 
     parser = argparse.ArgumentParser(prog="bench.rewrite", description="Command-mode measurement on spoken instructions.")
     parser.add_argument("--config", type=Path, default=None, help="settings file (default local/bench.toml)")
@@ -559,6 +576,7 @@ def main(
         return 2
     by_id = {row.id: row for row in rows}
     hints = product_hints(vocabulary, [], load_terms()).vocabulary()
+    kept_terms = hint_list(vocabulary, (), load_terms())  # the terms the app's rewriter keeps
 
     from bench.engines.base import EngineError, EngineUnavailable
 
@@ -568,7 +586,7 @@ def main(
         streamer, stream_options = streamer_factory(hints)
         streamer(dataset.takes[:1])  # warm-up: loads the model and fills the caches
         transcripts = streamer(dataset.takes)
-        rewriter, model = rewriter_factory()
+        rewriter, model = rewriter_factory(kept_terms)
         warm = rewriter.rewrite(WARMUP_SELECTION, WARMUP_INSTRUCTION)  # loads the Ollama model
         if warm.reason == command.OLLAMA_UNAVAILABLE:
             out("error: Ollama unavailable for the rewrite model")

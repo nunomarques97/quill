@@ -586,6 +586,14 @@ class AcceptanceTest(unittest.TestCase):
         self.assertEqual((block["takes"], block["correct"], block["instruction_wer"]), (20, 16, 0.2075))
         self.assertNotIn("latency", block)
         self.assertNotIn("1.011", json.dumps(block))
+        self.assertIsNone(block["second_attempts"])  # a summary from before the second attempt
+        later = dict(rewrite_summary(), second_attempts=2, second_attempt_reasons={"not_shorter": 1, "unchanged": 1})
+        block = pipeline.command_mode_block(later)
+        self.assertEqual((block["second_attempts"], block["second_attempt_reasons"]),
+                         (2, {"not_shorter": 1, "unchanged": 1}))
+        summary = summary_with()
+        summary["command_mode"] = block
+        self.assertIn(" | 16 de 20 | 2 de 20 |", pipeline.render_block(summary))
         with self.assertRaises(pipeline.SettingsError):
             pipeline.command_mode_block({"kind": "pipeline"})
 
@@ -648,7 +656,7 @@ class AcceptanceTest(unittest.TestCase):
         summary["acceptance"] = acceptance()
         block = pipeline.render_block(summary)
         self.assertIn("| large-v3-turbo + qwen3:8b | 20 | " + pipeline._pt_percent(0.2075)
-                      + " | 5 de 20 | 19 de 20 | 16 de 20 | 16 de 16 | 16 de 20 |", block)
+                      + " | 5 de 20 | 19 de 20 | 16 de 20 | 16 de 16 | 16 de 20 | — |", block)
         self.assertIn("| encurtar | 3 | 1 | 1 |", block)
         self.assertIn("perdidos 0, a mais 0, trocados 0", block)
         self.assertIn("indicador em primeiro plano em 0 de 1026 amostras", block)

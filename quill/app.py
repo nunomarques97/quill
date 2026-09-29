@@ -370,7 +370,9 @@ class QuillApp:
                                      client=parts.client)
         self.command: CommandMode | None = None
         if config.trigger("command").enabled and parts.command_client is not None:
-            rewriter = CommandRewriter(parts.command_client, config.ollama_model)
+            # The names and terms a rewrite keeps verbatim follow the reloaded vocabulary.
+            rewriter = CommandRewriter(parts.command_client, config.ollama_model,
+                                       terms=lambda: self.pipeline.keep)
             self.command = CommandMode(api, self.injector, rewriter, lambda target: window_info(api, target.hwnd),
                                        **parts.command_options)
         self.correction_key = CorrectionKey(self.learner, self._read_selection, api.foreground_window)

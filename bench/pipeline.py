@@ -134,7 +134,7 @@ MIN_INTENT = 0.95
 # Command mode and the manual desktop self-tests: deterministic counts only.
 COMMAND_MODE_KEYS = (
     "takes", "instruction_wer", "instruction_exact", "valid", "reasons", "checks", "checks_applicable",
-    "checks_passed", "judged", "judge_yes", "correct", "by_kind",
+    "checks_passed", "judged", "judge_yes", "correct", "by_kind", "second_attempts", "second_attempt_reasons",
 )
 SELFTESTS = ("typing", "triggers", "indicator")
 TYPING_KEYS = (
@@ -882,7 +882,7 @@ CORRECTIONS_HEADER = (
 )
 COMMAND_HEADER = (
     "Modo comando", "n", "WER da instrução", "Instruções sem erros", "Aceites pelo produto", "Verificações passadas",
-    "Juiz sim", "Corretas",
+    "Juiz sim", "Corretas", "Segundas tentativas",
 )
 KIND_HEADER = ("Caso", "n", "Verificações passadas", "Corretas")
 ACCEPTANCE_HEADER = ("Verificação manual no desktop", "Data", "Resultado")
@@ -968,6 +968,7 @@ def _command_lines(block: object) -> list[str]:
         _of(block.get("valid"), takes), _of(block.get("checks_passed"), takes),
         EMPTY if judge_yes is None else _of(judge_yes, block.get("judged")),
         EMPTY if block.get("correct") is None else _of(block.get("correct"), takes),
+        EMPTY if block.get("second_attempts") is None else _of(block.get("second_attempts"), takes),
     )
     lines = _table(COMMAND_HEADER) + ["| " + " | ".join(cells) + " |"]
     kinds = block.get("by_kind") if isinstance(block.get("by_kind"), dict) else {}

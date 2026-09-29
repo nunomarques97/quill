@@ -325,10 +325,10 @@
   "latency": null,
   "vocabulary": {
     "names": 6,
-    "terms": 0,
+    "terms": 46,
     "variants": 0,
     "hints": 41,
-    "hints_dropped": 0,
+    "hints_dropped": 46,
     "restreamed": true
   },
   "command_mode": {

@@ -290,7 +290,7 @@ class MeasureTest(unittest.TestCase):
         summary, calls = self.vocabulary_run(personal)
         self.assertEqual(len(calls), 4)  # streamed, then streamed again for the vocabulary stage, per set
         self.assertEqual(calls[0], ["omega", "zeta-board", *TERMS])
-        self.assertEqual(calls[1], ["Nimbus-Deck", "omega", "zeta-board", "kubectl", *TERMS])
+        self.assertEqual(calls[1], ["Nimbus-Deck", "omega", "zeta-board", *TERMS, "kubectl"])
         self.assertEqual(summary["vocabulary"], {"names": 1, "terms": 1, "variants": 1, "hints": 7, "hints_dropped": 0, "restreamed": True})
         self.assertEqual(summary["sets"]["dictation"]["stages"]["vocabulary"]["name_error_rate"], 0.0)
         run = self.results / "pipeline" / "run" / "dictation"
@@ -298,13 +298,19 @@ class MeasureTest(unittest.TestCase):
         self.assertIn("zeta bord", source[0]["hypothesis"])
 
     def test_product_hint_order(self):
-        from quill.vocabulary import parse_vocabulary
+        from quill.vocabulary import HINT_MAX_CHARS, parse_vocabulary
 
         personal = parse_vocabulary({"names": ["Zulo"], "terms": ["deploy", "kubectl"]})
         hints = pipeline.product_hints(personal, ["zeta-board", "omega"], TERMS)
-        self.assertEqual(hints.vocabulary(), ["Zulo", "omega", "zeta-board", "deploy", "kubectl", "commit", "review"])
+        # Generic terms before personal ones (the measured list fills the hint room).
+        self.assertEqual(hints.vocabulary(), ["Zulo", "omega", "zeta-board", "deploy", "commit", "review", "kubectl"])
         self.assertEqual(pipeline.product_hints(pipeline.NO_VOCABULARY, ["zeta-board", "omega"], TERMS).vocabulary(),
                          pipeline.build_hints(["zeta-board", "omega"], TERMS).vocabulary())
+        many = parse_vocabulary({"names": ["Zulo"], "terms": [f"Term{i:03}" for i in range(0, 900, 11)]})
+        capped = pipeline.product_hints(many, ["zeta-board"], TERMS).vocabulary()
+        self.assertEqual(capped[:5], ["Zulo", "zeta-board", "deploy", "commit", "review"])
+        self.assertLessEqual(len(", ".join(capped)), HINT_MAX_CHARS)
+        self.assertLess(len(capped), 1 + 1 + len(TERMS) + len(many.terms))
 
     def failed_cleanup(self, summary):
         return [line for met, line in pipeline.check_targets(summary, ["cleanup"]) if not met]

@@ -101,7 +101,7 @@ from bench.settings import RESULTS_DIR, Settings, SettingsError, load_settings
 from quill.cleanup import Cleanup, CleanupResult, clean_text
 from quill.corrections import ACTIVE, Corrections, Replacement, derive, phrase_key
 from quill.profiles import DEFAULT as DEFAULT_PROFILE, apply_profile
-from quill.vocabulary import EMPTY as NO_VOCABULARY, LOCAL_VOCABULARY, Matcher, Vocabulary, VocabularyError, hint_list, hints_within_limit, load_vocabulary
+from quill.vocabulary import EMPTY as NO_VOCABULARY, LOCAL_VOCABULARY, Matcher, Vocabulary, VocabularyError, hint_list, hints_within_limit, load_vocabulary, whisper_hints
 from quill.whisper import DEFAULT_MODEL
 
 SETS = ("commands", "dictation")
@@ -413,8 +413,8 @@ def profile_samples(samples: Sequence[Sample], keep: Sequence[str], clock: Calla
 
 
 def product_hints(vocabulary: Vocabulary, names: Sequence[str], terms: Sequence[str]) -> Hints:
-    """The product's hint order: personal names, resolved names, personal terms, generic terms."""
-    return Hints(names=tuple(hint_list(vocabulary, sorted(names), terms)))
+    """The product's hints: personal names, resolved names, generic terms, personal terms, within the cap."""
+    return Hints(names=tuple(whisper_hints(vocabulary, sorted(names), terms)))
 
 
 def saved_samples(run_dir: Path, set_name: str, stage: str, dataset: Dataset) -> list[Sample]:
@@ -622,7 +622,7 @@ def measure(
     if "streamed" in stages and stream_options is not None:
         summary["engine"]["streaming"] = dict(stream_options)
     if "vocabulary" in stages:
-        kept, dropped = hints_within_limit(personal.vocabulary())
+        kept, dropped = hints_within_limit(hint_list(vocabulary, sorted(names), terms))
         summary["vocabulary"] = {**vocabulary.counts(), "hints": kept, "hints_dropped": dropped, "restreamed": restream}
     for set_name, (set_settings, dataset) in sets.items():
         block: dict = {"dataset": dataset_block(set_settings, dataset), "stages": {}}

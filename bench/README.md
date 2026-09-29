@@ -277,10 +277,11 @@ terms, variants, hints kept and dropped, whether the takes were streamed
 again), never an entry.
 
 - **Hints.** The product passes Whisper, in this priority order: personal
-  names, the resolved project names, personal terms, then
-  `bench/terms_en.txt`; duplicates are dropped ignoring case, and the list is
-  cut at the prompt limit (600 characters) from the end, so names are the
-  last to go (`quill.vocabulary.hint_list`). Variants are never hints. When
+  names, the resolved project names, `bench/terms_en.txt`, then personal
+  terms; duplicates are dropped ignoring case, and the list is cut at
+  `HINT_MAX_CHARS` (330 characters) from the end, so names are the last to
+  go and personal terms the first (`quill.vocabulary.whisper_hints`; a longer
+  list made the dictation set worse, see FASE2). Variants are never hints. When
   this list differs from the baseline hints (resolved names sorted, then the
   generic terms), the `vocabulary` stage streams and cleans every take again
   with it before matching (per-take text in `vocabulary-source.json`);

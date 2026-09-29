@@ -14,7 +14,10 @@ ones, tests pass fakes): the low-level hooks and the trigger machine
 model and the personal vocabulary as hints (``quill.streaming``), the
 indicator (``quill.indicator``), the text pipeline (``TextPipeline``:
 cleanup, vocabulary matching, learned corrections, the target window's
-profile) and the injector (``quill.inject``). Sessions are run by
+profile) and the injector (``quill.inject``). The personal vocabulary is
+read again before a dictation when its file changed (``VocabularyFile``):
+the Whisper hints and the matcher change from that dictation on, and an
+invalid file keeps the previous vocabulary. Sessions are run by
 ``quill.session.SessionManager``. Command mode (``quill.command``) rewrites
 the selection with the local Ollama model when the command trigger is bound.
 Learning from corrections is wired too:
@@ -56,7 +59,8 @@ from quill.profiles import CLAUDE_CODE, Profiles, StyleError, WindowInfo, apply_
 from quill.session import CLEANUP_FALLBACK, Processed, SessionManager
 from quill.streaming import StreamingTranscriber, options_for
 from quill.triggers import KEY, InputEvent
-from quill.vocabulary import Matcher, Vocabulary, VocabularyError, hint_list, load_generic_terms, load_vocabulary
+from quill.vocabulary import (Matcher, Vocabulary, VocabularyError, VocabularyFile, hint_list, load_generic_terms,
+                              load_vocabulary, whisper_hints)
 from quill.whisper import MODELS, Decode, model_present
 
 log = logging.getLogger("quill.app")
@@ -261,20 +265,34 @@ class TextPipeline:
     The same stages, in the same order, as ``bench.pipeline`` measures. The
     target window's profile is chosen once per session (``describe``); it
     also tells the send trigger whether the target is Claude Code.
+    ``use_vocabulary`` swaps the words to keep and the matcher at once; a
+    call already running finishes with the ones it started with.
     """
 
     def __init__(self, config: Config, *, vocabulary: Vocabulary, generic_terms: Sequence[str],
                  describe: Callable[[Target], WindowInfo | None], learner: Learner | None = None,
                  client: object | None = None) -> None:
         self.config = config
-        self.keep = tuple(hint_list(vocabulary, (), generic_terms))
-        self.matcher = Matcher(vocabulary, (), generic_terms)
+        self.generic_terms = tuple(generic_terms)
+        self.use_vocabulary(vocabulary)
         self.profiles = Profiles(config.profiles)
         self.describe = describe
         self.learner = learner
         self.client = client
         if config.cleanup_mode == "llm" and client is None:
             raise ValueError("the llm cleanup needs an Ollama client")
+
+    def use_vocabulary(self, vocabulary: Vocabulary) -> None:
+        self._lexicon = (tuple(hint_list(vocabulary, (), self.generic_terms)),
+                         Matcher(vocabulary, (), self.generic_terms))
+
+    @property
+    def keep(self) -> tuple[str, ...]:
+        return self._lexicon[0]
+
+    @property
+    def matcher(self) -> Matcher:
+        return self._lexicon[1]
 
     def _style(self, profile: str) -> str:
         try:
@@ -291,21 +309,22 @@ class TextPipeline:
             log.warning("target window not described (%s)", type(exc).__name__)
             info = None
         profile = self.profiles.select(info)
+        keep, matcher = self._lexicon  # one vocabulary for the whole text
         notice = None
         if self.config.cleanup_mode == "llm":
-            cleanup = Cleanup("llm", client=self.client, model=self.config.ollama_model, keep=self.keep,
+            cleanup = Cleanup("llm", client=self.client, model=self.config.ollama_model, keep=keep,
                               style=self._style(profile))
         else:
-            cleanup = Cleanup("rules", keep=self.keep)
+            cleanup = Cleanup("rules", keep=keep)
         cleaned = cleanup(raw)
         if cleaned.fallback:
             log.warning("llm cleanup fell back to the rules (%s)", cleaned.fallback.split(":")[0])
             if cleaned.fallback.startswith("llm failed"):
                 notice = CLEANUP_FALLBACK
-        text = self.matcher.apply(cleaned.text)
+        text = matcher.apply(cleaned.text)
         if self.learner is not None:
             text = self.learner.apply(text)
-        text = apply_profile(text, profile, self.keep)
+        text = apply_profile(text, profile, keep)
         return Processed(text, profile, profile == CLAUDE_CODE, notice)
 
 
@@ -327,6 +346,7 @@ class Parts:
     command_client: object | None = None  # local Ollama client of command mode; None disables it
     vocabulary: Vocabulary = field(default_factory=Vocabulary)
     generic_terms: Sequence[str] = ()
+    vocabulary_file: VocabularyFile | None = None  # read again before each dictation; None: never reloaded
     clock: Callable[[], float] = time.perf_counter
     clock_ms: Callable[[], float] = monotonic_ms
     wall_clock: Callable[[], float] = time.time
@@ -342,7 +362,7 @@ class QuillApp:
         api = parts.api
         self.injector = Injector(api, **parts.inject_options)
         self.focus = ClickToFocus(api, config.click_to_focus, **parts.focus_options)
-        hints = hint_list(parts.vocabulary, (), parts.generic_terms)
+        hints = whisper_hints(parts.vocabulary, (), parts.generic_terms)
         self.transcriber = StreamingTranscriber(parts.model, options_for(config.engine_model), hints)
         self.learner = Learner(CorrectionStore(config.corrections_path), clock=parts.wall_clock)
         self.pipeline = TextPipeline(config, vocabulary=parts.vocabulary, generic_terms=parts.generic_terms,
@@ -478,6 +498,21 @@ class QuillApp:
     def _session_started(self) -> None:
         if self.edits is not None:
             self.edits.stop()
+        self._refresh_vocabulary()
+
+    def _refresh_vocabulary(self) -> None:
+        """A changed vocabulary file: new hints and matcher from this dictation on."""
+        source = self.parts.vocabulary_file
+        if source is None:
+            return
+        vocabulary = source.refresh()
+        if vocabulary is None:
+            return
+        self.transcriber.vocabulary = tuple(whisper_hints(vocabulary, (), self.parts.generic_terms))
+        self.pipeline.use_vocabulary(vocabulary)
+        counts = vocabulary.counts()
+        log.info("vocabulary reloaded (%d names, %d terms, %d variants)", counts["names"], counts["terms"],
+                 counts["variants"])
 
     def _typed(self, target: Target, text: str) -> None:
         dictation = Dictation(new_dictation_id(), text, target.hwnd, self.parts.wall_clock())
@@ -530,8 +565,10 @@ class QuillApp:
         return result.text
 
 
-def load_personal(config: Config) -> tuple[Vocabulary, list[str]]:
-    return load_vocabulary(config.vocabulary_path), load_generic_terms()
+def load_personal(config: Config) -> tuple[VocabularyFile, list[str]]:
+    source = VocabularyFile(config.vocabulary_path)
+    source.load()
+    return source, load_generic_terms()
 
 
 def real_parts(config: Config) -> Parts:
@@ -542,7 +579,7 @@ def real_parts(config: Config) -> Parts:
     from quill.whisper import Whisper
     from quill.win32 import User32
 
-    vocabulary, terms = load_personal(config)
+    source, terms = load_personal(config)
     return Parts(
         api=User32(),
         model=WarmModel(Whisper(config.engine_model)),
@@ -553,8 +590,9 @@ def real_parts(config: Config) -> Parts:
         client=OllamaClient(config.ollama_url) if config.cleanup_mode == "llm" else None,
         command_client=(OllamaClient(config.ollama_url, timeout_s=COMMAND_TIMEOUT_S)
                         if config.trigger("command").enabled else None),
-        vocabulary=vocabulary,
+        vocabulary=source.vocabulary,
         generic_terms=terms,
+        vocabulary_file=source,
     )
 
 

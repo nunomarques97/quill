@@ -161,7 +161,7 @@ Nos comandos, o `qwen3:8b` deu WER 28,9 % (regras 30,0 %), nomes 13,2 % (18,4 %)
 
 O vocabulário pessoal fica em `local/vocabulary.toml`, que o Git ignora; o formato está em [vocabulary.example.toml](../../vocabulary.example.toml), só com entradas inventadas, e `py -3.12 -m quill.vocabulary --check` valida o ficheiro e mostra só contagens. Tem nomes de projeto, termos técnicos e, em `[variants]`, formas faladas ou mal ouvidas de uma entrada. O código está em `quill/vocabulary.py` e é o mesmo que a aplicação usa.
 
-- **Dicas do Whisper, por esta ordem:** nomes pessoais, nomes de projeto resolvidos (só no harness), termos pessoais e a lista genérica `bench/terms_en.txt`. Os repetidos saem (sem distinguir maiúsculas) e a lista é cortada pelo fim quando passa o limite do prompt (600 caracteres), por isso os nomes são os últimos a sair. As variantes nunca vão nas dicas. Na medição couberam as 41 dicas e nenhuma foi cortada.
+- **Dicas do Whisper, por esta ordem:** nomes pessoais, nomes de projeto resolvidos (só no harness), termos pessoais e a lista genérica `bench/terms_en.txt`. Os repetidos saem (sem distinguir maiúsculas) e a lista é cortada pelo fim quando passa o limite do prompt (600 caracteres), por isso os nomes são os últimos a sair. As variantes nunca vão nas dicas. Na medição couberam as 41 dicas e nenhuma foi cortada. Na Fase 3 o limite passou a 330 caracteres e os termos pessoais passaram para depois da lista genérica (ver [Vocabulário pessoal na Fase 3](#vocabulário-pessoal-na-fase-3-termos-de-trading)).
 - **Corretor depois do reconhecimento:** depois da limpeza, uma palavra ou um grupo de palavras muito parecido com uma entrada passa a ter a grafia da entrada. A comparação ignora acentos, maiúsculas, hífenes e espaços e aceita no máximo 1 letra diferente em entradas de 7 ou mais letras e 2 em entradas de 12 ou mais, sempre com a mesma primeira letra. Entradas curtas só mudam quando são ouvidas exatamente ou como variante declarada; plurais e palavras comuns parecidas (por exemplo «pronto» perto de «prompt») ficam como estão; se duas entradas estiverem à mesma distância, nada muda. O corretor usa só a lista do vocabulário, nunca o texto de referência.
 - **Como se mediu:** o `local/vocabulary.toml` usado tem os 6 nomes de projeto do projeto de referência, sem termos nem variantes. Não se acrescentaram variantes tiradas das próprias gravações, porque isso seria medir com as respostas. Como as dicas mudam (mais nomes, à frente), a etapa volta a transcrever por blocos e a limpar cada gravação com as dicas do produto antes do corretor; as etapas anteriores ficam com as dicas da baseline, para continuarem comparáveis. As etapas `raw`, `streamed` e `cleanup` deram exatamente os mesmos valores da T4.
 
@@ -252,6 +252,28 @@ A meta de intenção é a mais distante nos dois conjuntos. O juiz foi revisto �
 A recomendação foi A, como ensaio com critério de paragem, com B em paralelo.
 
 **Decisão do Sponsor (2026-09-29): opção B.** Acabar agora a aplicação (indicador, aplicação, modo comando e aceitação) e voltar a medir depois de algumas semanas de uso real, com o vocabulário e as correções que o uso diário for criando. Essas correções passam a ser o material de um ensaio posterior de afinação local (opção A), sem sessões de gravação extra. Nada é instalado agora. As metas não baixam: o WER final ≤ 10 % e a intenção ≥ 95 % continuam por cumprir nos dois conjuntos e esta distância fica registada como aberta até à nova medição.
+
+## Vocabulário pessoal na Fase 3: termos de trading
+
+**O que mudou.** O Sponsor pode acrescentar termos sem editar o ficheiro (`py -3.12 -m quill.vocabulary --add "termo"`, `--add-name` e `--add-variant`; passos em [USAR.md](../USAR.md)). O comando valida a entrada, salta repetidos (sem distinguir maiúsculas nem acentos), escreve o ficheiro de uma vez só, mantém as outras entradas e os comentários e mostra só contagens. A aplicação lê outra vez o ficheiro antes de cada ditado quando ele mudou; um ficheiro inválido deixa o vocabulário anterior e fica registado no log sem valores.
+
+**Semente local.** O `local/vocabulary.toml` (ignorado pelo Git) recebeu 46 termos públicos de cripto e trading, depois dos 6 nomes: nomes de corretoras e moedas, tipos de ordem, indicadores e vocabulário de derivados e de mercado. Ficaram de fora palavras inglesas a uma letra de uma palavra portuguesa comum (por exemplo, o plural inglês de «futuro»), porque o corretor as trocaria no ditado.
+
+**O limite das dicas.** As dicas vão ao mesmo tempo nas hotwords e no prompt do Whisper, ao lado de até 200 caracteres do texto anterior. A lista da Fase 2 (6 nomes e 35 termos genéricos, 327 caracteres, cerca de 210 tokens com o texto anterior) quase enche o espaço com que o Whisper foi treinado (223 tokens). Com os termos pessoais à frente da lista genérica, mediu-se no ditado real:
+
+| Variante (etapa `profiles`, ditado) | Dicas | WER limpo | Erro termos EN | Erro nomes | Intenção preservada |
+|---|---|---|---|---|---|
+| Fase 2 (sem termos pessoais) | 41 | 10,5 % | 2,3 % | 0,0 % | 58,3 % |
+| 30 termos de trading à frente, limite de 600 caracteres | 66 | 36,2 % | 34,1 % | 11,1 % | 30,6 % |
+| 15 termos de trading à frente, limite de 480 caracteres | 56 | 10,9 % | 2,3 % | 0,0 % | 55,6 % |
+| 15 termos de trading à frente, limite de 330 caracteres | 37 | 10,5 % | 4,5 % | 0,0 % | 55,6 % |
+| **46 termos de trading depois da lista genérica, limite de 330 caracteres (produto)** | **41** | **10,5 %** | **2,3 %** | **0,0 %** | **58,3 %** |
+
+Cada termo de trading nas dicas tira o lugar a um termo genérico medido ou alarga o prompt, e as duas coisas pioram o ditado. Por isso o produto usa agora um limite de 330 caracteres e a ordem: nomes, termos genéricos, termos pessoais. Os termos pessoais só entram nas dicas quando sobra espaço (hoje não sobra: `--check` mostra 41 de 87 dicas, 46 cortadas), mas são sempre usados pelo corretor depois do reconhecimento e pela limpeza. Com a semente, o conjunto completo foi medido outra vez: todas as métricas dos dois conjuntos ficaram iguais às da Fase 2 (tabela gerada acima; só mudam as contagens do vocabulário no resumo).
+
+**O que não está medido.** Não há gravações do Sponsor a falar de trading, por isso o efeito da semente nessas conversas não está medido. O corretor escreve bem um termo quando o Whisper o ouve quase certo (uma ou duas letras de diferença, espaços e hífenes ignorados); um termo ouvido como palavras portuguesas diferentes só é corrigido com uma variante declarada (`--add-variant`).
+
+**Decisão do Sponsor em aberto.** Pôr os termos de trading nas dicas custa, no ditado medido, 1 termo inglês e 1 frase de intenção (15 termos à frente da lista genérica). Opções: A) manter a ordem atual, medida sem perdas, e acrescentar variantes para os termos que o Quill ouvir mal; B) pôr os termos pessoais à frente, aceitando a perda medida; C) numa tarefa futura, escolher as dicas pela janela ou pelo projeto ativo (termos de trading só no projeto de trading), medido com 2 ou 3 gravações reais de conversas de trading. A recomendação é A agora e C quando houver gravações.
 
 ## Modo comando e verificações manuais (T11)
 

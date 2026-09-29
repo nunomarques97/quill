@@ -20,6 +20,7 @@ from quill import app as A
 from quill import inject
 from quill import session as S
 from quill import startup
+from quill import vocabulary as V
 from quill.config import EXAMPLE_CONFIG, load_config
 from quill.corrections import CorrectionStore
 from quill.indicator.render import ERROR, LISTENING, LOADING, SENT
@@ -129,12 +130,12 @@ class AppCase(unittest.TestCase):
     def hooks(self):
         return self.hook_fakes[-1]
 
-    def make_app(self, config=None, client=None, kernel=None):
+    def make_app(self, config=None, client=None, kernel=None, **parts):
         focus_clock, inject_clock = FakeClock(), FakeClock()
         parts = A.Parts(api=self.api, model=self.model, capture_factory=self.captures, indicator=self.indicator,
                         instance=A.InstanceLock(kernel or self.kernel), hooks_factory=self.new_hooks,
                         client=client, focus_options={"sleep": focus_clock.sleep, "clock": focus_clock},
-                        inject_options={"sleep": inject_clock.sleep, "clock": inject_clock})
+                        inject_options={"sleep": inject_clock.sleep, "clock": inject_clock}, **parts)
         quill = A.QuillApp(config or self.config, parts)
         self.addCleanup(quill.stop)
         return quill
@@ -422,6 +423,86 @@ class LifecycleTest(AppCase):
         self.assertFalse(quill.running)
         self.assertEqual(self.kernel.objects, {})
         self.assertEqual(self.indicator.stops, 1)
+
+
+class VocabularyReloadTest(AppCase):
+    """The personal vocabulary file (in the temporary folder) edited while Quill runs."""
+
+    def reloading_app(self):
+        path = self.config.vocabulary_path
+        path.write_bytes(b'names = ["Zulo"]\n')
+        source = V.VocabularyFile(path)
+        quill = self.make_app(vocabulary=source.load(), vocabulary_file=source)
+        return self.start(quill), path
+
+    def prompts(self, since=0):
+        return [call.options.initial_prompt or "" for call in self.model.calls[since:]]
+
+    def test_a_changed_file_is_used_from_the_next_dictation(self):
+        quill, path = self.reloading_app()
+        self.hold((1, 2), quill=quill)
+        self.assertEqual(self.api.received_text(), "w1 w2.")
+        self.assertTrue(self.prompts() and all("Vocabulário: Zulo." in p for p in self.prompts()))
+        calls = len(self.model.calls)
+        with self.assertLogs("quill", level="INFO") as logs:
+            V.add_entries(path, terms=["Grafana"], variants=[("Zulo", "w2")])
+            self.hold((1, 2), quill=quill)
+        self.assertEqual(self.api.received_text(), "w1 w2.w1 Zulo.")  # the new matcher
+        self.assertTrue(all("Vocabulário: Zulo, Grafana." in p for p in self.prompts(calls)))  # the new hints
+        text = "\n".join(logs.output)
+        self.assertIn("vocabulary reloaded (1 names, 1 terms, 1 variants)", text)
+        self.assertNotIn("Grafana", text)
+        self.assertEqual(quill.pipeline.keep, ("Zulo", "Grafana"))
+
+    def test_an_invalid_file_keeps_the_previous_vocabulary(self):
+        quill, path = self.reloading_app()
+        path.write_bytes(b'names = ["Zulo"]\n[variants]\n"Zulo" = ["w2"]\n')
+        self.hold((2,), quill=quill)
+        self.assertEqual(self.api.received_text(), "Zulo.")
+        calls = len(self.model.calls)
+        path.write_bytes(b'names = ["Secretname", "secretname"]\n')
+        with self.assertLogs("quill", level="INFO") as logs:
+            self.hold((2,), quill=quill)
+        self.assertEqual(self.api.received_text(), "Zulo.Zulo.")
+        self.assertTrue(all("Vocabulário: Zulo." in p for p in self.prompts(calls)))
+        text = "\n".join(logs.output)
+        self.assertIn("names[1] repeats names[0]; the previous vocabulary stays", text)
+        self.assertNotIn("Secretname", text)
+        self.assertNotIn("vocabulary reloaded", text)
+        # Fixed again: used from the next dictation.
+        path.write_bytes(b'names = ["Anta"]\n[variants]\n"Anta" = ["w2"]\n')
+        self.hold((2,), quill=quill)
+        self.assertEqual(self.api.received_text(), "Zulo.Zulo.Anta.")
+
+    def test_an_unchanged_file_is_not_read_again(self):
+        quill, path = self.reloading_app()
+        lexicon = (quill.pipeline.keep, quill.pipeline.matcher, quill.transcriber.vocabulary)
+        with mock.patch.object(V, "parse_text", wraps=V.parse_text) as parse:
+            self.hold((1,), quill=quill)
+            self.hold((2,), quill=quill)
+        parse.assert_not_called()
+        self.assertEqual(self.api.received_text(), "w1.w2.")
+        after = (quill.pipeline.keep, quill.pipeline.matcher, quill.transcriber.vocabulary)
+        self.assertTrue(all(a is b for a, b in zip(lexicon, after)))
+
+    def test_reloaded_hints_stay_within_the_cap(self):
+        quill, path = self.reloading_app()
+        terms = [f"Term{i:03}" for i in range(80)]
+        added = V.add_entries(path, terms=terms).vocabulary
+        self.hold((1,), quill=quill)
+        hints = quill.transcriber.vocabulary
+        self.assertEqual(hints[:2], ("Zulo", "Term000"))
+        self.assertLessEqual(len(", ".join(hints)), V.HINT_MAX_CHARS)
+        self.assertLess(len(hints), len(added.entries))
+        self.assertEqual(len(quill.pipeline.keep), len(added.entries))  # cleanup still keeps every entry
+
+    def test_reload_survives_stop_and_start(self):
+        quill, path = self.reloading_app()
+        quill.stop()
+        V.add_entries(path, variants=[("Zulo", "w3")])
+        self.start(quill)
+        self.hold((3,), quill=quill)
+        self.assertEqual(self.api.received_text(), "Zulo.")
 
 
 class CorrectionKeyTest(AppCase):

@@ -4,10 +4,18 @@
 # entries there. Check it with:
 #   py -3.12 -m quill.vocabulary --check local/vocabulary.toml
 #
-# Whisper receives the vocabulary as hints, in this order: names, then terms,
-# then the generic terms of bench/terms_en.txt. The prompt holds about 600
-# characters; entries that do not fit are dropped from the end, so list the
-# most important names and terms first.
+# Or add entries without editing the file (comments and other entries are
+# kept; entries already listed are skipped; the output shows counts only):
+#   py -3.12 -m quill.vocabulary --add "kubectl" --add "pull request"
+#   py -3.12 -m quill.vocabulary --add-name "Nimbus-Deck"
+#   py -3.12 -m quill.vocabulary --add-variant "kubectl" "cube control"
+# A running Quill uses the changed file from the next dictation on.
+#
+# Whisper receives the vocabulary as hints, in this order: names, then the
+# generic terms of bench/terms_en.txt, then terms. The hints hold at most 330
+# characters (a longer list made recognition worse); entries that do not fit
+# are dropped from the end, so list the most important names and terms
+# first. A term that does not fit is still matched after recognition.
 #
 # After recognition, a word or group of words that is very close to an entry
 # (same first letter, at most one or two letters different, only for entries

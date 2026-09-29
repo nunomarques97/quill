@@ -35,6 +35,9 @@ py -3.12 -m bench.record --redo dt-05,dt-07         # record takes again
 py -3.12 -m bench.pipeline --set all --dry-run      # counts of both sets, no GPU
 .venv\Scripts\python -m bench.pipeline --set all --stage raw --summary docs/research/phase2-summary.json
 .venv\Scripts\python -m bench.pipeline --set all --stage streamed --summary docs/research/phase2-summary.json
+.venv\Scripts\python -m bench.pipeline --set all --stage cleanup --summary docs/research/phase2-summary.json
+py -3.12 -m bench.pipeline --compare-cleanup bench/results/pipeline/<run>   # rules vs qwen3:8b, no GPU
+py -3.12 -m bench.intent --run bench/results/pipeline/<run> --reviews bench/results/intent-review/<file>.json [--rejudge]
 .venv\Scripts\python -m bench.streaming --set all --mode deterministic   # streamed text quality
 .venv\Scripts\python -m bench.streaming --set all --mode realtime        # release-to-final latency
 py -3.12 -m bench.pipeline --summary docs/research/phase2-summary.json --require complete --require overall
@@ -133,9 +136,11 @@ replays every take through the product's streaming transcription
 deterministic schedule, with the product's engine model and its tuning
 (`large-v3-turbo` by default, loaded once next to large-v3); its text is the
 source of every later stage. The streaming model and options used are
-recorded under `engine.streaming`. Later stages (`cleanup`,
-`vocabulary`, `corrections`, `profiles`) are cumulative and added by later
-tasks. Per set and stage the summary holds:
+recorded under `engine.streaming`. `--stage cleanup` runs both and then
+applies the product's deterministic cleanup rules (`quill.cleanup.clean_text`,
+with the hints vocabulary as protected words) to the streamed text. Later
+stages (`vocabulary`, `corrections`, `profiles`) are cumulative and added by
+later tasks. Per set and stage the summary holds:
 
 - `wer_verbatim` and `wer_clean`: corpus WER against the verbatim and the
   clean reference (equal for the commands set, which has no markup);
@@ -144,6 +149,10 @@ tasks. Per set and stage the summary holds:
 - dictation only: `filler_removal_rate` (share of marked filler/repetition
   spans whose words are all absent, from a word alignment that prefers
   deleting marked words) and `content_deleted` (content words missing);
+- dictation `cleanup` stage only: `content_deleted_by_cleanup`, the content
+  words the previous stage had right (aligned with the identical word) that
+  the cleaned text no longer has, deleted or changed. Recognition omissions
+  stay visible in `content_deleted` and are never charged to the cleanup;
 - `p50_s`/`p95_s` of the transcription time.
 
 Per-take text goes only to `bench/results/pipeline/<run>/<set>/<stage>.json`.
@@ -155,12 +164,23 @@ measured-vs-target aggregates, when a target is unmet or a set is missing or
 incomplete: `complete` (both sets measured, n equals the valid takes),
 `latency` (release-to-final p95 <= 0.5 s for utterances up to 15 s, the
 Sponsor target; see [Streaming replay](#streaming-replay)), `cleanup`
-(dictation removal >= 95 % and 0 content words deleted), `vocabulary` (name
+(dictation removal >= 95 % in the final stage and 0
+`content_deleted_by_cleanup`), `vocabulary` (name
 and term error <= 10 % per set), `corrections` (100 % of learned recurrences
 fixed, 0 new errors) and `overall` (final-text WER <= 10 %, intent >= 95 %).
 `--write-doc DOC` inserts the Portuguese table between
 `<!-- pipeline:summary:start -->` and `<!-- pipeline:summary:end -->`;
 `--check-doc DOC` exits 1 when that block differs from the summary.
+
+`--compare-cleanup RUN` needs no GPU: it reads the `streamed.json` texts that
+an earlier run saved under `bench/results/pipeline/RUN/` and cleans them with
+the rules and with the local `qwen3:8b` cleanup (`quill.cleanup.Cleanup`,
+mode `llm`, which falls back to the rules on any Ollama failure or
+implausible reply). It prints, per set and mode, WER, intent, removal,
+`content_deleted_by_cleanup`, the LLM's p50/p95 time per take and the
+fallbacks; the aggregates, timings and per-take texts go only to
+`bench/results/cleanup/<time>/`. When Ollama or `qwen3:8b` is not ready only
+the rules are measured and the reason is printed.
 
 ### Streaming replay
 
@@ -271,6 +291,10 @@ Each engine runs four variants: `raw`, `hints`, `raw+cleanup` and
 
 ## Cleanup
 
+The product cleanup is `quill/cleanup.py` (deterministic rules by default;
+see the `--compare-cleanup` option above). This section is the Phase 1 LLM
+cleanup used by `bench.run`.
+
 `bench/cleanup.py` sends each engine output to local Ollama at
 `http://127.0.0.1:11434` with `qwen3:8b`, thinking disabled, temperature 0 and
 one fixed prompt (punctuation, capitalization, remove fillers and accidental
@@ -287,23 +311,39 @@ the cleanup variants are SKIPPED with the reason.
 
 ## Intent preserved
 
-A phrase counts as preserved only when both hold:
+A phrase counts as preserved only when all hold:
 
 1. **Slot rule**: every project name and every term from `bench/terms_en.txt`
    that occurs in the reference occurs at least as often in the hypothesis,
    after normalization.
-2. **Local judge**: `qwen3:8b` (thinking off, temperature 0, JSON output)
+2. **Cut-off rule** (Phase 2): the hypothesis is not cut off, i.e. the
+   reference's last word has a counterpart in every minimum-edit word
+   alignment (a different last word is left to the judge).
+3. **Local judge**: `qwen3:8b` (thinking off, temperature 0, JSON output)
    answers `yes` to the fixed prompt `JUDGE_SYSTEM` in `bench/intent.py`:
    someone acting on the hypothesis would do the same action with the same
    meaning (same command, target, names, terms, negation and numbers),
-   ignoring punctuation, fillers and small wording differences.
+   ignoring punctuation, fillers and small wording differences. Since the
+   Phase 2 review the prompt also says that a request turned into a
+   statement, a changed tense and a missing or replaced informative word are
+   not the same meaning.
 
-The judge only runs when the slot rule holds, and it runs locally, so texts
+The judge only runs when the slot and cut-off rules hold, and it runs locally, so texts
 never leave the PC for judging. If the judge fails on any phrase, no phrase of
 that variant is counted and the summary notes why. For every variant a
 human-checkable table (`id`, `reference`, `hypothesis`, `verdict`, `reason`
 and an empty `human` column) is written to
 `bench/results/runs/<run>/intent/`, never elsewhere.
+
+**Judge review.** `python -m bench.intent --run bench/results/pipeline/<run>
+--reviews FILE` joins a run's per-take outputs with a manual assessment (an
+ignored JSON file under `bench/results/`, `{"sets": {set: {id: {"preserved",
+"reason", "hypothesis"}}}}`; a review given for a different hypothesis is
+ignored as stale) and writes, per set, a European Portuguese table to
+`bench/results/intent-review/` with the reference, the hypothesis, the judge
+verdict and reason, the manual verdict and reason and an empty Sponsor
+column. It prints only the agreement aggregates. `--rejudge` judges the
+saved outputs again with the current rules and judge (needs Ollama).
 
 ## Latency
 

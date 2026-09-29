@@ -52,7 +52,9 @@ url = "http://127.0.0.1:11434"
 model = "qwen3:8b"
 
 [cleanup]
-# "rules" (deterministic, default) or "llm" (local Ollama model).
+# "rules" (deterministic, default) or "llm" (local Ollama model, falls back to
+# the rules on any failure). "llm" is off by default: on the real dictation set
+# it deleted content words and added about 1 s at p95 (docs/research/FASE2.md).
 mode = "rules"
 
 # Personal data. Paths are relative to the repository and must stay inside

@@ -146,6 +146,24 @@ def removal_counts(segments: Sequence[tuple[str, str]], hypothesis: str) -> Remo
     one of its words is deleted; a content word counts as deleted when it has
     no counterpart (a substitution is a recognition error, not a deletion).
     """
+    spans, removed, content_words, deleted, _ = _removal_alignment(segments, hypothesis)
+    return RemovalCounts(spans, removed, content_words, len(deleted))
+
+
+def matched_content(segments: Sequence[tuple[str, str]], hypothesis: str) -> frozenset[int]:
+    """Positions (0-based, among the reference's content words) that ``hypothesis`` has right.
+
+    Same alignment as ``removal_counts``; a position counts only when it is
+    aligned with the identical normalized word. The positions an earlier
+    stage had right and a later stage no longer has are the content words
+    that the later stage lost (deleted or changed); a word the recognizer
+    had already missed is never charged to the later stage.
+    """
+    return _removal_alignment(segments, hypothesis)[4]
+
+
+def _removal_alignment(segments: Sequence[tuple[str, str]], hypothesis: str) -> tuple[int, int, int, frozenset[int], frozenset[int]]:
+    """(spans, removed spans, content words, deleted content positions, matched content positions)."""
     tagged: list[tuple[str, int]] = []  # (word, span index or -1 for content)
     spans = content_words = 0
     for kind, text in segments:
@@ -176,22 +194,31 @@ def removal_counts(segments: Sequence[tuple[str, str]], hypothesis: str) -> Remo
                 ((cost[i][j - 1][0] + 1, cost[i][j - 1][1]), "I"),
             ]
             cost[i][j], move[i][j] = min(options)
+    content_index = [0] * rows  # position among the content words, for content rows
+    position = 0
+    for row, (_, span) in enumerate(tagged):
+        if span < 0:
+            content_index[row] = position
+            position += 1
     kept_spans: set[int] = set()
+    deleted: set[int] = set()
+    matched: set[int] = set()
     i, j = rows, cols
-    content_deleted = 0
     while i > 0 or j > 0:
         step = move[i][j]
         if step == "M":
             if tagged[i - 1][1] >= 0:
                 kept_spans.add(tagged[i - 1][1])
+            elif tagged[i - 1][0] == hyp[j - 1]:
+                matched.add(content_index[i - 1])
             i, j = i - 1, j - 1
         elif step == "D":
             if tagged[i - 1][1] < 0:
-                content_deleted += 1
+                deleted.add(content_index[i - 1])
             i -= 1
         else:
             j -= 1
-    return RemovalCounts(spans, spans - len(kept_spans), content_words, content_deleted)
+    return spans, spans - len(kept_spans), content_words, frozenset(deleted), frozenset(matched)
 
 
 def percentile_nearest_rank(values: Iterable[float], percent: float) -> float | None:

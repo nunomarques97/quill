@@ -29,7 +29,8 @@
   },
   "stages": [
     "raw",
-    "streamed"
+    "streamed",
+    "cleanup"
   ],
   "sets": {
     "commands": {
@@ -56,13 +57,14 @@
           "term_occurrences": 17,
           "name_error_rate": 0.2105,
           "name_occurrences": 38,
-          "intent_preserved": 0.5227,
+          "intent_preserved": 0.4545,
           "intent_judged": 44,
           "intent_note": null,
           "filler_spans": null,
           "filler_removal_rate": null,
           "content_words": null,
           "content_deleted": null,
+          "content_deleted_by_cleanup": null,
           "max_audio_s": 6.272
         },
         "streamed": {
@@ -73,13 +75,32 @@
           "term_occurrences": 17,
           "name_error_rate": 0.1842,
           "name_occurrences": 38,
-          "intent_preserved": 0.3864,
+          "intent_preserved": 0.3182,
           "intent_judged": 44,
           "intent_note": null,
           "filler_spans": null,
           "filler_removal_rate": null,
           "content_words": null,
           "content_deleted": null,
+          "content_deleted_by_cleanup": null,
+          "max_audio_s": 6.272
+        },
+        "cleanup": {
+          "n": 44,
+          "wer_verbatim": 0.3,
+          "wer_clean": 0.3,
+          "term_error_rate": 0.4706,
+          "term_occurrences": 17,
+          "name_error_rate": 0.1842,
+          "name_occurrences": 38,
+          "intent_preserved": 0.2955,
+          "intent_judged": 44,
+          "intent_note": null,
+          "filler_spans": null,
+          "filler_removal_rate": null,
+          "content_words": null,
+          "content_deleted": null,
+          "content_deleted_by_cleanup": null,
           "max_audio_s": 6.272
         }
       }
@@ -108,13 +129,14 @@
           "term_occurrences": 44,
           "name_error_rate": 0.0,
           "name_occurrences": 9,
-          "intent_preserved": 0.5556,
+          "intent_preserved": 0.4722,
           "intent_judged": 36,
           "intent_note": null,
           "filler_spans": 56,
           "filler_removal_rate": 0.6429,
           "content_words": 960,
           "content_deleted": 19,
+          "content_deleted_by_cleanup": null,
           "max_audio_s": 18.048
         },
         "streamed": {
@@ -125,13 +147,32 @@
           "term_occurrences": 44,
           "name_error_rate": 0.1111,
           "name_occurrences": 9,
-          "intent_preserved": 0.6667,
+          "intent_preserved": 0.5278,
           "intent_judged": 36,
           "intent_note": null,
           "filler_spans": 56,
           "filler_removal_rate": 0.6429,
           "content_words": 960,
           "content_deleted": 19,
+          "content_deleted_by_cleanup": null,
+          "max_audio_s": 18.048
+        },
+        "cleanup": {
+          "n": 36,
+          "wer_verbatim": 0.1777,
+          "wer_clean": 0.1104,
+          "term_error_rate": 0.0227,
+          "term_occurrences": 44,
+          "name_error_rate": 0.1111,
+          "name_occurrences": 9,
+          "intent_preserved": 0.5556,
+          "intent_judged": 36,
+          "intent_note": null,
+          "filler_spans": 56,
+          "filler_removal_rate": 0.9643,
+          "content_words": 960,
+          "content_deleted": 20,
+          "content_deleted_by_cleanup": 0,
           "max_audio_s": 18.048
         }
       }

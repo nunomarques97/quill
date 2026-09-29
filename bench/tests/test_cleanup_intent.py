@@ -12,9 +12,23 @@ from bench.cleanup import ALLOWED_CALLS, CLEANUP_MODEL, Cleaner, OllamaClient, O
 from bench.engines import EngineSlot
 from bench.engines.base import ResponseCache, build_hints, wav_pcm
 from bench.gpu import contention, query_vram, snapshot
-from bench.intent import IntentJudge, IntentRow, evaluate, missing_slots, write_table
+from bench.intent import (
+    JUDGE_SYSTEM,
+    IntentJudge,
+    IntentRow,
+    Review,
+    agreement,
+    cut_off,
+    evaluate,
+    load_reviews,
+    missing_slots,
+    review_rows,
+    write_review_table,
+    write_table,
+)
+from bench.intent import main as intent_main
 from bench.latency import build_composites
-from bench.metrics import ItemResult
+from bench.metrics import ItemResult, matched_content
 from bench.run import Utterance, benchmark
 from bench.tests.fakes import FakeEngine, FakeOllama, judge_yes, tone_wav
 
@@ -133,6 +147,149 @@ class IntentTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 write_table(Path(folder) / "elsewhere.md", "eng", "raw", rows, results)
 
+
+class CutOffTest(unittest.TestCase):
+    def test_missing_ending_is_cut_off(self) -> None:
+        self.assertTrue(cut_off("abre a pasta dos recibos de março", "abre a pasta dos recibos"))
+        self.assertTrue(cut_off("liga a luz", ""))
+
+    def test_substituted_or_complete_ending_is_left_to_the_judge(self) -> None:
+        self.assertFalse(cut_off("abre a pasta dos recibos", "abre a pasta dos recibo"))
+        self.assertFalse(cut_off("abre a pasta", "hum abre a pasta"))
+        self.assertFalse(cut_off("abre a pasta", "abre a pasta, por favor"))
+        self.assertFalse(cut_off("", "qualquer coisa"))
+
+    def test_middle_omission_is_not_cut_off(self) -> None:
+        self.assertFalse(cut_off("fecha hoje a janela azul", "fecha a janela azul"))
+
+    def test_cut_off_never_reaches_the_judge(self) -> None:
+        calls = []
+
+        def judge(reference, hypothesis):
+            calls.append(hypothesis)
+            return True, "same"
+
+        rows = evaluate([ItemResult("dt-01", "manda o bolo amanhã às dez", "manda o bolo amanhã", ())], judge, [])
+        self.assertEqual((rows[0].preserved, rows[0].reason), (False, "cut-off rule: the end of the reference is missing"))
+        self.assertEqual(calls, [])
+
+    def test_prompt_names_the_reviewed_cases(self) -> None:
+        for phrase in ("becomes a statement", "changed tense", "carries information", "cut off"):
+            self.assertIn(phrase, JUDGE_SYSTEM)
+
+
+def stage_row(take_id, hypothesis, preserved=True, reason="judge: same"):
+    return {"id": take_id, "clean": "abre a gaveta verde", "hypothesis": hypothesis,
+            "intent_preserved": preserved, "intent_reason": reason}
+
+
+class ReviewTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.results = self.root / "results"
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def write_reviews(self, data) -> Path:
+        path = self.results / "intent-review" / "manual.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data), encoding="utf-8")
+        return path
+
+    def reviews(self):
+        return {"sets": {"dictation": {
+            "dt-01": {"preserved": True, "reason": "igual", "hypothesis": "abre a gaveta verde"},
+            "dt-02": {"preserved": False, "reason": "falta verde", "hypothesis": "abre a gaveta"},
+            "dt-03": {"preserved": False, "reason": "outra cor", "hypothesis": "abre a gaveta azul"},
+            "dt-04": {"preserved": True, "reason": "igual", "hypothesis": "texto antigo"},
+        }}}
+
+    def test_load_reviews_validates_entries(self) -> None:
+        reviews = load_reviews(self.write_reviews(self.reviews()))
+        self.assertEqual(reviews["dictation"]["dt-02"], Review(False, "falta verde", "abre a gaveta"))
+        bad = [
+            ({}, "review file has no sets"),
+            ({"sets": {"outro": {}}}, "review file: unknown set 'outro'"),
+            ({"sets": {"dictation": {"dt-01": {"preserved": "sim", "reason": "", "hypothesis": ""}}}},
+             "review file: invalid entry dictation/dt-01"),
+        ]
+        for data, message in bad:
+            with self.assertRaises(ValueError) as caught:
+                load_reviews(self.write_reviews(data))
+            self.assertEqual(str(caught.exception), message)
+        with self.assertRaises(ValueError):
+            load_reviews(self.root / "missing.json")
+
+    def test_rows_agreement_and_stale_reviews(self) -> None:
+        reviews = load_reviews(self.write_reviews(self.reviews()))["dictation"]
+        stage = [stage_row("dt-01", "abre a gaveta verde"), stage_row("dt-02", "abre a gaveta"),
+                 stage_row("dt-03", "abre a gaveta azul", False, "judge: colour"), stage_row("dt-04", "abre a gaveta verde")]
+        rows = review_rows(stage, reviews)
+        self.assertIsNone(rows[3].review)  # given for another hypothesis: stale
+        self.assertEqual(agreement(rows), {"n": 4, "compared": 3, "agree": 2, "agreement": 0.6667, "judge_yes_review_no": 1,
+                                           "judge_no_review_yes": 0, "judge_preserved": 2, "review_preserved": 1})
+        judged = {"dt-02": IntentRow("dt-02", False, "cut-off rule", "abre a gaveta verde", "abre a gaveta")}
+        rejudged = review_rows(stage, reviews, judged)
+        self.assertEqual([row.judge_preserved for row in rejudged], [None, False, None, None])
+        self.assertEqual(agreement(rejudged)["agree"], 1)
+
+    def test_table_is_portuguese_private_and_only_under_results(self) -> None:
+        reviews = load_reviews(self.write_reviews(self.reviews()))["dictation"]
+        rows = review_rows([stage_row("dt-02", "abre a gaveta")], reviews)
+        path = write_review_table(self.results / "intent-review" / "t.md", "dictation", "run", rows, self.results)
+        text = path.read_text(encoding="utf-8")
+        self.assertIn("| id | referência | transcrição | juiz | razão do juiz | revisão | razão da revisão | Sponsor |", text)
+        self.assertIn("| dt-02 | abre a gaveta verde | abre a gaveta | sim | judge: same | não | falta verde |  |", text)
+        self.assertIn("Juiz e revisão concordam em 0 de 1", text)
+        with self.assertRaises(ValueError):
+            write_review_table(self.root / "t.md", "dictation", "run", rows, self.results)
+
+    def make_run(self) -> Path:
+        run = self.results / "pipeline" / "run"
+        (run / "dictation").mkdir(parents=True)
+        rows = [stage_row("dt-01", "abre a gaveta verde"), stage_row("dt-02", "abre a gaveta"),
+                stage_row("dt-03", "abre a gaveta azul", False, "judge: colour")]
+        (run / "dictation" / "streamed.json").write_text(json.dumps(rows), encoding="utf-8")
+        return run
+
+    def test_cli_reports_aggregates_only(self) -> None:
+        run, reviews = self.make_run(), self.write_reviews(self.reviews())
+        lines: list[str] = []
+        code = intent_main(["--run", str(run), "--reviews", str(reviews)], results_dir=self.results, out=lines.append)
+        self.assertEqual(code, 0)
+        self.assertEqual(lines[0], "commands: no streamed outputs in the run")
+        self.assertTrue(lines[1].startswith("dictation: n 3, compared 3, agree 2 (66.7 %), judge yes/review no 1"))
+        self.assertNotIn("gaveta", "\n".join(lines))
+        self.assertTrue((self.results / "intent-review" / "run-streamed-dictation.md").is_file())
+
+    def test_cli_rejudge_uses_the_current_rules_and_judge(self) -> None:
+        run, reviews = self.make_run(), self.write_reviews(self.reviews())
+        lines: list[str] = []
+        code = intent_main(["--run", str(run), "--reviews", str(reviews), "--rejudge"], judge_factory=lambda: (lambda reference, hypothesis: (True, "same"), None),
+                           names_factory=lambda: {}, terms=[], results_dir=self.results, out=lines.append)
+        self.assertEqual(code, 0)
+        # dt-02 is now cut off; dt-03 is judged yes by the fake judge.
+        self.assertTrue(lines[1].startswith("dictation: n 3, compared 3, agree 2 (66.7 %), judge yes/review no 1, judge no/review yes 0"))
+        self.assertTrue((self.results / "intent-review" / "run-streamed-dictation-rejudged.md").is_file())
+        lines.clear()
+        code = intent_main(["--run", str(run), "--reviews", str(reviews), "--rejudge"],
+                           judge_factory=lambda: (None, "Ollama unavailable: test"), results_dir=self.results, out=lines.append)
+        self.assertEqual((code, lines), (2, ["error: Ollama unavailable: test"]))
+
+
+class MatchedContentTest(unittest.TestCase):
+    SEGMENTS = [("filler", "hum"), ("content", "abre a gaveta"), ("repetition", "verde"), ("content", "verde agora")]
+
+    def test_only_identical_words_count(self) -> None:
+        self.assertEqual(matched_content(self.SEGMENTS, "hum abre a gaveta verde verde agora"), frozenset(range(5)))
+        self.assertEqual(matched_content(self.SEGMENTS, "abre a caveta verde"), frozenset({0, 1, 3}))
+
+    def test_lost_words_between_stages(self) -> None:
+        before = matched_content(self.SEGMENTS, "hã abre a gaveta verde agora")
+        self.assertEqual(before - matched_content(self.SEGMENTS, "Abre a gaveta verde agora."), frozenset())
+        self.assertEqual(before - matched_content(self.SEGMENTS, "Abre a gaveta agora."), frozenset({3}))
 
 class GpuTest(unittest.TestCase):
     def test_query_vram(self) -> None:

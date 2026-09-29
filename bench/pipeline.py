@@ -7,6 +7,7 @@ Usage:
     py -3.12 -m bench.pipeline --summary PATH --require complete --require overall
     py -3.12 -m bench.pipeline --summary PATH --write-doc DOC.md
     py -3.12 -m bench.pipeline --summary PATH --check-doc DOC.md
+    py -3.12 -m bench.pipeline --compare-cleanup bench/results/pipeline/<run>
 
 Two sets are measured: ``commands`` (the 44 short takes of the reference
 project) and ``dictation`` (the dictation script recorded with bench.record).
@@ -16,7 +17,14 @@ faster-whisper large-v3 float16 with vocabulary hints): the Phase 2 baseline.
 ``quill.streaming`` with the product's engine model and its tuning
 (large-v3-turbo by default, Sponsor decision 2026-09-29) on the
 deterministic audio-time schedule (``bench.streaming``), so its final text is
-reproducible. Later stages start from the ``streamed`` text.
+reproducible. Later stages start from the ``streamed`` text. ``cleanup``
+applies the product's deterministic cleanup rules (``quill.cleanup``) to the
+``streamed`` text and adds ``content_deleted_by_cleanup``: content words that
+the streamed text had right and the cleaned text lost (deleted or changed).
+
+``--compare-cleanup RUN`` needs no GPU: it reads the streamed outputs saved by
+an earlier run and compares the rules with the local qwen3:8b cleanup
+(quality and time per take); its outputs stay under bench/results/cleanup/.
 
 ``--dry-run`` prints counts only and needs no GPU. Measurement writes per-take
 text only under bench/results/pipeline/<run>/; the summary JSON holds
@@ -44,6 +52,7 @@ from bench.metrics import (
     ItemResult,
     RemovalCounts,
     corpus_wer,
+    matched_content,
     percentile_nearest_rank,
     removal_counts,
     term_recall,
@@ -51,12 +60,13 @@ from bench.metrics import (
     write_summary,
 )
 from bench.settings import RESULTS_DIR, Settings, SettingsError, load_settings
+from quill.cleanup import Cleanup, CleanupResult, clean_text
 from quill.whisper import DEFAULT_MODEL
 
 SETS = ("commands", "dictation")
 # Cumulative stages, in order. Only the ones in IMPLEMENTED_STAGES can run.
 STAGE_ORDER = ("raw", "streamed", "cleanup", "vocabulary", "corrections", "profiles")
-IMPLEMENTED_STAGES = ("raw", "streamed")
+IMPLEMENTED_STAGES = ("raw", "streamed", "cleanup")
 TARGET_NAMES = ("complete", "latency", "cleanup", "vocabulary", "corrections", "overall")
 SUMMARY_SCHEMA = 1
 DEFAULT_SUMMARY = RESULTS_DIR / "pipeline" / "summary.json"
@@ -162,8 +172,15 @@ def _round(value: float | None) -> float | None:
     return None if value is None else round(value, 4)
 
 
-def stage_metrics(samples: Sequence[Sample], terms: Sequence[str], markup: bool, intent: dict[str, bool] | None, intent_note: str | None) -> dict:
-    """Aggregate numbers for one set and stage. Contains no spoken text."""
+def stage_metrics(samples: Sequence[Sample], terms: Sequence[str], markup: bool, intent: dict[str, bool] | None,
+                  intent_note: str | None, before: Sequence[Sample] | None = None) -> dict:
+    """Aggregate numbers for one set and stage. Contains no spoken text.
+
+    ``before`` is the previous stage of a cleanup stage, in the same take
+    order: with markup, the content words that ``before`` had right and the
+    cleaned text no longer has (deleted or changed) are counted as
+    ``content_deleted_by_cleanup``.
+    """
     verbatim = [(s.take.reference, s.hypothesis) for s in samples]
     clean = [(s.take.clean, s.hypothesis) for s in samples]
     term_counts = term_recall(clean, terms)
@@ -189,6 +206,7 @@ def stage_metrics(samples: Sequence[Sample], terms: Sequence[str], markup: bool,
         "filler_removal_rate": None,
         "content_words": None,
         "content_deleted": None,
+        "content_deleted_by_cleanup": None,
         "transcribe_p50_s": _round(percentile_nearest_rank(seconds, 50)),
         "transcribe_p95_s": _round(percentile_nearest_rank(seconds, 95)),
         "max_audio_s": _round(max((s.take.duration_s for s in samples), default=None)),
@@ -203,7 +221,100 @@ def stage_metrics(samples: Sequence[Sample], terms: Sequence[str], markup: bool,
             content_words=total.content_words,
             content_deleted=total.content_deleted,
         )
+        if before is not None:
+            row["content_deleted_by_cleanup"] = sum(
+                len(_matched(previous) - _matched(sample)) for sample, previous in zip(samples, before, strict=True)
+            )
     return row
+
+
+def _matched(sample: Sample) -> frozenset[int]:
+    return matched_content([(seg.kind, seg.text) for seg in sample.take.segments], sample.hypothesis)
+
+
+def clean_samples(samples: Sequence[Sample], keep: Sequence[str], clock: Callable[[], float]) -> list[Sample]:
+    """The cleanup stage: the product's rules on each previous-stage text."""
+    cleaned = []
+    for sample in samples:
+        started = clock()
+        text = clean_text(sample.hypothesis, keep)
+        cleaned.append(Sample(sample.take, text, sample.seconds + clock() - started))
+    return cleaned
+
+
+def saved_samples(run_dir: Path, set_name: str, stage: str, dataset: Dataset) -> list[Sample]:
+    """A stage's texts saved by an earlier run, matched to the dataset's takes by id."""
+    path = Path(run_dir) / set_name / f"{stage}.json"
+    try:
+        rows = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise SettingsError(f"{set_name}: no saved {stage} outputs in the run folder") from None
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise SettingsError(f"{set_name}: saved {stage} outputs are not valid JSON") from None
+    texts = {row.get("id"): row.get("hypothesis") for row in rows if isinstance(row, dict)}
+    missing = [take.id for take in dataset.takes if not isinstance(texts.get(take.id), str)]
+    if missing:
+        raise SettingsError(f"{set_name}: {len(missing)} takes missing from the saved {stage} outputs")
+    return [Sample(take, texts[take.id], 0.0) for take in dataset.takes]
+
+
+def compare_cleanup(
+    sets: dict[str, tuple[Settings, Dataset]],
+    run_dir: Path,
+    cleaners: dict[str, Callable[[str], CleanupResult]],
+    judge: Callable | None,
+    unavailable: str | None,
+    terms: Sequence[str],
+    *,
+    stage: str = "streamed",
+) -> tuple[dict, dict]:
+    """Each cleaner on the saved ``stage`` texts: (aggregates and times, per-take texts).
+
+    The aggregates hold no spoken text; the per-take texts stay under
+    bench/results/. A cleaner's time is only its own (the LLM call).
+    """
+    report: dict = {"source_stage": stage, "sets": {}}
+    texts: dict = {}
+    for set_name, (set_settings, dataset) in sets.items():
+        before = saved_samples(run_dir, set_name, stage, dataset)
+        report["sets"][set_name] = {}
+        for mode, cleaner in cleaners.items():
+            samples, fallbacks, seconds = [], Counter(), []
+            for sample in before:
+                result = cleaner(sample.hypothesis)
+                samples.append(Sample(sample.take, result.text, result.llm_s or 0.0))
+                if result.fallback:
+                    fallbacks[result.fallback] += 1
+                if result.llm_s is not None:
+                    seconds.append(result.llm_s)
+            intent, note, rows = judge_samples(samples, judge, terms, unavailable)
+            row = stage_metrics(samples, terms, set_settings.markup, intent, note, before)
+            for key in ("transcribe_p50_s", "transcribe_p95_s"):
+                row.pop(key, None)
+            row["fallbacks"] = dict(sorted(fallbacks.items()))
+            row["cleanup_p50_s"] = _round(percentile_nearest_rank(seconds, 50))
+            row["cleanup_p95_s"] = _round(percentile_nearest_rank(seconds, 95))
+            report["sets"][set_name][mode] = row
+            verdicts = {r.id: r for r in rows}
+            texts.setdefault(set_name, {})[mode] = [
+                {"id": s.take.id, "before": b.hypothesis, "after": s.hypothesis, "clean": s.take.clean,
+                 "intent_preserved": verdicts[s.take.id].preserved if s.take.id in verdicts else None}
+                for s, b in zip(samples, before, strict=True)
+            ]
+    return report, texts
+
+
+def default_cleaners(keep: Sequence[str]) -> tuple[dict[str, Callable[[str], CleanupResult]], str | None]:
+    """The product's rules and the local qwen3:8b cleanup (skipped when Ollama is not ready)."""
+    from bench.cleanup import OllamaClient
+    from bench.run import ollama_ready
+
+    cleaners: dict = {"rules": Cleanup("rules", keep=keep)}
+    client = OllamaClient()
+    unavailable, _ = ollama_ready(client)
+    if unavailable is None:
+        cleaners["llm"] = Cleanup("llm", client=client, keep=keep)
+    return cleaners, unavailable
 
 
 def judge_samples(samples: Sequence[Sample], judge: Callable | None, terms: Sequence[str], unavailable: str | None) -> tuple[dict[str, bool] | None, str | None, list]:
@@ -334,15 +445,20 @@ def measure(
     for set_name, (set_settings, dataset) in sets.items():
         block: dict = {"dataset": dataset_block(set_settings, dataset), "stages": {}}
         summary["sets"][set_name] = block
+        samples: list[Sample] = []
         for current in stages:
+            before = None
             if current == "raw":
                 samples = transcribe_set(engine, hints, dataset.takes, clock)
-            else:  # streamed: the product source for every later stage
+            elif current == "streamed":  # the product source for every later stage
                 streamed = streamer(dataset.takes, hints)
                 samples = [Sample(take, text, seconds) for take, (text, seconds) in zip(dataset.takes, streamed, strict=True)]
+            else:  # cleanup
+                before = samples
+                samples = clean_samples(before, hints.vocabulary(), clock)
             intent, note, rows = judge_samples(samples, judge, terms, unavailable)
             write_private(run_dir, set_name, current, samples, rows, results_dir)
-            block["stages"][current] = stage_metrics(samples, terms, set_settings.markup, intent, note)
+            block["stages"][current] = stage_metrics(samples, terms, set_settings.markup, intent, note, before)
             log(f"{set_name} / {current}: n={len(samples)}" + (f" ({note})" if note else ""))
     return summary
 
@@ -424,12 +540,16 @@ def check_targets(summary: dict, targets: Sequence[str]) -> list[tuple[bool, str
             else:
                 add(p95 <= MAX_LATENCY_P95_S, target, f"p95 {p95:.2f} s (target <= {MAX_LATENCY_P95_S:.1f} s, utterances up to {longest} s)")
         elif target == "cleanup":
+            # Fillers must stay removed in the final text; deletions are the
+            # cleanup's own, against the stage before it (recognition
+            # omissions stay visible in content_deleted).
             for set_name, stage, row in per_set(target, "cleanup"):
                 if set_name != "dictation":
                     continue
-                rate, deleted = row.get("filler_removal_rate"), row.get("content_deleted")
-                add(rate is not None and rate >= MIN_REMOVAL_RATE, target, f"dictation filler/repetition removal {_pct(rate)} (target >= {100 * MIN_REMOVAL_RATE:.0f} %)")
-                add(deleted is not None and deleted <= MAX_CONTENT_DELETED, target, f"dictation content words deleted {deleted} (target {MAX_CONTENT_DELETED})")
+                rate = row.get("filler_removal_rate")
+                deleted = sets[set_name]["stages"]["cleanup"].get("content_deleted_by_cleanup")
+                add(rate is not None and rate >= MIN_REMOVAL_RATE, target, f"dictation filler/repetition removal {_pct(rate)} ({stage}; target >= {100 * MIN_REMOVAL_RATE:.0f} %)")
+                add(deleted is not None and deleted <= MAX_CONTENT_DELETED, target, f"dictation content words deleted by cleanup {deleted} (target {MAX_CONTENT_DELETED})")
         elif target == "vocabulary":
             for set_name, stage, row in per_set(target, "vocabulary"):
                 for key, label, limit in (("name_error_rate", "project-name error", MAX_NAME_ERROR), ("term_error_rate", "English-term error", MAX_TERM_ERROR)):
@@ -452,7 +572,7 @@ def check_targets(summary: dict, targets: Sequence[str]) -> list[tuple[bool, str
 
 HEADER = (
     "Conjunto", "Etapa", "n", "WER literal", "WER limpo", "Erro termos EN", "Erro nomes",
-    "Intenção preservada", "Hesitações removidas", "Palavras apagadas",
+    "Intenção preservada", "Hesitações removidas", "Palavras apagadas", "Apagadas pela limpeza",
 )
 SET_LABELS = {"commands": "comandos", "dictation": "ditado"}
 EMPTY = "—"
@@ -482,6 +602,7 @@ def render_block(summary: dict) -> str:
                 _pt_percent(row.get("term_error_rate")), _pt_percent(row.get("name_error_rate")),
                 _pt_percent(row.get("intent_preserved")), _pt_percent(row.get("filler_removal_rate")),
                 EMPTY if row.get("content_deleted") is None else str(row["content_deleted"]),
+                EMPTY if row.get("content_deleted_by_cleanup") is None else str(row["content_deleted_by_cleanup"]),
             )
             lines.append("| " + " | ".join(cells) + " |")
     latency = summary.get("latency")
@@ -524,12 +645,51 @@ def _read_summary(path: Path) -> dict:
     return data
 
 
+def run_compare(config: Path | None, names: Sequence[str], run_dir: Path, judge_factory: Callable, cleaners_factory: Callable,
+                results_dir: Path, out: Callable[[str], None]) -> int:
+    """--compare-cleanup: aggregates on screen; per-take texts and times under bench/results/cleanup/."""
+    run_dir = Path(run_dir).resolve()
+    if Path(results_dir).resolve() not in run_dir.parents:
+        out("error: the run folder must be under bench/results/")
+        return 2
+    try:
+        sets = load_sets(load_settings(config), names)
+        spoken_names = sorted({name for _, dataset in sets.values() for name in dataset.names})
+        cleaners, cleaner_note = cleaners_factory(build_hints(spoken_names, load_terms()).vocabulary())
+        judge, unavailable = judge_factory()
+        report, texts = compare_cleanup(sets, run_dir, cleaners, judge, unavailable, load_terms())
+    except (SettingsError, DatasetError) as exc:
+        out(f"error: {exc}")
+        return 2
+    report["run"] = run_dir.name
+    report["llm_note"] = cleaner_note
+    target = Path(results_dir) / "cleanup" / time.strftime("%Y%m%d-%H%M%S")
+    target.mkdir(parents=True, exist_ok=True)
+    (target / "compare.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    (target / "texts.json").write_text(json.dumps(texts, ensure_ascii=False, indent=2), encoding="utf-8")
+    if cleaner_note:
+        out(f"llm cleanup not measured: {cleaner_note}")
+    for set_name, modes in report["sets"].items():
+        for mode, row in modes.items():
+            p50, p95 = row["cleanup_p50_s"], row["cleanup_p95_s"]
+            timing = "" if p95 is None else f", p50 {p50:.2f} s, p95 {p95:.2f} s"
+            fallbacks = sum(row["fallbacks"].values())
+            out(
+                f"{set_name} / {mode}: WER clean {_pct(row['wer_clean'])}, intent {_pct(row['intent_preserved'])}, "
+                f"removal {_pct(row['filler_removal_rate'])}, deleted by cleanup {row['content_deleted_by_cleanup']}"
+                f"{timing}, fallbacks {fallbacks}" + (f" ({row['intent_note']})" if row["intent_note"] else "")
+            )
+    out("comparison written under bench/results/cleanup/")
+    return 0
+
+
 def main(
     argv: list[str] | None = None,
     *,
     engine_factory: Callable[[], Engine] = default_engine,
     judge_factory: Callable[[], tuple[Callable | None, str | None]] = default_judge,
     streamer_factory: Callable[[Engine], tuple[Streamer, dict]] = default_streamer,
+    cleaners_factory: Callable[[Sequence[str]], tuple[dict, str | None]] = default_cleaners,
     results_dir: Path = RESULTS_DIR,
     out: Callable[[str], None] = print,
 ) -> int:
@@ -538,6 +698,8 @@ def main(
     parser.add_argument("--set", choices=(*SETS, "all"), default="all", help="dataset set (default all)")
     parser.add_argument("--dry-run", action="store_true", help="dataset counts only; no GPU")
     parser.add_argument("--stage", choices=IMPLEMENTED_STAGES, default=None, help="measure up to this stage")
+    parser.add_argument("--compare-cleanup", type=Path, default=None, metavar="RUN",
+                        help="compare rules and qwen3:8b cleanup on RUN's saved streamed texts; no GPU")
     parser.add_argument("--summary", type=Path, default=DEFAULT_SUMMARY, help="aggregate summary JSON")
     parser.add_argument("--require", action="append", choices=TARGET_NAMES, default=[], help="exit 1 unless met")
     parser.add_argument("--check-doc", type=Path, default=None, help="exit 1 when DOC's block differs from the summary")
@@ -554,8 +716,12 @@ def main(
             out(f"error: {exc}")
             return 2
         return dry_run(settings, names, out)
+    if args.compare_cleanup:
+        if args.stage:
+            parser.error("--compare-cleanup and --stage are separate runs")
+        return run_compare(args.config, names, args.compare_cleanup, judge_factory, cleaners_factory, results_dir, out)
     if not (args.stage or args.require or args.check_doc or args.write_doc):
-        parser.error("nothing to do: give --dry-run, --stage, --require, --check-doc or --write-doc")
+        parser.error("nothing to do: give --dry-run, --stage, --compare-cleanup, --require, --check-doc or --write-doc")
 
     try:
         if args.stage:

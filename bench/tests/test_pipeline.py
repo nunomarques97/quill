@@ -150,8 +150,103 @@ class MeasureTest(unittest.TestCase):
             pipeline.measure(sets, "streamed", engine, judge_yes, None, TERMS, self.results / "pipeline" / "run",
                              results_dir=self.results, log=lambda line: None)
         with self.assertRaises(ValueError):
-            pipeline.measure(sets, "cleanup", engine, judge_yes, None, TERMS, self.results / "pipeline" / "run",
+            pipeline.measure(sets, "vocabulary", engine, judge_yes, None, TERMS, self.results / "pipeline" / "run",
                              results_dir=self.results, log=lambda line: None, streamer=streamer)
+
+    def test_cleanup_stage_cleans_the_streamed_text(self):
+        sets = self.fx.loaded()
+        engine = engine_for(sets, lambda take: take.reference)
+
+        def streamer(takes, hints):
+            return [(take.reference, 0.1) for take in takes]
+
+        summary = pipeline.measure(sets, "cleanup", engine, judge_yes, None, TERMS, self.results / "pipeline" / "run",
+                                   results_dir=self.results, log=lambda line: None, streamer=streamer)
+        self.assertEqual(summary["stages"], ["raw", "streamed", "cleanup"])
+        stages = summary["sets"]["dictation"]["stages"]
+        self.assertEqual((stages["streamed"]["filler_removal_rate"], stages["streamed"]["content_deleted_by_cleanup"]), (0.0, None))
+        cleanup = stages["cleanup"]
+        self.assertEqual((cleanup["filler_removal_rate"], cleanup["content_deleted"], cleanup["content_deleted_by_cleanup"]), (1.0, 0, 0))
+        self.assertEqual((cleanup["name_error_rate"], cleanup["term_error_rate"]), (0.0, 0.0))
+        self.assertLess(cleanup["wer_clean"], stages["streamed"]["wer_clean"])
+        self.assertIsNone(summary["sets"]["commands"]["stages"]["cleanup"]["content_deleted_by_cleanup"])  # no markup
+        rows = json.loads((self.results / "pipeline" / "run" / "dictation" / "cleanup.json").read_text(encoding="utf-8"))
+        self.assertTrue(rows[0]["hypothesis"].startswith("Abre o painel"))
+        self.assertEqual(pipeline._final_stage(summary["sets"]["dictation"])[0], "cleanup")
+        self.assertIn("| ditado | cleanup | 3 |", pipeline.render_block(summary))
+        self.assertEqual(self.failed_cleanup(summary), [])
+
+    def failed_cleanup(self, summary):
+        return [line for met, line in pipeline.check_targets(summary, ["cleanup"]) if not met]
+
+    def test_content_deleted_by_cleanup_counts_only_new_deletions(self):
+        sets = self.fx.loaded()
+        engine = engine_for(sets, lambda take: take.reference)
+
+        def streamer(takes, hints):  # recognition loses "painel" in dt-01: not the cleanup's deletion
+            return [(take.reference.replace(" painel", ""), 0.1) for take in takes]
+
+        real_clean = pipeline.clean_text
+
+        def dropping(text, keep=(), final_mark=True):  # a cleanup that also deletes "bolo"
+            return real_clean(text.replace("bolo", ""), keep, final_mark)
+
+        with mock.patch.object(pipeline, "clean_text", dropping):
+            summary = pipeline.measure(sets, "cleanup", engine, judge_yes, None, TERMS, self.results / "pipeline" / "run",
+                                       results_dir=self.results, log=lambda line: None, streamer=streamer)
+        stages = summary["sets"]["dictation"]["stages"]
+        self.assertEqual(stages["streamed"]["content_deleted"], 1)
+        self.assertEqual((stages["cleanup"]["content_deleted"], stages["cleanup"]["content_deleted_by_cleanup"]), (2, 1))
+        self.assertEqual(self.failed_cleanup(summary), ["FAIL cleanup: dictation content words deleted by cleanup 1 (target 0)"])
+
+    def streamed_run(self):
+        sets = self.fx.loaded()
+        engine = engine_for(sets, lambda take: take.reference)
+        run = self.results / "pipeline" / "run"
+        pipeline.measure(sets, "streamed", engine, judge_yes, None, TERMS, run, results_dir=self.results,
+                         log=lambda line: None, streamer=lambda takes, hints: [(t.reference, 0.1) for t in takes])
+        return sets, run
+
+    def test_compare_cleanup_reads_saved_texts(self):
+        from quill.cleanup import Cleanup, CleanupResult
+
+        sets, run = self.streamed_run()
+
+        def llm(text):  # a fake LLM cleanup that fails on one take and takes 0.4 s otherwise
+            if "bolo" in text:
+                return CleanupResult(pipeline.clean_text(text), "rules", "llm failed: OllamaError")
+            return CleanupResult(pipeline.clean_text(text), "llm", None, 0.4)
+
+        report, texts = pipeline.compare_cleanup(sets, run, {"rules": Cleanup("rules"), "llm": llm}, judge_yes, None, TERMS)
+        rules, fake = report["sets"]["dictation"]["rules"], report["sets"]["dictation"]["llm"]
+        self.assertEqual((rules["filler_removal_rate"], rules["content_deleted_by_cleanup"], rules["cleanup_p95_s"]), (1.0, 0, None))
+        self.assertEqual(rules["fallbacks"], {})
+        self.assertEqual((fake["cleanup_p50_s"], fake["cleanup_p95_s"], fake["fallbacks"]), (0.4, 0.4, {"llm failed: OllamaError": 1}))
+        self.assertNotIn("transcribe_p95_s", rules)
+        self.assertEqual([row["id"] for row in texts["dictation"]["rules"]], ["dt-01", "dt-02", "dt-03"])
+        (run / "commands" / "streamed.json").unlink()
+        with self.assertRaises(pipeline.SettingsError):
+            pipeline.compare_cleanup(sets, run, {"rules": Cleanup("rules")}, judge_yes, None, TERMS)
+
+    def test_compare_cleanup_cli_writes_only_under_results(self):
+        from quill.cleanup import Cleanup
+
+        _, run = self.streamed_run()
+        lines = []
+        with mock.patch.object(pipeline, "load_settings", return_value=self.fx.settings), \
+                mock.patch.object(pipeline, "load_terms", return_value=TERMS):
+            code = pipeline.main(["--compare-cleanup", str(run)], judge_factory=lambda: (judge_yes, None),
+                                 cleaners_factory=lambda keep: ({"rules": Cleanup("rules", keep=keep)}, "Ollama unavailable: test"),
+                                 results_dir=self.results, out=lines.append)
+            self.assertEqual(code, 0)
+            self.assertEqual(lines[0], "llm cleanup not measured: Ollama unavailable: test")
+            self.assertTrue(any(line.startswith("dictation / rules: WER clean") for line in lines))
+            outputs = list((self.results / "cleanup").glob("*/compare.json"))
+            self.assertEqual(len(outputs), 1)
+            self.assertEqual(json.loads(outputs[0].read_text(encoding="utf-8"))["llm_note"], "Ollama unavailable: test")
+            lines.clear()
+            self.assertEqual(pipeline.main(["--compare-cleanup", str(self.root)], results_dir=self.results, out=lines.append), 2)
+            self.assertEqual(lines, ["error: the run folder must be under bench/results/"])
 
     def test_default_streamer_uses_the_product_engine_and_tuning(self):
         from quill import streaming, whisper
@@ -261,7 +356,7 @@ def summary_with(commands=None, dictation=None, latency=None, stages=("raw",)):
                 "stages": {stage: {"n": n, **row} for stage in stages}}
 
     good = {"wer_clean": 0.05, "intent_preserved": 0.97, "name_error_rate": 0.05, "term_error_rate": 0.08,
-            "filler_removal_rate": 0.96, "content_deleted": 0, "recurrences_fixed_rate": 1.0, "new_errors": 0}
+            "filler_removal_rate": 0.96, "content_deleted": 0, "content_deleted_by_cleanup": 0, "recurrences_fixed_rate": 1.0, "new_errors": 0}
     return {
         "kind": "pipeline",
         "sets": {
@@ -305,8 +400,15 @@ class TargetTest(unittest.TestCase):
         self.assertEqual(self.failed(summary, "complete"), ["FAIL complete: dictation not measured"])
 
     def test_stage_specific_targets(self):
-        summary = summary_with(stages=("raw", "cleanup"), dictation={"filler_removal_rate": 0.9, "content_deleted": 1})
-        self.assertEqual(len(self.failed(summary, "cleanup")), 2)
+        summary = summary_with(stages=("raw", "cleanup"), dictation={"filler_removal_rate": 0.9, "content_deleted_by_cleanup": 1})
+        self.assertEqual(self.failed(summary, "cleanup"), [
+            "FAIL cleanup: dictation filler/repetition removal 90.0 % (cleanup; target >= 95 %)",
+            "FAIL cleanup: dictation content words deleted by cleanup 1 (target 0)",
+        ])
+        # Recognition omissions stay in content_deleted but are not the cleanup's.
+        summary = summary_with(stages=("raw", "cleanup"), dictation={"content_deleted": 19})
+        self.assertEqual(self.failed(summary, "cleanup"), [])
+        self.assertEqual(len(self.failed(summary_with(stages=("raw", "streamed")), "cleanup")), 2)
         self.assertEqual(len(self.failed(summary, "vocabulary")), 2)
         summary = summary_with(stages=("raw", "vocabulary"), commands={"name_error_rate": 0.2})
         self.assertEqual(self.failed(summary, "vocabulary"), ["FAIL vocabulary: commands project-name error 20.0 % (target <= 10 %)"])

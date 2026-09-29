@@ -3,6 +3,7 @@
 import json
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -227,7 +228,8 @@ class StoreTest(unittest.TestCase):
         self.dir.cleanup()
 
     def store(self):
-        return CorrectionStore(self.path, self.clock)
+        # Retries wait on the fake clock: persistent failures cost no real time.
+        return CorrectionStore(self.path, self.clock, sleep=self.clock.sleep, monotonic=self.clock)
 
     def test_missing_file_is_empty_and_save_is_atomic(self):
         store = self.store()
@@ -330,6 +332,201 @@ class StoreTest(unittest.TestCase):
         self.assertTrue(store.writable)
         self.assertEqual(len(c.entries), 1)
         self.assertTrue(store.save(c))
+
+    # A Windows sharing violation: another thread or process holds the file for a moment.
+
+    def test_read_failing_twice_then_succeeding_is_retried(self):
+        self.path.parent.mkdir(parents=True)
+        raw = json.dumps(learned(("d1", [("ram", "run")])).to_json()).encode("utf-8")
+        self.path.write_bytes(raw)
+        store = self.store()
+        locked = PermissionError(13, "sharing violation")
+        with mock.patch.object(Path, "read_bytes", side_effect=[locked, locked, raw]) as read, \
+                self.assertNoLogs("quill.corrections", "WARNING"):
+            c = store.load()
+        self.assertEqual(read.call_count, 3)
+        self.assertEqual([(e.source, e.target) for e in c.entries], [("ram", "run")])
+        self.assertTrue(store.writable)
+        self.assertFalse(store.changed())
+        self.assertEqual(len(self.clock.sleeps), 2)
+        self.assertEqual([p.name for p in self.path.parent.iterdir()], ["corrections.json"])  # no backup
+
+    def test_persistent_read_failure_is_bounded_and_read_again_later(self):
+        self.path.parent.mkdir(parents=True)
+        self.path.write_text(json.dumps(learned(("d1", [("ram", "run")])).to_json()), encoding="utf-8")
+        before = self.path.read_bytes()
+        store = self.store()
+        with mock.patch.object(Path, "read_bytes", side_effect=PermissionError(13, "sharing violation")), \
+                self.assertLogs("quill.corrections", "ERROR") as logs:
+            self.assertEqual(store.load().entries, [])
+        self.assertEqual(logs.output, [("ERROR:quill.corrections:corrections file not readable (PermissionError); "
+                                        "learning is not saved")])
+        self.assertLessEqual(sum(self.clock.sleeps), corrections.RETRY_S)
+        self.assertGreater(len(self.clock.sleeps), 2)
+        self.assertFalse(store.save(Corrections.empty(0.0)))
+        self.assertEqual(self.path.read_bytes(), before)  # never overwritten unread
+        self.assertFalse(store.changed())  # not read again on every dictation...
+        self.clock.now += corrections.REREAD_AFTER_S
+        self.assertTrue(store.changed())  # ...but again later, so saving is never disabled for good
+        self.assertEqual(len(store.load().entries), 1)
+        self.assertTrue(store.writable)
+        self.assertFalse(store.changed())
+
+    def test_learner_recovers_after_a_persistent_read_failure(self):
+        self.path.parent.mkdir(parents=True)
+        self.path.write_text(json.dumps(learned(("d1", [("ram", "run")]), ("d2", [("ram", "run")])).to_json()),
+                             encoding="utf-8")
+        with mock.patch.object(Path, "read_bytes", side_effect=PermissionError(13, "sharing violation")), \
+                self.assertLogs("quill.corrections", "ERROR"):
+            learner = Learner(self.store(), self.clock)
+        self.assertEqual(learner.apply("ram"), "ram")
+        self.clock.now += corrections.REREAD_AFTER_S
+        self.assertEqual(learner.apply("ram"), "run")
+        self.assertTrue(learner.store.writable)
+
+    def test_replace_failing_twice_then_succeeding_is_retried(self):
+        store = self.store()
+        c = store.load()
+        c.learn("d1", [Replacement("ram", "run")], self.clock())
+        real, calls = os.replace, []
+
+        def replace(source, target):
+            calls.append(target)
+            if len(calls) <= 2:
+                raise PermissionError(5, "access denied")
+            real(source, target)
+
+        with mock.patch.object(corrections.os, "replace", side_effect=replace), \
+                self.assertNoLogs("quill.corrections", "WARNING"):
+            self.assertTrue(store.save(c))
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(self.clock.sleeps), 2)
+        self.assertEqual([p.name for p in self.path.parent.iterdir()], ["corrections.json"])  # no temp file left
+        self.assertEqual(self.store().load().entries[0].target, "run")
+        self.assertFalse(store.changed())
+
+    def test_persistent_replace_failure_is_bounded_logged_and_leaves_no_temporary(self):
+        store = self.store()
+        c = store.load()
+        store.save(c)
+        before = self.path.read_bytes()
+        c.learn("d1", [Replacement("segredo", "sigilo")], self.clock())
+        with mock.patch.object(corrections.os, "replace", side_effect=PermissionError(5, "access denied")) as replace, \
+                self.assertLogs("quill.corrections", "ERROR") as logs:
+            self.assertFalse(store.save(c))
+        self.assertGreater(replace.call_count, 3)
+        self.assertLessEqual(sum(self.clock.sleeps), corrections.RETRY_S)
+        self.assertEqual(logs.output, ["ERROR:quill.corrections:corrections not saved (PermissionError)"])
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual([p.name for p in self.path.parent.iterdir()], ["corrections.json"])
+        self.assertTrue(store.writable)  # a failed save never disables later ones
+
+    def test_temporary_removal_is_retried(self):
+        store = self.store()
+        c = store.load()
+        real, removals = os.unlink, []
+
+        def unlink(path):
+            removals.append(path)
+            if len(removals) == 1:
+                raise PermissionError(32, "sharing violation")
+            real(path)
+
+        with mock.patch.object(corrections.os, "replace", side_effect=OSError(22, "invalid")), \
+                mock.patch.object(corrections.os, "unlink", side_effect=unlink), \
+                self.assertLogs("quill.corrections", "ERROR") as logs:
+            self.assertFalse(store.save(c))
+        self.assertEqual(len(removals), 2)
+        self.assertEqual(logs.output, ["ERROR:quill.corrections:corrections not saved (OSError)"])
+        self.assertEqual(list(self.path.parent.iterdir()), [])
+
+    def test_other_errors_are_not_retried(self):
+        store = self.store()
+        with mock.patch.object(corrections.os, "replace", side_effect=OSError(28, "no space")) as replace, \
+                self.assertLogs("quill.corrections", "ERROR"):
+            self.assertFalse(store.save(Corrections.empty(0.0)))
+        self.assertEqual(replace.call_count, 1)
+        self.assertEqual(self.clock.sleeps, [])
+
+    def test_backup_retries_a_sharing_violation(self):
+        self.path.parent.mkdir(parents=True)
+        self.path.write_bytes(b"{")
+        real, calls = os.replace, []
+
+        def replace(source, target):
+            calls.append(target)
+            if len(calls) == 1:
+                raise PermissionError(32, "sharing violation")
+            real(source, target)
+
+        with mock.patch.object(corrections.os, "replace", side_effect=replace), \
+                self.assertLogs("quill.corrections", "WARNING"):
+            store = self.store()
+            store.load()
+        self.assertTrue(store.writable)
+        self.assertEqual(len([p for p in self.path.parent.iterdir() if ".corrupt-" in p.name]), 1)
+
+
+class ConcurrentStoreTest(unittest.TestCase):
+    """One writer saving and one reader loading the same file at once, with real threads and time."""
+
+    SAVES = 150
+
+    def test_reader_and_writer_never_fail_or_see_partial_json(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        path = Path(folder.name) / "corrections.json"
+        one = learned(("d1", [("ram", "run")]))
+        two = learned(("d1", [("ram", "run")]), ("d2", [("velatriz", "Velatrix")]))
+        writer, reader = CorrectionStore(path), CorrectionStore(path)
+        self.assertTrue(writer.save(one))
+        failures: list[str] = []
+        sizes: set[int] = set()
+        loads = 0
+        done = threading.Event()
+        parse = json.loads
+
+        def checked_parse(text, *args, **kwargs):
+            try:
+                return parse(text, *args, **kwargs)
+            except ValueError:
+                failures.append("partial json parsed")
+                raise
+
+        def write():
+            try:
+                for index in range(self.SAVES):
+                    if not writer.save(two if index % 2 else one):
+                        failures.append("save failed")
+            finally:
+                done.set()
+
+        def read():
+            nonlocal loads
+            while not done.is_set() or loads == 0:
+                try:
+                    c = reader.load()
+                except Exception as exc:  # noqa: BLE001 - the test reports any escape
+                    failures.append(f"load raised {type(exc).__name__}")
+                    return
+                loads += 1
+                if not reader.writable:
+                    failures.append("reader not writable")
+                sizes.add(len(c.entries))
+
+        threads = [threading.Thread(target=write), threading.Thread(target=read)]
+        with mock.patch.object(corrections.json, "loads", side_effect=checked_parse), \
+                self.assertNoLogs("quill.corrections", "WARNING"):
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(60.0)
+        self.assertFalse(any(thread.is_alive() for thread in threads))
+        self.assertEqual(failures, [])
+        self.assertGreater(loads, 0)
+        self.assertLessEqual(sizes, {1, 2})
+        self.assertEqual(sorted(p.name for p in path.parent.iterdir()), ["corrections.json"])  # no temp, no backup
+        self.assertEqual(len(CorrectionStore(path).load().entries), 2)
 
 
 class LearnerTest(unittest.TestCase):

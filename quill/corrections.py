@@ -34,6 +34,14 @@ versioned by ``schema``, written atomically (temporary file and replace). A
 corrupt or unreadable-schema file is renamed to
 ``corrections.json.corrupt-<time>`` and replaced by an empty one; loading
 never raises. Logs hold counts and reasons only, never the text.
+
+Windows reports a sharing violation (``PermissionError``) while another
+thread or process holds the file: a reader opening it during the rename of a
+save (the rename keeps the file open with delete access and Python opens
+files without delete sharing), or a save replacing it while a reader has it
+open. Reads, replaces and removals retry that for up to ``RETRY_S``; only
+then is the file treated as unreadable (never overwritten, read again after
+``REREAD_AFTER_S``) or the save reported as failed.
 """
 
 from __future__ import annotations
@@ -50,9 +58,12 @@ import uuid
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
+from typing import TypeVar
 
 log = logging.getLogger("quill.corrections")
+T = TypeVar("T")
 
 SCHEMA = 1
 AUTO_APPLY_AFTER = 2
@@ -63,6 +74,10 @@ MAX_ENTRIES = 1000
 MAX_DICTATIONS = 10
 MAX_TEXT = 200
 MAX_SELECTION = 4000
+RETRY_S = 0.5  # how long a sharing violation on the corrections file is retried
+RETRY_FIRST_S = 0.005
+RETRY_MAX_S = 0.05
+REREAD_AFTER_S = 10.0  # an unreadable file is tried again after this, not on every dictation
 
 WORD = re.compile(r"\w+(?:['’-]\w+)*")
 WHITESPACE = re.compile(r"\s+")
@@ -565,11 +580,30 @@ def _entry(item: object, index: int) -> Entry:
 class CorrectionStore:
     """``local/corrections.json``: atomic writes; a corrupt file is backed up and replaced."""
 
-    def __init__(self, path: Path, clock: Callable[[], float] = time.time) -> None:
+    UNREAD = (-1, -1)  # the stamp after a failed read: never equal to a file's
+
+    def __init__(self, path: Path, clock: Callable[[], float] = time.time, *,
+                 sleep: Callable[[float], None] = time.sleep, monotonic: Callable[[], float] = time.monotonic) -> None:
         self.path = Path(path)
         self.clock = clock
+        self.sleep = sleep
+        self.monotonic = monotonic
         self.writable = True
         self._stamp: tuple[int, int] | None = None
+        self._reread_at = 0.0
+
+    def _retry(self, action: Callable[[], T]) -> T:
+        """``action()``, retried while Windows reports a sharing violation, for up to ``RETRY_S``."""
+        deadline = self.monotonic() + RETRY_S
+        delay = RETRY_FIRST_S
+        while True:
+            try:
+                return action()
+            except PermissionError:
+                if self.monotonic() + delay > deadline:
+                    raise
+            self.sleep(delay)
+            delay = min(delay * 2, RETRY_MAX_S)
 
     def _file_stamp(self) -> tuple[int, int] | None:
         try:
@@ -579,14 +613,22 @@ class CorrectionStore:
         return (stat.st_mtime_ns, stat.st_size)
 
     def changed(self) -> bool:
-        """The file changed on disk since this store last read or wrote it."""
+        """The file changed on disk since this store last read or wrote it.
+
+        After a failed read it counts as changed again once ``REREAD_AFTER_S``
+        passed, so a transient failure never disables saving for good.
+        """
+        if self._stamp == self.UNREAD:
+            return self.monotonic() >= self._reread_at
         return self._file_stamp() != self._stamp
 
     def load(self) -> Corrections:
         """The stored corrections; never raises."""
         now = self.clock()
+        # Taken before the read: a save replacing the file in between shows as a change later.
+        stamp = self._file_stamp()
         try:
-            raw = self.path.read_bytes()
+            raw = self._retry(self.path.read_bytes)
         except FileNotFoundError:
             self._stamp = None
             self.writable = True  # nothing left that a save could overwrite unread
@@ -594,7 +636,7 @@ class CorrectionStore:
         except OSError as exc:
             # Not readable: work in memory and never overwrite what could not be read.
             log.error("corrections file not readable (%s); learning is not saved", type(exc).__name__)
-            self.writable = False
+            self._not_writable()
             return Corrections.empty(now)
         try:
             corrections = Corrections.from_json(json.loads(raw.decode("utf-8")))
@@ -605,9 +647,15 @@ class CorrectionStore:
             corrections = Corrections.empty(now)
             self.save(corrections)
             return corrections
-        self._stamp = self._file_stamp()
+        self._stamp = stamp
         self.writable = True  # read again after a transient failure: saving is safe again
         return corrections
+
+    def _not_writable(self) -> None:
+        """The file could not be read or set aside: keep it and try again after ``REREAD_AFTER_S``."""
+        self.writable = False
+        self._stamp = self.UNREAD
+        self._reread_at = self.monotonic() + REREAD_AFTER_S
 
     def _backup(self, reason: str) -> None:
         stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(self.clock()))
@@ -617,15 +665,23 @@ class CorrectionStore:
             if backup.exists():
                 continue
             try:
-                os.replace(self.path, backup)
+                self._retry(partial(os.replace, self.path, backup))
             except OSError as exc:
                 log.error("corrupt corrections file could not be backed up (%s); learning is not saved", type(exc).__name__)
-                self.writable = False
+                self._not_writable()
                 return
             log.warning("corrections file was invalid (%s); backed up as %s and replaced", reason, backup.name)
             return
         log.error("corrupt corrections file could not be backed up; learning is not saved")
-        self.writable = False
+        self._not_writable()
+
+    def _remove(self, temporary: str) -> None:
+        try:
+            self._retry(partial(os.unlink, temporary))
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            log.error("temporary corrections file not removed (%s)", type(exc).__name__)
 
     def save(self, corrections: Corrections) -> bool:
         """Write atomically; False (logged) on failure, never raises."""
@@ -640,17 +696,14 @@ class CorrectionStore:
                 stream.write(data)
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(temporary, self.path)
+            self._retry(partial(os.replace, temporary, self.path))
             temporary = None
         except OSError as exc:
             log.error("corrections not saved (%s)", type(exc).__name__)
             return False
         finally:
             if temporary is not None:
-                try:
-                    os.unlink(temporary)
-                except OSError:
-                    pass
+                self._remove(temporary)
         self._stamp = self._file_stamp()
         return True
 

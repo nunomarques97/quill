@@ -9,7 +9,6 @@ temporary folder. The spoken words are invented bursts (``w1``, ``w2``...).
 """
 
 import dataclasses
-import json
 import tempfile
 import threading
 import time
@@ -22,6 +21,7 @@ from quill import inject
 from quill import session as S
 from quill import startup
 from quill.config import EXAMPLE_CONFIG, load_config
+from quill.corrections import CorrectionStore
 from quill.indicator.render import ERROR, LISTENING, LOADING, SENT
 from quill.ollama import OllamaError
 from quill.tests.fakes import (
@@ -426,14 +426,27 @@ class LifecycleTest(AppCase):
 
 class CorrectionKeyTest(AppCase):
     def test_correction_key_learns_from_the_selection(self):
+        # Wait for the learner's save to return, never for the file to appear: the
+        # file exists as soon as the save's rename starts, and reading it before the
+        # rename finishes is a Windows sharing violation (PermissionError).
         self.start()
         self.hold((1, 2))
-        with mock.patch.object(self.app.correction_key, "read_selection", return_value="w1 w9."):
+        saved = threading.Event()
+        learn = self.app.learner.learn
+
+        def learn_then_signal(*args, **kwargs):
+            try:
+                return learn(*args, **kwargs)
+            finally:
+                saved.set()
+
+        with mock.patch.object(self.app.correction_key, "read_selection", return_value="w1 w9."), \
+                mock.patch.object(self.app.learner, "learn", side_effect=learn_then_signal):
             self.assertEqual(self.key(True, F16), 0)  # not swallowed
             self.key(False, F16)
-            wait_for(lambda: self.config.corrections_path.exists(), "the learned correction")
-        data = json.loads(self.config.corrections_path.read_text(encoding="utf-8"))
-        self.assertTrue(data)
+            self.assertTrue(saved.wait(WAIT_S), "timed out waiting for the learned correction")
+        stored = CorrectionStore(self.config.corrections_path).load()
+        self.assertEqual([(e.source, e.target) for e in stored.entries], [("w2", "w9")])
 
 
 class WarmModelTest(unittest.TestCase):

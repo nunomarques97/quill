@@ -8,6 +8,7 @@ Usage:
     py -3.12 -m bench.pipeline --summary PATH --write-doc DOC.md
     py -3.12 -m bench.pipeline --summary PATH --check-doc DOC.md
     py -3.12 -m bench.pipeline --compare-cleanup bench/results/pipeline/<run>
+    .venv\\Scripts\\python -m bench.pipeline --set all --stage vocabulary --summary PATH [--vocabulary FILE]
 
 Two sets are measured: ``commands`` (the 44 short takes of the reference
 project) and ``dictation`` (the dictation script recorded with bench.record).
@@ -21,6 +22,14 @@ reproducible. Later stages start from the ``streamed`` text. ``cleanup``
 applies the product's deterministic cleanup rules (``quill.cleanup``) to the
 ``streamed`` text and adds ``content_deleted_by_cleanup``: content words that
 the streamed text had right and the cleaned text lost (deleted or changed).
+``vocabulary`` applies the product's post-recognition matcher
+(``quill.vocabulary``) to the cleaned text, with the personal vocabulary
+(``local/vocabulary.toml``, or ``--vocabulary FILE``) merged with the resolved
+project names and ``bench/terms_en.txt``. When the personal vocabulary changes
+the Whisper hints (``quill.vocabulary.hint_list`` priority order), the takes
+are streamed and cleaned again with the product hints before matching, so the
+row shows the whole effect of the vocabulary; the earlier stages keep the
+baseline hints (resolved names sorted, then the generic terms).
 
 ``--compare-cleanup RUN`` needs no GPU: it reads the streamed outputs saved by
 an earlier run and compares the rules with the local qwen3:8b cleanup
@@ -61,12 +70,13 @@ from bench.metrics import (
 )
 from bench.settings import RESULTS_DIR, Settings, SettingsError, load_settings
 from quill.cleanup import Cleanup, CleanupResult, clean_text
+from quill.vocabulary import EMPTY as NO_VOCABULARY, LOCAL_VOCABULARY, Matcher, Vocabulary, VocabularyError, hint_list, hints_within_limit, load_vocabulary
 from quill.whisper import DEFAULT_MODEL
 
 SETS = ("commands", "dictation")
 # Cumulative stages, in order. Only the ones in IMPLEMENTED_STAGES can run.
 STAGE_ORDER = ("raw", "streamed", "cleanup", "vocabulary", "corrections", "profiles")
-IMPLEMENTED_STAGES = ("raw", "streamed", "cleanup")
+IMPLEMENTED_STAGES = ("raw", "streamed", "cleanup", "vocabulary")
 TARGET_NAMES = ("complete", "latency", "cleanup", "vocabulary", "corrections", "overall")
 SUMMARY_SCHEMA = 1
 DEFAULT_SUMMARY = RESULTS_DIR / "pipeline" / "summary.json"
@@ -83,6 +93,10 @@ MIN_REMOVAL_RATE = 0.95
 MAX_CONTENT_DELETED = 0
 MAX_NAME_ERROR = 0.10
 MAX_TERM_ERROR = 0.10
+# Sponsor decision 2026-09-29: the name and term targets gate the dictation
+# set (how the product is used); the short commands set is reported as an
+# indicator, never as a gate.
+VOCABULARY_GATED_SETS = ("dictation",)
 MAX_FINAL_WER = 0.10
 MIN_INTENT = 0.95
 
@@ -240,6 +254,22 @@ def clean_samples(samples: Sequence[Sample], keep: Sequence[str], clock: Callabl
         text = clean_text(sample.hypothesis, keep)
         cleaned.append(Sample(sample.take, text, sample.seconds + clock() - started))
     return cleaned
+
+
+def match_samples(samples: Sequence[Sample], matcher: Matcher, clock: Callable[[], float]) -> tuple[list[Sample], int]:
+    """The vocabulary stage: the product matcher on each previous-stage text; also the spans changed."""
+    matched, changes = [], 0
+    for sample in samples:
+        started = clock()
+        changes += len(matcher.replacements(sample.hypothesis))
+        text = matcher.apply(sample.hypothesis)
+        matched.append(Sample(sample.take, text, sample.seconds + clock() - started))
+    return matched, changes
+
+
+def product_hints(vocabulary: Vocabulary, names: Sequence[str], terms: Sequence[str]) -> Hints:
+    """The product's hint order: personal names, resolved names, personal terms, generic terms."""
+    return Hints(names=tuple(hint_list(vocabulary, sorted(names), terms)))
 
 
 def saved_samples(run_dir: Path, set_name: str, stage: str, dataset: Dataset) -> list[Sample]:
@@ -414,6 +444,7 @@ def measure(
     log: Callable[[str], None] = print,
     streamer: Streamer | None = None,
     stream_options: dict | None = None,
+    vocabulary: Vocabulary = NO_VOCABULARY,
 ) -> dict:
     """Run the stages up to ``stage`` on every set with the engine kept warm; returns the summary."""
     if stage not in IMPLEMENTED_STAGES:
@@ -423,6 +454,9 @@ def measure(
         raise ValueError("the streamed stage needs a streamer")
     names = sorted({name for _, dataset in sets.values() for name in dataset.names})
     hints = build_hints(names, terms)
+    personal = product_hints(vocabulary, names, terms)
+    restream = personal.vocabulary() != hints.vocabulary()
+    matcher = Matcher(vocabulary, sorted(names), terms)
     first = next((take for _, dataset in sets.values() for take in dataset.takes), None)
     warm: dict = {}
     started = clock()
@@ -442,6 +476,9 @@ def measure(
     }
     if "streamed" in stages and stream_options is not None:
         summary["engine"]["streaming"] = dict(stream_options)
+    if "vocabulary" in stages:
+        kept, dropped = hints_within_limit(personal.vocabulary())
+        summary["vocabulary"] = {**vocabulary.counts(), "hints": kept, "hints_dropped": dropped, "restreamed": restream}
     for set_name, (set_settings, dataset) in sets.items():
         block: dict = {"dataset": dataset_block(set_settings, dataset), "stages": {}}
         summary["sets"][set_name] = block
@@ -453,12 +490,21 @@ def measure(
             elif current == "streamed":  # the product source for every later stage
                 streamed = streamer(dataset.takes, hints)
                 samples = [Sample(take, text, seconds) for take, (text, seconds) in zip(dataset.takes, streamed, strict=True)]
-            else:  # cleanup
+            elif current == "cleanup":
                 before = samples
                 samples = clean_samples(before, hints.vocabulary(), clock)
+            else:  # vocabulary: the cleaned text, streamed again first when the hints change
+                if restream:
+                    streamed = streamer(dataset.takes, personal)
+                    source = [Sample(take, text, seconds) for take, (text, seconds) in zip(dataset.takes, streamed, strict=True)]
+                    samples = clean_samples(source, personal.vocabulary(), clock)
+                    write_private(run_dir, set_name, "vocabulary-source", samples, [], results_dir)
+                samples, changes = match_samples(samples, matcher, clock)
             intent, note, rows = judge_samples(samples, judge, terms, unavailable)
             write_private(run_dir, set_name, current, samples, rows, results_dir)
             block["stages"][current] = stage_metrics(samples, terms, set_settings.markup, intent, note, before)
+            if current == "vocabulary":
+                block["stages"][current]["vocabulary_changes"] = changes
             log(f"{set_name} / {current}: n={len(samples)}" + (f" ({note})" if note else ""))
     return summary
 
@@ -552,9 +598,13 @@ def check_targets(summary: dict, targets: Sequence[str]) -> list[tuple[bool, str
                 add(deleted is not None and deleted <= MAX_CONTENT_DELETED, target, f"dictation content words deleted by cleanup {deleted} (target {MAX_CONTENT_DELETED})")
         elif target == "vocabulary":
             for set_name, stage, row in per_set(target, "vocabulary"):
+                gated = set_name in VOCABULARY_GATED_SETS
                 for key, label, limit in (("name_error_rate", "project-name error", MAX_NAME_ERROR), ("term_error_rate", "English-term error", MAX_TERM_ERROR)):
                     value = row.get(key)
-                    add(value is not None and value <= limit, target, f"{set_name} {label} {_pct(value)} (target <= {100 * limit:.0f} %)")
+                    if gated:
+                        add(value is not None and value <= limit, target, f"{set_name} {label} {_pct(value)} (target <= {100 * limit:.0f} %)")
+                    else:
+                        results.append((True, f"info {target}: {set_name} {label} {_pct(value)} (indicator, not a gate; target <= {100 * limit:.0f} % applies to dictation)"))
         elif target == "corrections":
             for set_name, stage, row in per_set(target, "corrections"):
                 fixed, new = row.get("recurrences_fixed_rate"), row.get("new_errors")
@@ -700,6 +750,8 @@ def main(
     parser.add_argument("--stage", choices=IMPLEMENTED_STAGES, default=None, help="measure up to this stage")
     parser.add_argument("--compare-cleanup", type=Path, default=None, metavar="RUN",
                         help="compare rules and qwen3:8b cleanup on RUN's saved streamed texts; no GPU")
+    parser.add_argument("--vocabulary", type=Path, default=LOCAL_VOCABULARY,
+                        help="personal vocabulary for the vocabulary stage (default local/vocabulary.toml; missing is empty)")
     parser.add_argument("--summary", type=Path, default=DEFAULT_SUMMARY, help="aggregate summary JSON")
     parser.add_argument("--require", action="append", choices=TARGET_NAMES, default=[], help="exit 1 unless met")
     parser.add_argument("--check-doc", type=Path, default=None, help="exit 1 when DOC's block differs from the summary")
@@ -727,13 +779,14 @@ def main(
         if args.stage:
             settings = load_settings(args.config)
             sets = load_sets(settings, names)
+            vocabulary = load_vocabulary(args.vocabulary) if args.stage == "vocabulary" else NO_VOCABULARY
             engine = engine_factory()
             judge, unavailable = judge_factory()
             run_dir = Path(results_dir) / "pipeline" / time.strftime("%Y%m%d-%H%M%S")
             streamer, stream_options = streamer_factory(engine) if args.stage != "raw" else (None, None)
             try:
                 summary = measure(sets, args.stage, engine, judge, unavailable, load_terms(), run_dir, results_dir=results_dir,
-                                  log=out, streamer=streamer, stream_options=stream_options)
+                                  log=out, streamer=streamer, stream_options=stream_options, vocabulary=vocabulary)
             finally:
                 engine.close()
                 close = getattr(streamer, "close", None)
@@ -743,11 +796,12 @@ def main(
             (run_dir / "timings.json").write_text(json.dumps(split_timings(summary), indent=2), encoding="utf-8")
             texts = [text for _, dataset in sets.values() for text in dataset.reference_texts()]
             spoken_names = [name for _, dataset in sets.values() for name in dataset.names]
+            spoken_names += [entry.text for entry in vocabulary.names]
             write_summary(args.summary, summary, texts, spoken_names)
             out(f"summary written ({', '.join(summary['sets'])}); per-take outputs under bench/results/")
         else:
             summary = _read_summary(args.summary)
-    except (SettingsError, DatasetError) as exc:
+    except (SettingsError, DatasetError, VocabularyError) as exc:
         out(f"error: {exc}")
         return 2
     except (EngineUnavailable, EngineError) as exc:

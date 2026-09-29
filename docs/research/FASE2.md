@@ -1,6 +1,6 @@
 # Quill: medições da Fase 2 com a voz real
 
-**Estado: baseline medida a 2026-09-28** (tarefa T2); **transcrição por blocos medida a 2026-09-29** (tarefa T3, etapa `streamed`); **juiz de intenção revisto e limpeza do texto medida a 2026-09-29** (tarefa T4, etapa `cleanup`). Motor decidido pelo Sponsor: Whisper local (faster-whisper, float16, CUDA, RTX 5060 Ti) com vocabulário (`initial_prompt` e `hotwords`), 0 EUR/mês; o áudio não sai do PC. A baseline (`raw`) é do large-v3. Desde a decisão do Sponsor de 2026-09-29, o modelo por omissão da aplicação é o large-v3-turbo, porque só ele cumpre a meta de latência; o large-v3 fica como modo preciso (ver [Transcrição por blocos](#transcrição-por-blocos-etapa-streamed)). As etapas seguintes (vocabulário pessoal, correções, perfis) acrescentam linhas a este documento.
+**Estado: baseline medida a 2026-09-28** (tarefa T2); **transcrição por blocos medida a 2026-09-29** (tarefa T3, etapa `streamed`); **juiz de intenção revisto e limpeza do texto medida a 2026-09-29** (tarefa T4, etapa `cleanup`); **vocabulário pessoal medido a 2026-09-29** (tarefa T5, etapa `vocabulary`). Motor decidido pelo Sponsor: Whisper local (faster-whisper, float16, CUDA, RTX 5060 Ti) com vocabulário (`initial_prompt` e `hotwords`), 0 EUR/mês; o áudio não sai do PC. A baseline (`raw`) é do large-v3. Desde a decisão do Sponsor de 2026-09-29, o modelo por omissão da aplicação é o large-v3-turbo, porque só ele cumpre a meta de latência; o large-v3 fica como modo preciso (ver [Transcrição por blocos](#transcrição-por-blocos-etapa-streamed)). As etapas seguintes (correções, perfis) acrescentam linhas a este documento.
 
 Este documento contém só números agregados: nenhum texto falado, nenhum nome de projeto real e nenhum caminho da máquina. Os resultados por frase ficam apenas em `bench/results/`, que o Git ignora. Os números vêm de [phase2-summary.json](phase2-summary.json); o harness está em [bench/](../../bench/README.md#pipeline-evaluation).
 
@@ -10,9 +10,10 @@ Este documento contém só números agregados: nenhum texto falado, nenhum nome 
 - **Comandos (44 gravações da Fase 1), baseline large-v3:** WER 28,3 %, termos 23,5 %, nomes 21,1 %: exatamente os valores da Fase 1 para large-v3 com vocabulário, o que confirma que o harness reproduz a medição. A intenção era 52,3 % com o juiz da Fase 1 e é 45,5 % com o juiz revisto.
 - **Juiz de intenção revisto (T4):** comparado com uma revisão manual das 80 frases da etapa `streamed`, o juiz antigo concordava em 67 (83,8 %) e era demasiado brando; o juiz revisto concorda em 71 (88,8 %). Ver [Revisão do juiz de intenção](#revisão-do-juiz-de-intenção).
 - **Limpeza (T4, etapa `cleanup`):** as regras determinísticas removem 96,4 % das hesitações e repetições (meta ≥ 95 %) sem apagar nenhuma palavra de conteúdo (meta 0) e baixam o WER limpo do ditado de 13,0 % para 11,0 %. O `qwen3:8b` fica desligado: apagava 13 palavras de conteúdo e o p95 por frase era 0,97 s. Ver [Limpeza do texto](#limpeza-do-texto-etapa-cleanup).
-- **Metas já cumpridas na baseline:** erro em termos e em nomes ≤ 10 % no conjunto de ditado.
-- **Metas cumpridas pela limpeza:** hesitações e repetições removidas ≥ 95 % e 0 palavras de conteúdo apagadas pela limpeza.
-- **Metas por cumprir:** WER final ≤ 10 % e intenção ≥ 95 % nos dois conjuntos; termos e nomes ≤ 10 % no conjunto de comandos e, com o large-v3-turbo, nomes no ditado (11,1 %). A digitação sem perdas e a aprendizagem de correções ainda não têm medição (tarefas T11 e T6).
+- **Vocabulário pessoal (T5, etapa `vocabulary`):** o vocabulário pessoal entra nas dicas do Whisper com prioridade e um corretor pós-reconhecimento acerta a grafia de nomes e termos quase certos. No ditado, o erro em nomes volta a 0,0 % (era 11,1 % com o turbo), os termos ficam em 2,3 %, o WER limpo desce para 10,6 %, a intenção sobe para 58,3 % e as hesitações removidas ficam em 96,4 %. Nos comandos, os nomes descem para 15,8 % e a intenção sobe para 36,4 %, mas os termos ingleses ficam em 47,1 %. Ver [Vocabulário pessoal](#vocabulário-pessoal-etapa-vocabulary).
+- **Decisão do Sponsor (2026-09-29), depois da T5:** o large-v3-turbo continua a ser o motor por omissão. As metas de nomes e termos (≤ 10 %) aplicam-se ao conjunto de ditado, que é o uso real do produto, e estão cumpridas; o conjunto curto de comandos passa a ser um indicador reportado, não uma meta que bloqueia. Ver [Decisão sobre o conjunto de comandos](#decisão-sobre-o-conjunto-de-comandos).
+- **Metas cumpridas no ditado:** erro em termos e em nomes ≤ 10 %; hesitações e repetições removidas ≥ 95 % e 0 palavras de conteúdo apagadas pela limpeza.
+- **Metas por cumprir:** WER final ≤ 10 % e intenção ≥ 95 % nos dois conjuntos. A digitação sem perdas e a aprendizagem de correções ainda não têm medição (tarefas T11 e T6).
 - **Latência do largar do gatilho ao texto final (T3):** cumpre a meta de p95 ≤ 0,5 s com o large-v3-turbo, o novo motor por omissão; com o large-v3 nenhuma afinação a cumpria. Em troca, os comandos ficam piores com o turbo (termos ingleses 47,1 % e nomes 18,4 %), o que a T5 tem de recuperar (ver [Transcrição por blocos](#transcrição-por-blocos-etapa-streamed)).
 
 ## Conjuntos
@@ -46,9 +47,11 @@ Tabela gerada a partir de [phase2-summary.json](phase2-summary.json) por `py -3.
 | comandos | raw | 44 | 28,3 % | 28,3 % | 23,5 % | 21,1 % | 45,5 % | — | — | — |
 | comandos | streamed | 44 | 30,0 % | 30,0 % | 47,1 % | 18,4 % | 31,8 % | — | — | — |
 | comandos | cleanup | 44 | 30,0 % | 30,0 % | 47,1 % | 18,4 % | 29,5 % | — | — | — |
+| comandos | vocabulary | 44 | 29,7 % | 29,7 % | 47,1 % | 15,8 % | 36,4 % | — | — | — |
 | ditado | raw | 36 | 16,9 % | 13,5 % | 2,3 % | 0,0 % | 47,2 % | 64,3 % | 19 | — |
 | ditado | streamed | 36 | 16,5 % | 13,0 % | 2,3 % | 11,1 % | 52,8 % | 64,3 % | 19 | — |
 | ditado | cleanup | 36 | 17,8 % | 11,0 % | 2,3 % | 11,1 % | 55,6 % | 96,4 % | 20 | 0 |
+| ditado | vocabulary | 36 | 17,4 % | 10,6 % | 2,3 % | 0,0 % | 58,3 % | 96,4 % | 19 | — |
 <!-- pipeline:summary:end -->
 
 Leitura dos resultados:
@@ -93,9 +96,9 @@ O juiz de intenção é o oráculo de todas as etapas, por isso foi revisto ante
 
 ## Limpeza do texto (etapa `cleanup`)
 
-A limpeza corre depois da transcrição e antes da digitação (`quill/cleanup.py`). Por omissão são regras determinísticas, genéricas para português ditado e nunca escritas a partir do guião: tiram hesitações (`hum`, `hã`, `é pá`; `pronto` só no início de uma oração e não em «está pronto» ou «pronto para»; `tipo` só quando não é nome, como em «o tipo», «por tipo», «sem tipo», «tipo de» ou no fim de uma frase), tiram repetições imediatas de 1 a 4 palavras (exceto números, palavras de ênfase como «não, não» e pares válidos como «para para» ou «se se»), arrumam a pontuação e os espaços e põem maiúscula no início das frases. Termos ingleses, nomes e números nunca são alterados. Aplicar a limpeza duas vezes dá o mesmo texto.
+A limpeza corre depois da transcrição e antes da digitação (`quill/cleanup.py`). Por omissão são regras determinísticas, genéricas para português ditado e nunca escritas a partir do guião: tiram hesitações (`hum`, `hã`, `é pá`; `pronto` no início de uma oração ou a fechar uma frase, mas não em «está pronto», «tenho o relatório pronto» ou «pronto para»; `tipo` só quando não é nome, como em «o tipo», «por tipo», «sem tipo», «tipo de» ou no fim de uma frase), tiram repetições imediatas de 1 a 4 palavras (exceto números, palavras de ênfase como «não, não» e pares válidos como «para para» ou «se se»), arrumam a pontuação e os espaços e põem maiúscula no início das frases. Termos ingleses, nomes e números nunca são alterados. Aplicar a limpeza duas vezes dá o mesmo texto.
 
-A etapa `cleanup` aplica estas regras ao texto da etapa `streamed` (tabela acima):
+A etapa `cleanup` aplica estas regras ao texto da etapa `streamed` (tabela acima). A regra do `pronto` a fechar uma frase foi acrescentada na T5 (opção A da decisão do Sponsor); não muda nenhum texto da etapa `cleanup` e só muda uma frase da etapa `vocabulary`.
 
 - **Hesitações e repetições: 96,4 % removidas (meta ≥ 95 %, cumprida).** Dos 56 trechos marcados ficam 2, e ambos são erros de reconhecimento que nenhuma regra pode corrigir sem adivinhar: uma hesitação que o Whisper escreveu como uma palavra de conteúdo e uma repetição que ele transcreveu como palavras diferentes.
 - **Palavras apagadas pela limpeza: 0 (meta 0, cumprida).** A coluna «Palavras apagadas» passa de 19 para 20 sem que a limpeza apague nada: numa frase, o Whisper escreveu uma hesitação no sítio de uma palavra que não reconheceu; a limpeza tira bem a hesitação e o alinhamento passa a contar essa palavra em falta como apagada em vez de trocada. É uma omissão do reconhecimento.
@@ -111,18 +114,40 @@ A etapa `cleanup` aplica estas regras ao texto da etapa `streamed` (tabela acima
 
 Nos comandos, o `qwen3:8b` deu WER 28,9 % (regras 30,0 %), nomes 13,2 % (18,4 %), a mesma intenção (29,5 %) e p50/p95 de 0,20/0,38 s, com uma resposta rejeitada por ter o tamanho errado. **Decisão: o `qwen3:8b` fica desligado por omissão** (`[cleanup] mode = "rules"`): no ditado apaga ou troca 13 palavras de conteúdo que o reconhecimento tinha certas (a meta é 0) e piora o WER; a melhoria na intenção é medida por outro modelo e não compensa as palavras perdidas; e o tempo não cabe no orçamento: o p95 do largar ao texto final já é 0,34 s sem limpeza, e o modelo acrescenta 0,97 s no p95 do ditado (ordem de grandeza igual à da Fase 1, 0,6 a 1,3 s). Os tempos variam de execução para execução e ficam só em `bench/results/cleanup/`. O modo `llm` continua disponível em `local/quill.toml` para quem aceitar esse custo; com as regras, a limpeza leva menos de 1 ms por frase.
 
+## Vocabulário pessoal (etapa `vocabulary`)
+
+O vocabulário pessoal fica em `local/vocabulary.toml`, que o Git ignora; o formato está em [vocabulary.example.toml](../../vocabulary.example.toml), só com entradas inventadas, e `py -3.12 -m quill.vocabulary --check` valida o ficheiro e mostra só contagens. Tem nomes de projeto, termos técnicos e, em `[variants]`, formas faladas ou mal ouvidas de uma entrada. O código está em `quill/vocabulary.py` e é o mesmo que a aplicação usa.
+
+- **Dicas do Whisper, por esta ordem:** nomes pessoais, nomes de projeto resolvidos (só no harness), termos pessoais e a lista genérica `bench/terms_en.txt`. Os repetidos saem (sem distinguir maiúsculas) e a lista é cortada pelo fim quando passa o limite do prompt (600 caracteres), por isso os nomes são os últimos a sair. As variantes nunca vão nas dicas. Na medição couberam as 41 dicas e nenhuma foi cortada.
+- **Corretor depois do reconhecimento:** depois da limpeza, uma palavra ou um grupo de palavras muito parecido com uma entrada passa a ter a grafia da entrada. A comparação ignora acentos, maiúsculas, hífenes e espaços e aceita no máximo 1 letra diferente em entradas de 7 ou mais letras e 2 em entradas de 12 ou mais, sempre com a mesma primeira letra. Entradas curtas só mudam quando são ouvidas exatamente ou como variante declarada; plurais e palavras comuns parecidas (por exemplo «pronto» perto de «prompt») ficam como estão; se duas entradas estiverem à mesma distância, nada muda. O corretor usa só a lista do vocabulário, nunca o texto de referência.
+- **Como se mediu:** o `local/vocabulary.toml` usado tem os 6 nomes de projeto do projeto de referência, sem termos nem variantes. Não se acrescentaram variantes tiradas das próprias gravações, porque isso seria medir com as respostas. Como as dicas mudam (mais nomes, à frente), a etapa volta a transcrever por blocos e a limpar cada gravação com as dicas do produto antes do corretor; as etapas anteriores ficam com as dicas da baseline, para continuarem comparáveis. As etapas `raw`, `streamed` e `cleanup` deram exatamente os mesmos valores da T4.
+
+Leitura dos resultados (tabela acima, etapa `vocabulary` contra `cleanup`):
+
+- **Ditado: melhor ou igual em tudo.** Nomes 11,1 % → 0,0 %; WER limpo 11,0 % → 10,6 %; intenção 55,6 % → 58,3 %; termos iguais (2,3 %); hesitações removidas iguais (96,4 %); palavras apagadas 20 → 19. O corretor mudou 2 trechos. Com as novas dicas, o Whisper escreveu uma hesitação a fechar uma frase, sem vírgula antes; a primeira medição deu por isso 94,6 %, e a regra genérica do `pronto` a fechar uma frase (ver [Limpeza do texto](#limpeza-do-texto-etapa-cleanup)) repõe os 96,4 %.
+- **Comandos: nomes e intenção melhoram, termos não.** Nomes 18,4 % → 15,8 %; intenção 29,5 % → 36,4 %; WER 30,0 % → 29,7 %; termos 47,1 %, iguais. O corretor mudou 1 trecho.
+- **Porque não chega nos comandos.** Faltam 8 dos 17 termos e 6 dos 38 nomes, e quase todos estão longe demais para uma correção segura: 5 dos 8 termos são o verbo inglês «run» ouvido como palavras portuguesas diferentes; outro é «prompt» ouvido como «pronto», uma palavra portuguesa comum que o corretor não pode mudar sem estragar o ditado. Nos nomes, 4 das 6 falhas são um nome transcrito como palavras portuguesas ou cortado e 2 são o nome do assistente trocado ou em falta. Aceitar mais letras de distância mudaria palavras comuns.
+- **Só o corretor, sem mudar as dicas (para comparação):** comandos WER 29,7 %, termos 47,1 %, nomes 15,8 %, intenção 29,5 %; ditado WER limpo 10,8 %, nomes 0,0 %, intenção 58,3 %, hesitações removidas 96,4 %. As dicas pessoais valem a intenção dos comandos (+6,8 pp) e, com a regra do `pronto` a fechar uma frase, já não custam nenhum trecho de hesitação no ditado.
+- **Rede de segurança (decisão do Sponsor, T3).** O erro em nomes (15,8 %) e em termos ingleses (47,1 %) nos comandos continuou acima de 10 % com o turbo e foi ao Sponsor como decisão. O modo preciso (large-v3) também não cumpre nos comandos (termos 23,5 %, nomes 15,8 %, medidos sem o corretor) e falha a meta de latência.
+
+### Decisão sobre o conjunto de comandos
+
+**Decisão do Sponsor (2026-09-29), opção A.** O large-v3-turbo continua a ser o motor por omissão, com as dicas pessoais e o corretor. As metas de erro em nomes de projeto e em termos ingleses (≤ 10 %) aplicam-se ao conjunto real de ditado, que é a forma como o produto é usado, e aí estão cumpridas (nomes 0,0 %, termos 2,3 %). O conjunto curto de comandos continua a ser medido e reportado como indicador, mas deixa de bloquear: o large-v3 também falha nele (nomes 21,1 %, termos 23,5 %). Espera-se que a aprendizagem de correções (T6) reduza a distância nos comandos, porque as trocas que se repetem (como o verbo «run») passam a ser corrigidas à segunda vez. As metas do ditado não mudam.
+
+Na prática, `--require vocabulary` verifica nomes e termos só no ditado e mostra os valores dos comandos como `info`, sem falhar. As outras metas (WER final, intenção) continuam a aplicar-se aos dois conjuntos.
+
 ## Distância às metas da Fase 2
 
-Valores da etapa `cleanup`, o texto final da aplicação até agora (large-v3-turbo e limpeza por regras); entre parênteses, a baseline `raw` do large-v3. Intenção medida com o juiz revisto. As metas não baixam; cada linha diz que tarefa a trata.
+Valores da etapa `vocabulary`, o texto final da aplicação até agora (large-v3-turbo, limpeza por regras e vocabulário pessoal); entre parênteses, a baseline `raw` do large-v3. Intenção medida com o juiz revisto. As metas não baixam; cada linha diz que tarefa a trata.
 
 | Meta | Comandos | Ditado | Distância | Tarefa |
 |---|---|---|---|---|
-| WER final (referência limpa) ≤ 10 % | 30,0 % (28,3 %) | 11,0 % (13,5 %) | comandos +20,0 pp; ditado +1,0 pp | T5 a T7 |
-| Intenção preservada ≥ 95 % | 29,5 % (45,5 %) | 55,6 % (47,2 %) | comandos −65,5 pp; ditado −39,4 pp | T5 a T7 |
-| Erro em nomes de projeto ≤ 10 % | 18,4 % (21,1 %) | 11,1 % (0,0 %) | comandos +8,4 pp; ditado +1,1 pp (1 nome em 9) | T5 (rede de segurança) |
-| Erro em termos ingleses ≤ 10 % | 47,1 % (23,5 %) | 2,3 % (2,3 %) | comandos +37,1 pp; ditado cumprida | T5 (rede de segurança) |
-| Hesitações e repetições removidas ≥ 95 % | não se aplica | 96,4 % (64,3 %) | cumprida | T4 |
-| Palavras de conteúdo apagadas pela limpeza = 0 | não se aplica | 0 | cumprida; as 20 omissões do reconhecimento continuam visíveis | T4 |
+| WER final (referência limpa) ≤ 10 % | 29,7 % (28,3 %) | 10,6 % (13,5 %) | comandos +19,7 pp; ditado +0,6 pp | T6 e T7 |
+| Intenção preservada ≥ 95 % | 36,4 % (45,5 %) | 58,3 % (47,2 %) | comandos −58,6 pp; ditado −36,7 pp | T6 e T7 |
+| Erro em nomes de projeto ≤ 10 % (meta no ditado; comandos como indicador) | 15,8 % (21,1 %) | 0,0 % (0,0 %) | ditado cumprida; comandos +5,8 pp (6 nomes em 38), só indicador | T5; T6 nos comandos |
+| Erro em termos ingleses ≤ 10 % (meta no ditado; comandos como indicador) | 47,1 % (23,5 %) | 2,3 % (2,3 %) | ditado cumprida; comandos +37,1 pp (8 termos em 17), só indicador | T5; T6 nos comandos |
+| Hesitações e repetições removidas ≥ 95 % | não se aplica | 96,4 % (64,3 %) | cumprida | T4 e T5 |
+| Palavras de conteúdo apagadas pela limpeza = 0 | não se aplica | 0 | cumprida na etapa `cleanup`; as 19 omissões do reconhecimento continuam visíveis | T4 |
 | Latência p95 ≤ 0,5 s do largar do gatilho ao texto final (até 15 s; meta do Sponsor) | cumprida | cumprida | cumprida com o large-v3-turbo nos dois conjuntos juntos, ao ritmo real e com a GPU livre; com o large-v3 (modo preciso) não; os tempos ficam só em `bench/results/` | T3 |
 | 0 caracteres perdidos ou duplicados na digitação | não medido | não medido | — | T11 |
 | Correções aprendidas: 100 % das repetições corrigidas, 0 erros novos | não medido | não medido | — | T6 |

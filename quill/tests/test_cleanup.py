@@ -24,12 +24,24 @@ class FillerTest(unittest.TestCase):
         self.assertEqual(clean_text("então pronto vamos embora"), "Então vamos embora.")
         self.assertEqual(clean_text("fechei a janela. pronto, já está"), "Fechei a janela. Já está.")
 
+    def test_pronto_closing_a_sentence(self):
+        self.assertEqual(clean_text("leva as caixas para a garagem pronto. depois liga-me"), "Leva as caixas para a garagem. Depois liga-me.")
+        self.assertEqual(clean_text("arruma a sala pronto"), "Arruma a sala.")
+        self.assertEqual(clean_text("compra pão pronto? e leite"), "Compra pão? E leite.")
+
     def test_pronto_as_content(self):
         self.assertEqual(clean_text("o relatório está pronto"), "O relatório está pronto.")
         self.assertEqual(clean_text("pronto para sair às dez"), "Pronto para sair às dez.")
         self.assertEqual(clean_text("fica pronto a usar amanhã"), "Fica pronto a usar amanhã.")
         self.assertEqual(clean_text("Estado: pronto"), "Estado: pronto.")
         self.assertEqual(clean_text("pronto."), "Pronto.")  # a one-word answer
+        # A state verb earlier in the same sentence makes it an adjective.
+        self.assertEqual(clean_text("tenho o jantar pronto. vem cedo"), "Tenho o jantar pronto. Vem cedo.")
+        self.assertEqual(clean_text("está tudo pronto"), "Está tudo pronto.")
+        self.assertEqual(clean_text("deixa-o limpo e pronto"), "Deixa-o limpo e pronto.")
+        self.assertEqual(clean_text("respondeu de pronto"), "Respondeu de pronto.")
+        # The verb must be in the same sentence.
+        self.assertEqual(clean_text("está frio. fecha a porta pronto."), "Está frio. Fecha a porta.")
 
     def test_tipo_as_a_filler(self):
         self.assertEqual(clean_text("tipo, amanhã não posso"), "Amanhã não posso.")

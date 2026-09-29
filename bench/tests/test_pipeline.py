@@ -150,7 +150,7 @@ class MeasureTest(unittest.TestCase):
             pipeline.measure(sets, "streamed", engine, judge_yes, None, TERMS, self.results / "pipeline" / "run",
                              results_dir=self.results, log=lambda line: None)
         with self.assertRaises(ValueError):
-            pipeline.measure(sets, "vocabulary", engine, judge_yes, None, TERMS, self.results / "pipeline" / "run",
+            pipeline.measure(sets, "corrections", engine, judge_yes, None, TERMS, self.results / "pipeline" / "run",
                              results_dir=self.results, log=lambda line: None, streamer=streamer)
 
     def test_cleanup_stage_cleans_the_streamed_text(self):
@@ -175,6 +175,81 @@ class MeasureTest(unittest.TestCase):
         self.assertEqual(pipeline._final_stage(summary["sets"]["dictation"])[0], "cleanup")
         self.assertIn("| ditado | cleanup | 3 |", pipeline.render_block(summary))
         self.assertEqual(self.failed_cleanup(summary), [])
+
+    def vocabulary_run(self, vocabulary=None, misheard="zeta bord"):
+        sets = self.fx.loaded()
+        engine = engine_for(sets, lambda take: take.reference)
+        calls = []
+
+        def streamer(takes, hints):  # recognition misspells the name in every take
+            calls.append(hints.vocabulary())
+            return [(take.clean.replace("zeta-board", misheard), 0.1) for take in takes]
+
+        summary = pipeline.measure(sets, "vocabulary", engine, judge_yes, None, TERMS, self.results / "pipeline" / "run",
+                                   results_dir=self.results, log=lambda line: None, streamer=streamer,
+                                   vocabulary=vocabulary or pipeline.NO_VOCABULARY)
+        return summary, calls
+
+    def test_vocabulary_stage_matches_the_cleaned_text(self):
+        summary, calls = self.vocabulary_run()
+        self.assertEqual(summary["stages"], ["raw", "streamed", "cleanup", "vocabulary"])
+        self.assertEqual(len(calls), 2)  # the baseline hints: no second streaming
+        self.assertEqual(calls[0], ["omega", "zeta-board", *TERMS])
+        self.assertEqual(summary["vocabulary"], {"names": 0, "terms": 0, "variants": 0, "hints": 5, "hints_dropped": 0, "restreamed": False})
+        stages = summary["sets"]["dictation"]["stages"]
+        self.assertEqual((stages["cleanup"]["name_error_rate"], stages["vocabulary"]["name_error_rate"]), (0.5, 0.0))
+        self.assertEqual(stages["vocabulary"]["vocabulary_changes"], 1)
+        self.assertLess(stages["vocabulary"]["wer_clean"], stages["cleanup"]["wer_clean"])
+        self.assertEqual(summary["sets"]["commands"]["stages"]["vocabulary"]["name_error_rate"], 0.0)
+        self.assertIsNone(stages["vocabulary"]["content_deleted_by_cleanup"])
+        rows = json.loads((self.results / "pipeline" / "run" / "dictation" / "vocabulary.json").read_text(encoding="utf-8"))
+        self.assertIn("zeta-board", rows[0]["hypothesis"])
+        self.assertFalse((self.results / "pipeline" / "run" / "dictation" / "vocabulary-source.json").exists())
+        self.assertEqual(pipeline._final_stage(summary["sets"]["dictation"])[0], "vocabulary")
+        self.assertIn("| ditado | vocabulary | 3 |", pipeline.render_block(summary))
+        # The commands set is an indicator (Sponsor decision 2026-09-29): its
+        # unmeasured English-term error is reported without failing.
+        results = pipeline.check_targets(summary, ["vocabulary"])
+        self.assertTrue(all(met for met, _ in results))
+        self.assertIn((True, "info vocabulary: commands English-term error not measured "
+                             "(indicator, not a gate; target <= 10 % applies to dictation)"), results)
+
+    def test_unrelated_words_stay_and_the_gap_is_reported(self):
+        summary, _ = self.vocabulary_run(misheard="painel")  # far from the name: not a misrecognition to fix
+        stages = summary["sets"]["dictation"]["stages"]
+        self.assertEqual((stages["vocabulary"]["name_error_rate"], stages["vocabulary"]["vocabulary_changes"]), (0.5, 0))
+        self.assertEqual(stages["vocabulary"]["wer_clean"], stages["cleanup"]["wer_clean"])
+        results = pipeline.check_targets(summary, ["vocabulary"])
+        failed = [line for met, line in results if not met]
+        # Only the dictation set gates; the commands miss is reported as an indicator.
+        self.assertEqual(failed, ["FAIL vocabulary: dictation project-name error 50.0 % (target <= 10 %)"])
+        commands = summary["sets"]["commands"]["stages"]["vocabulary"]["name_error_rate"]
+        self.assertGreater(commands, pipeline.MAX_NAME_ERROR)
+        self.assertIn((True, f"info vocabulary: commands project-name error {100 * commands:.1f} % "
+                             "(indicator, not a gate; target <= 10 % applies to dictation)"), results)
+
+    def test_personal_vocabulary_streams_again_with_the_product_hints(self):
+        from quill.vocabulary import parse_vocabulary
+
+        personal = parse_vocabulary({"names": ["Nimbus-Deck"], "terms": ["kubectl"], "variants": {"Nimbus-Deck": ["nimbos"]}})
+        summary, calls = self.vocabulary_run(personal)
+        self.assertEqual(len(calls), 4)  # streamed, then streamed again for the vocabulary stage, per set
+        self.assertEqual(calls[0], ["omega", "zeta-board", *TERMS])
+        self.assertEqual(calls[1], ["Nimbus-Deck", "omega", "zeta-board", "kubectl", *TERMS])
+        self.assertEqual(summary["vocabulary"], {"names": 1, "terms": 1, "variants": 1, "hints": 7, "hints_dropped": 0, "restreamed": True})
+        self.assertEqual(summary["sets"]["dictation"]["stages"]["vocabulary"]["name_error_rate"], 0.0)
+        run = self.results / "pipeline" / "run" / "dictation"
+        source = json.loads((run / "vocabulary-source.json").read_text(encoding="utf-8"))
+        self.assertIn("zeta bord", source[0]["hypothesis"])
+
+    def test_product_hint_order(self):
+        from quill.vocabulary import parse_vocabulary
+
+        personal = parse_vocabulary({"names": ["Zulo"], "terms": ["deploy", "kubectl"]})
+        hints = pipeline.product_hints(personal, ["zeta-board", "omega"], TERMS)
+        self.assertEqual(hints.vocabulary(), ["Zulo", "omega", "zeta-board", "deploy", "kubectl", "commit", "review"])
+        self.assertEqual(pipeline.product_hints(pipeline.NO_VOCABULARY, ["zeta-board", "omega"], TERMS).vocabulary(),
+                         pipeline.build_hints(["zeta-board", "omega"], TERMS).vocabulary())
 
     def failed_cleanup(self, summary):
         return [line for met, line in pipeline.check_targets(summary, ["cleanup"]) if not met]
@@ -343,6 +418,23 @@ class MeasureTest(unittest.TestCase):
         self.assertEqual(run("--summary", str(summary_path), "--write-doc", str(doc)), 0)
         self.assertEqual(run("--summary", str(summary_path), "--check-doc", str(doc)), 0)
         self.assertIn("# Relatório", doc.read_text(encoding="utf-8"))
+        # The vocabulary stage reads the personal vocabulary given on the command line.
+        vocabulary = self.root / "vocabulary.toml"
+        vocabulary.write_text("names = 1\n", encoding="utf-8")
+        engine = engine_for(self.fx.loaded(), lambda take: take.clean)
+        self.assertEqual(run("--stage", "vocabulary", "--vocabulary", str(vocabulary), "--summary", str(summary_path), engine=engine), 2)
+        self.assertEqual(lines, ["error: vocabulary: names must be a list of strings"])
+        vocabulary.write_text('names = ["Privado-Nome"]\n', encoding="utf-8")
+        engine = engine_for(self.fx.loaded(), lambda take: take.clean)
+        self.assertEqual(run("--stage", "vocabulary", "--vocabulary", str(vocabulary), "--summary", str(summary_path), engine=engine), 0)
+        written = summary_path.read_text(encoding="utf-8")
+        self.assertNotIn("Privado", written)
+        self.assertEqual(json.loads(written)["vocabulary"]["names"], 1)
+        # No terms in the commands fixture: reported, but the commands set is not a gate.
+        self.assertEqual(run("--summary", str(summary_path), "--require", "vocabulary"), 0)
+        self.assertIn("ok   vocabulary: dictation project-name error 0.0 % (target <= 10 %)", lines)
+        self.assertIn("info vocabulary: commands English-term error not measured "
+                      "(indicator, not a gate; target <= 10 % applies to dictation)", lines)
         # Only the commands set measured: every target reports dictation as missing.
         engine = engine_for(self.fx.loaded(), lambda take: take.clean)
         self.assertEqual(run("--set", "commands", "--stage", "raw", "--summary", str(summary_path), "--require", "complete", engine=engine), 1)
@@ -410,8 +502,14 @@ class TargetTest(unittest.TestCase):
         self.assertEqual(self.failed(summary, "cleanup"), [])
         self.assertEqual(len(self.failed(summary_with(stages=("raw", "streamed")), "cleanup")), 2)
         self.assertEqual(len(self.failed(summary, "vocabulary")), 2)
-        summary = summary_with(stages=("raw", "vocabulary"), commands={"name_error_rate": 0.2})
-        self.assertEqual(self.failed(summary, "vocabulary"), ["FAIL vocabulary: commands project-name error 20.0 % (target <= 10 %)"])
+        # Sponsor decision 2026-09-29: the dictation set gates; commands is an indicator.
+        summary = summary_with(stages=("raw", "vocabulary"), commands={"name_error_rate": 0.2, "term_error_rate": 0.5})
+        self.assertEqual(self.failed(summary, "vocabulary"), [])
+        summary = summary_with(stages=("raw", "vocabulary"), dictation={"name_error_rate": 0.2, "term_error_rate": 0.11})
+        self.assertEqual(self.failed(summary, "vocabulary"), [
+            "FAIL vocabulary: dictation project-name error 20.0 % (target <= 10 %)",
+            "FAIL vocabulary: dictation English-term error 11.0 % (target <= 10 %)",
+        ])
         self.assertEqual(len(self.failed(summary_with(latency={"p95_s": 0.6, "max_audio_s": 15.0}), "latency")), 1)
         self.assertEqual(len(self.failed(summary_with(), "unknown")), 1)
 

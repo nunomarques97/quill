@@ -37,6 +37,8 @@ py -3.12 -m bench.pipeline --set all --dry-run      # counts of both sets, no GP
 .venv\Scripts\python -m bench.pipeline --set all --stage streamed --summary docs/research/phase2-summary.json
 .venv\Scripts\python -m bench.pipeline --set all --stage cleanup --summary docs/research/phase2-summary.json
 py -3.12 -m bench.pipeline --compare-cleanup bench/results/pipeline/<run>   # rules vs qwen3:8b, no GPU
+.venv\Scripts\python -m bench.pipeline --set all --stage vocabulary --summary docs/research/phase2-summary.json
+py -3.12 -m quill.vocabulary --check                # validate local/vocabulary.toml; counts only
 py -3.12 -m bench.intent --run bench/results/pipeline/<run> --reviews bench/results/intent-review/<file>.json [--rejudge]
 .venv\Scripts\python -m bench.streaming --set all --mode deterministic   # streamed text quality
 .venv\Scripts\python -m bench.streaming --set all --mode realtime        # release-to-final latency
@@ -138,9 +140,12 @@ deterministic schedule, with the product's engine model and its tuning
 source of every later stage. The streaming model and options used are
 recorded under `engine.streaming`. `--stage cleanup` runs both and then
 applies the product's deterministic cleanup rules (`quill.cleanup.clean_text`,
-with the hints vocabulary as protected words) to the streamed text. Later
-stages (`vocabulary`, `corrections`, `profiles`) are cumulative and added by
-later tasks. Per set and stage the summary holds:
+with the hints vocabulary as protected words) to the streamed text.
+`--stage vocabulary` runs all three and then applies the product's
+post-recognition matcher (`quill.vocabulary.Matcher`) to the cleaned text; see
+[Personal vocabulary](#personal-vocabulary). Later stages (`corrections`,
+`profiles`) are cumulative and added by later tasks. Per set and stage the
+summary holds:
 
 - `wer_verbatim` and `wer_clean`: corpus WER against the verbatim and the
   clean reference (equal for the commands set, which has no markup);
@@ -153,7 +158,10 @@ later tasks. Per set and stage the summary holds:
   words the previous stage had right (aligned with the identical word) that
   the cleaned text no longer has, deleted or changed. Recognition omissions
   stay visible in `content_deleted` and are never charged to the cleanup;
-- `p50_s`/`p95_s` of the transcription time.
+- `vocabulary` stage only: `vocabulary_changes`, the spans the matcher
+  rewrote;
+- `p50_s`/`p95_s` of the transcription time (moved to the ignored
+  `timings.json` of the run, never into the committed summary).
 
 Per-take text goes only to `bench/results/pipeline/<run>/<set>/<stage>.json`.
 `--summary PATH` (default `bench/results/pipeline/summary.json`) is
@@ -166,7 +174,8 @@ incomplete: `complete` (both sets measured, n equals the valid takes),
 Sponsor target; see [Streaming replay](#streaming-replay)), `cleanup`
 (dictation removal >= 95 % in the final stage and 0
 `content_deleted_by_cleanup`), `vocabulary` (name
-and term error <= 10 % per set), `corrections` (100 % of learned recurrences
+and term error <= 10 % on the dictation set; the commands set is printed as an
+`info` indicator and never fails, Sponsor decision 2026-09-29), `corrections` (100 % of learned recurrences
 fixed, 0 new errors) and `overall` (final-text WER <= 10 %, intent >= 95 %).
 `--write-doc DOC` inserts the Portuguese table between
 `<!-- pipeline:summary:start -->` and `<!-- pipeline:summary:end -->`;
@@ -181,6 +190,36 @@ implausible reply). It prints, per set and mode, WER, intent, removal,
 fallbacks; the aggregates, timings and per-take texts go only to
 `bench/results/cleanup/<time>/`. When Ollama or `qwen3:8b` is not ready only
 the rules are measured and the reason is printed.
+
+### Personal vocabulary
+
+The personal vocabulary is `local/vocabulary.toml` (ignored; format and
+invented entries in [vocabulary.example.toml](../vocabulary.example.toml)):
+project `names`, technical `terms` and, under `[variants]`, spoken or misheard
+forms of an entry. `--vocabulary FILE` measures another file; a missing file
+is an empty vocabulary. The summary records counts only (`vocabulary`: names,
+terms, variants, hints kept and dropped, whether the takes were streamed
+again), never an entry.
+
+- **Hints.** The product passes Whisper, in this priority order: personal
+  names, the resolved project names, personal terms, then
+  `bench/terms_en.txt`; duplicates are dropped ignoring case, and the list is
+  cut at the prompt limit (600 characters) from the end, so names are the
+  last to go (`quill.vocabulary.hint_list`). Variants are never hints. When
+  this list differs from the baseline hints (resolved names sorted, then the
+  generic terms), the `vocabulary` stage streams and cleans every take again
+  with it before matching (per-take text in `vocabulary-source.json`);
+  otherwise it matches the `cleanup` texts. The earlier stages always keep
+  the baseline hints, so their rows stay comparable across tasks.
+- **Matcher.** After cleanup, a span of up to as many words as an entry
+  (joined only by spaces or hyphens, never with a number) is rewritten with
+  the entry's spelling when its folded form (no accents, case or separators;
+  `y`->`i`, `k`->`c`, `ph`->`f`, doubled letters collapsed) equals the entry
+  or a declared variant, or is within 1 edit (entries of 7+ folded
+  characters) or 2 edits (12+), with the same first letter and not merely
+  the entry plus a suffix (plurals stay). Shorter entries change only on an
+  exact folded match or a variant; two entries equally close leave the span
+  alone. It uses the vocabulary list only, never the reference text.
 
 ### Streaming replay
 

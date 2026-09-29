@@ -7,7 +7,10 @@ until nothing changes, so cleaning twice gives the same text:
    are always removed. ``pronto`` is removed only at a clause boundary (text
    start, after punctuation or after a connective such as ``então``) and not
    before ``para``/``a`` ("pronto para"); after a verb ("está pronto") it
-   is content. ``tipo`` is removed unless it is a noun: after a determiner or
+   is content. As the last word of a sentence it is also a filler ("…no
+   menu pronto. Depois"), unless a state verb earlier in that sentence
+   makes it an adjective ("tenho o relatório pronto", "está tudo pronto")
+   or it follows ``de`` ("de pronto"). ``tipo`` is removed unless it is a noun: after a determiner or
    preposition ("o tipo", "do tipo", "por tipo", "sem tipo"), before ``de``
    ("tipo de dados") or as the last word of a sentence right after another
    word ("agrupa as tarefas tipo.").
@@ -50,6 +53,18 @@ EPA_FIRST = frozenset({"é", "eh"})
 PRONTO_CONNECTIVES = frozenset({"então", "portanto", "olha", "bem", "ok", "pois", "mas", "enfim"})
 # "pronto para sair", "pronto a usar": an adjective, not a filler.
 PRONTO_COMPLEMENTS = frozenset({"para", "pra", "p'ra", "a"})
+# Verbs that make a sentence-final "pronto" an adjective ("fica pronto",
+# "tenho o relatório pronto"); clitic forms match on the verb ("deixa-o").
+PRONTO_STATE_VERBS = frozenset({
+    "estar", "está", "estás", "estou", "estamos", "estão", "estava", "estavas", "estávamos", "estavam",
+    "esteve", "estive", "estiveram", "esteja", "estejam", "estará", "estarão", "estaria", "tá", "tou",
+    "ficar", "fica", "ficas", "fico", "ficamos", "ficam", "ficou", "fiquei", "ficaram", "ficava", "fique",
+    "fiquem", "ficará", "ficaria",
+    "deixar", "deixa", "deixas", "deixo", "deixamos", "deixam", "deixou", "deixei", "deixe", "deixem", "deixá",
+    "ter", "tenho", "tens", "tem", "temos", "têm", "tinha", "tive", "teve", "tenha", "terá", "teria",
+    "pôr", "põe", "ponho", "pôs", "pus", "ponha", "meter", "mete", "meto", "meteu",
+    "ser", "é", "são", "era", "foi", "seja", "será", "parece", "parecia", "considero", "dou", "dá", "deu",
+})
 # Words before a noun "tipo" ("o tipo", "do tipo", "que tipo", "qualquer tipo").
 TIPO_DETERMINERS = frozenset({
     "o", "um", "do", "no", "ao", "pelo", "dum", "num", "este", "esse", "aquele", "deste", "desse",
@@ -143,6 +158,21 @@ def _boundary(tokens: list[Token], index: int) -> bool:
     return any(char in previous.marks for char in ",;.!?…") or previous.key in PRONTO_CONNECTIVES
 
 
+def _sentence_final_marker(tokens: list[Token], index: int) -> bool:
+    """A "pronto" that closes its sentence with no state verb or "de" before it."""
+    if index + 1 < len(tokens) and not tokens[index].ends_sentence():
+        return False
+    previous = tokens[index - 1]
+    if ":" in previous.marks or previous.key == "de":
+        return False
+    for token in reversed(tokens[:index]):
+        if token.ends_sentence():
+            break
+        if token.key.split("-")[0] in PRONTO_STATE_VERBS:
+            return False
+    return True
+
+
 def _is_filler(tokens: list[Token], index: int, keep: frozenset[str]) -> int:
     """How many tokens starting at ``index`` form a filler (0 when none)."""
     token = tokens[index]
@@ -157,7 +187,9 @@ def _is_filler(tokens: list[Token], index: int, keep: frozenset[str]) -> int:
     if key == "pronto":
         if following is not None and not token.marks and following.key in PRONTO_COMPLEMENTS:
             return 0
-        return 1 if _boundary(tokens, index) else 0
+        if _boundary(tokens, index):
+            return 1
+        return 1 if _sentence_final_marker(tokens, index) else 0
     if key == "tipo":
         previous = tokens[index - 1] if index else None
         if previous is not None and not previous.marks:

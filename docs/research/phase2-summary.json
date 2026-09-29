@@ -30,7 +30,8 @@
   "stages": [
     "raw",
     "streamed",
-    "cleanup"
+    "cleanup",
+    "vocabulary"
   ],
   "sets": {
     "commands": {
@@ -102,6 +103,25 @@
           "content_deleted": null,
           "content_deleted_by_cleanup": null,
           "max_audio_s": 6.272
+        },
+        "vocabulary": {
+          "n": 44,
+          "wer_verbatim": 0.2972,
+          "wer_clean": 0.2972,
+          "term_error_rate": 0.4706,
+          "term_occurrences": 17,
+          "name_error_rate": 0.1579,
+          "name_occurrences": 38,
+          "intent_preserved": 0.3636,
+          "intent_judged": 44,
+          "intent_note": null,
+          "filler_spans": null,
+          "filler_removal_rate": null,
+          "content_words": null,
+          "content_deleted": null,
+          "content_deleted_by_cleanup": null,
+          "max_audio_s": 6.272,
+          "vocabulary_changes": 1
         }
       }
     },
@@ -174,9 +194,36 @@
           "content_deleted": 20,
           "content_deleted_by_cleanup": 0,
           "max_audio_s": 18.048
+        },
+        "vocabulary": {
+          "n": 36,
+          "wer_verbatim": 0.1739,
+          "wer_clean": 0.1062,
+          "term_error_rate": 0.0227,
+          "term_occurrences": 44,
+          "name_error_rate": 0.0,
+          "name_occurrences": 9,
+          "intent_preserved": 0.5833,
+          "intent_judged": 36,
+          "intent_note": null,
+          "filler_spans": 56,
+          "filler_removal_rate": 0.9643,
+          "content_words": 960,
+          "content_deleted": 19,
+          "content_deleted_by_cleanup": null,
+          "max_audio_s": 18.048,
+          "vocabulary_changes": 2
         }
       }
     }
   },
-  "latency": null
+  "latency": null,
+  "vocabulary": {
+    "names": 6,
+    "terms": 0,
+    "variants": 0,
+    "hints": 41,
+    "hints_dropped": 0,
+    "restreamed": true
+  }
 }

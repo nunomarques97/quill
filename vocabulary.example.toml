@@ -1,0 +1,28 @@
+# Personal vocabulary example. Every entry here is invented.
+#
+# Copy this file to local/vocabulary.toml (ignored by Git) and write your own
+# entries there. Check it with:
+#   py -3.12 -m quill.vocabulary --check local/vocabulary.toml
+#
+# Whisper receives the vocabulary as hints, in this order: names, then terms,
+# then the generic terms of bench/terms_en.txt. The prompt holds about 600
+# characters; entries that do not fit are dropped from the end, so list the
+# most important names and terms first.
+#
+# After recognition, a word or group of words that is very close to an entry
+# (same first letter, at most one or two letters different, only for entries
+# of 7 letters or more) is rewritten with the entry's spelling. Shorter
+# entries change only when they are heard exactly or as a listed variant.
+
+# Project names, spelled exactly as they must be typed.
+names = ["Nimbus-Deck", "Orvalho", "tarvo-kit"]
+
+# Technical terms that are not in bench/terms_en.txt.
+terms = ["kubectl", "Grafana", "pull request"]
+
+# Spoken or misheard forms that always mean an entry above (the key must be
+# written exactly as in names or terms). Use it for short entries or for
+# mistakes the automatic matching does not catch.
+[variants]
+"Nimbus-Deck" = ["nimbos deque", "nimbo deck"]
+"kubectl" = ["cube control", "cube cuttle"]

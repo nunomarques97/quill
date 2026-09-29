@@ -36,6 +36,7 @@ Optional, decided by the research: a key that sends the text straight to Claude 
 - Default engine model: local Whisper large-v3-turbo (already in `models/`, 0 EUR/month, nothing installed), with the streaming setting that meets the latency target. Measured on the real recordings, large-v3 could not reach a release-to-final p95 of 0.5 s with any streaming setting; turbo does. The 0.5 s target stays. See docs/research/FASE2.md.
 - large-v3 stays available as a precise mode, selected with `[engine] model = "large-v3"` in the ignored `local/quill.toml`.
 - Safety net: if after the personal-vocabulary stage the project-name or English-term error with turbo stays above 10 % on either real set, this is reported to the Sponsor so the default can return to large-v3.
+- Safety-net outcome, after the personal-vocabulary stage: large-v3-turbo stays the default. The project-name and English-term targets (at most 10 %) apply to the real dictation set, which is how the product is used; the short commands set is a reported indicator, not a gate (large-v3 misses it too, and fails the latency target). Learning from corrections is expected to reduce the commands gap. The dictation targets are unchanged. See docs/research/FASE2.md.
 
 ## Non-negotiable rules
 

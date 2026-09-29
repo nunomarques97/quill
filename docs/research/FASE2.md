@@ -1,6 +1,6 @@
 # Quill: medições da Fase 2 com a voz real
 
-**Estado: baseline medida a 2026-09-28** (tarefa T2); **transcrição por blocos medida a 2026-09-29** (tarefa T3, etapa `streamed`); **juiz de intenção revisto e limpeza do texto medida a 2026-09-29** (tarefa T4, etapa `cleanup`); **vocabulário pessoal medido a 2026-09-29** (tarefa T5, etapa `vocabulary`). Motor decidido pelo Sponsor: Whisper local (faster-whisper, float16, CUDA, RTX 5060 Ti) com vocabulário (`initial_prompt` e `hotwords`), 0 EUR/mês; o áudio não sai do PC. A baseline (`raw`) é do large-v3. Desde a decisão do Sponsor de 2026-09-29, o modelo por omissão da aplicação é o large-v3-turbo, porque só ele cumpre a meta de latência; o large-v3 fica como modo preciso (ver [Transcrição por blocos](#transcrição-por-blocos-etapa-streamed)). As etapas seguintes (correções, perfis) acrescentam linhas a este documento.
+**Estado: baseline medida a 2026-09-28** (tarefa T2); **transcrição por blocos medida a 2026-09-29** (tarefa T3, etapa `streamed`); **juiz de intenção revisto e limpeza do texto medida a 2026-09-29** (tarefa T4, etapa `cleanup`); **vocabulário pessoal medido a 2026-09-29** (tarefa T5, etapa `vocabulary`); **aprendizagem de correções medida a 2026-09-29** (tarefa T6, etapa `corrections`). Motor decidido pelo Sponsor: Whisper local (faster-whisper, float16, CUDA, RTX 5060 Ti) com vocabulário (`initial_prompt` e `hotwords`), 0 EUR/mês; o áudio não sai do PC. A baseline (`raw`) é do large-v3. Desde a decisão do Sponsor de 2026-09-29, o modelo por omissão da aplicação é o large-v3-turbo, porque só ele cumpre a meta de latência; o large-v3 fica como modo preciso (ver [Transcrição por blocos](#transcrição-por-blocos-etapa-streamed)). A etapa seguinte (perfis) acrescenta linhas a este documento.
 
 Este documento contém só números agregados: nenhum texto falado, nenhum nome de projeto real e nenhum caminho da máquina. Os resultados por frase ficam apenas em `bench/results/`, que o Git ignora. Os números vêm de [phase2-summary.json](phase2-summary.json); o harness está em [bench/](../../bench/README.md#pipeline-evaluation).
 
@@ -12,8 +12,9 @@ Este documento contém só números agregados: nenhum texto falado, nenhum nome 
 - **Limpeza (T4, etapa `cleanup`):** as regras determinísticas removem 96,4 % das hesitações e repetições (meta ≥ 95 %) sem apagar nenhuma palavra de conteúdo (meta 0) e baixam o WER limpo do ditado de 13,0 % para 11,0 %. O `qwen3:8b` fica desligado: apagava 13 palavras de conteúdo e o p95 por frase era 0,97 s. Ver [Limpeza do texto](#limpeza-do-texto-etapa-cleanup).
 - **Vocabulário pessoal (T5, etapa `vocabulary`):** o vocabulário pessoal entra nas dicas do Whisper com prioridade e um corretor pós-reconhecimento acerta a grafia de nomes e termos quase certos. No ditado, o erro em nomes volta a 0,0 % (era 11,1 % com o turbo), os termos ficam em 2,3 %, o WER limpo desce para 10,6 %, a intenção sobe para 58,3 % e as hesitações removidas ficam em 96,4 %. Nos comandos, os nomes descem para 15,8 % e a intenção sobe para 36,4 %, mas os termos ingleses ficam em 47,1 %. Ver [Vocabulário pessoal](#vocabulário-pessoal-etapa-vocabulary).
 - **Decisão do Sponsor (2026-09-29), depois da T5:** o large-v3-turbo continua a ser o motor por omissão. As metas de nomes e termos (≤ 10 %) aplicam-se ao conjunto de ditado, que é o uso real do produto, e estão cumpridas; o conjunto curto de comandos passa a ser um indicador reportado, não uma meta que bloqueia. Ver [Decisão sobre o conjunto de comandos](#decisão-sobre-o-conjunto-de-comandos).
-- **Metas cumpridas no ditado:** erro em termos e em nomes ≤ 10 %; hesitações e repetições removidas ≥ 95 % e 0 palavras de conteúdo apagadas pela limpeza.
-- **Metas por cumprir:** WER final ≤ 10 % e intenção ≥ 95 % nos dois conjuntos. A digitação sem perdas e a aprendizagem de correções ainda não têm medição (tarefas T11 e T6).
+- **Correções aprendidas (T6, etapa `corrections`):** simulando, pela ordem fixa das gravações, um utilizador que corrige cada texto, com a regra do produto (aplica sozinha uma troca vista em dois ditados), todas as repetições de erros já aprendidos foram corrigidas (18 de 18 nos comandos e 1 de 1 no ditado) e nenhuma palavra certa passou a errada (meta 0). O WER dos comandos desce de 29,7 % para 24,7 % e o do ditado de 10,6 % para 10,5 %; termos, nomes e intenção não mudam. Ver [Correções aprendidas](#correções-aprendidas-etapa-corrections).
+- **Metas cumpridas no ditado:** erro em termos e em nomes ≤ 10 %; hesitações e repetições removidas ≥ 95 % e 0 palavras de conteúdo apagadas pela limpeza; correções aprendidas (100 % das repetições corrigidas, 0 erros novos), também nos comandos.
+- **Metas por cumprir:** WER final ≤ 10 % e intenção ≥ 95 % nos dois conjuntos. A digitação sem perdas ainda não tem medição (tarefa T11).
 - **Latência do largar do gatilho ao texto final (T3):** cumpre a meta de p95 ≤ 0,5 s com o large-v3-turbo, o novo motor por omissão; com o large-v3 nenhuma afinação a cumpria. Em troca, os comandos ficam piores com o turbo (termos ingleses 47,1 % e nomes 18,4 %), o que a T5 tem de recuperar (ver [Transcrição por blocos](#transcrição-por-blocos-etapa-streamed)).
 
 ## Conjuntos
@@ -48,10 +49,17 @@ Tabela gerada a partir de [phase2-summary.json](phase2-summary.json) por `py -3.
 | comandos | streamed | 44 | 30,0 % | 30,0 % | 47,1 % | 18,4 % | 31,8 % | — | — | — |
 | comandos | cleanup | 44 | 30,0 % | 30,0 % | 47,1 % | 18,4 % | 29,5 % | — | — | — |
 | comandos | vocabulary | 44 | 29,7 % | 29,7 % | 47,1 % | 15,8 % | 36,4 % | — | — | — |
+| comandos | corrections | 44 | 24,7 % | 24,7 % | 47,1 % | 15,8 % | 36,4 % | — | — | — |
 | ditado | raw | 36 | 16,9 % | 13,5 % | 2,3 % | 0,0 % | 47,2 % | 64,3 % | 19 | — |
 | ditado | streamed | 36 | 16,5 % | 13,0 % | 2,3 % | 11,1 % | 52,8 % | 64,3 % | 19 | — |
 | ditado | cleanup | 36 | 17,8 % | 11,0 % | 2,3 % | 11,1 % | 55,6 % | 96,4 % | 20 | 0 |
 | ditado | vocabulary | 36 | 17,4 % | 10,6 % | 2,3 % | 0,0 % | 58,3 % | 96,4 % | 19 | — |
+| ditado | corrections | 36 | 17,3 % | 10,5 % | 2,3 % | 0,0 % | 58,3 % | 96,4 % | 19 | — |
+
+| Conjunto | Erros já aprendidos que se repetem | Corrigidos | Taxa corrigida | Repetições antes de ativar | Erros novos | Substituições aplicadas | Ativas / pendentes / em conflito no fim |
+|---|---|---|---|---|---|---|---|
+| comandos | 18 | 18 | 100,0 % | 4 | 0 | 18 | 3 / 31 / 4 |
+| ditado | 1 | 1 | 100,0 % | 2 | 0 | 1 | 1 / 49 / 0 |
 <!-- pipeline:summary:end -->
 
 Leitura dos resultados:
@@ -136,20 +144,37 @@ Leitura dos resultados (tabela acima, etapa `vocabulary` contra `cleanup`):
 
 Na prática, `--require vocabulary` verifica nomes e termos só no ditado e mostra os valores dos comandos como `info`, sem falhar. As outras metas (WER final, intenção) continuam a aplicar-se aos dois conjuntos.
 
+## Correções aprendidas (etapa `corrections`)
+
+A aplicação aprende com as correções do Sponsor. O código está em `quill/corrections.py`, `quill/edits.py` e `quill/review.py`; as correções ficam em `local/corrections.json`, que o Git ignora.
+
+- **Duas formas de corrigir.** (1) Tecla de correção (F16 por omissão, configurável em `[corrections] key`): com o texto corrigido selecionado, a tecla copia a seleção guardando antes o conteúdo da área de transferência e repondo-o no fim, também quando algo falha; se outro programa mudar a área de transferência entretanto, essa mudança fica. (2) Deteção de edições manuais: durante 30 s depois de o texto ser escrito, na mesma janela, a aplicação acompanha em memória as teclas que editam esse texto (letras, Backspace, Delete, setas, Home/End, Ctrl+Backspace). Um clique, colar, desfazer, mudar de janela, uma seleção ou uma tecla desconhecida fazem-na desistir em vez de adivinhar. As teclas nunca são guardadas nem registadas; só as trocas deduzidas.
+- **Regra.** De cada correção tiram-se trocas de palavras ou grupos até 3 palavras (por exemplo uma palavra mal ouvida pela certa). Não se aprende nada de uma reescrita (mais de 5 trocas ou menos de metade das palavras iguais), de uma palavra só acrescentada ou só apagada, nem de uma troca só entre palavras gramaticais (artigos, preposições, pronomes, conjunções), porque a forma certa depende da frase. Uma troca vista em dois ditados diferentes passa a ativa e é aplicada sozinha ao texto seguinte, em palavras inteiras e com as maiúsculas do texto; o mesmo ditado duas vezes conta uma vez. Trocas em conflito (a mesma palavra com duas correções diferentes, ou uma troca e a inversa) nunca são aplicadas sozinhas.
+- **Revisão semanal.** `py -3.12 -m quill.review` mostra as correções ativas e as pendentes e pergunta, uma a uma, se aprova, elimina ou mantém; uma correção eliminada não volta a ser aprendida e uma aprovada fica ativa mesmo que só tenha sido vista uma vez. `--check` mostra o lembrete quando passaram 7 dias desde a última revisão.
+- **Como se mediu.** Simulação pela ordem fixa das gravações de cada conjunto, sobre o texto da etapa `vocabulary`: cada gravação recebe primeiro as trocas ativas até ali; depois o utilizador simulado corrige o texto para a referência limpa e o produto aprende com essa correção, com a mesma regra da aplicação. Cada gravação é um ditado. Uma **repetição** é um erro numa gravação cuja troca já estava ativa; um **erro novo** é uma palavra que a gravação tinha certa e que as trocas aplicadas estragaram. Diferenças só de maiúsculas ou de números por extenso não contam como erros, porque o WER também as ignora.
+
+Leitura dos resultados (tabela acima, etapa `corrections` contra `vocabulary`):
+
+- **Metas cumpridas nos dois conjuntos.** Comandos: 18 repetições, 18 corrigidas, 0 erros novos. Ditado: 1 repetição, 1 corrigida, 0 erros novos. As etapas anteriores deram exatamente os mesmos valores da T5.
+- **Comandos: o WER desce 5 pontos, os termos e os nomes não.** WER 29,7 % → 24,7 %. As 18 correções são todas a mesma saudação ouvida de duas formas diferentes, que se repete em muitas gravações. O verbo inglês «run», a principal falha de termos, é ouvido como palavras portuguesas diferentes de cada vez, e quando a mesma palavra se repete a correção não é sempre igual (fica em conflito); por isso nunca chega a ser aplicado sozinho e os termos ficam em 47,1 %. Os nomes que falham também não se repetem da mesma forma depois de aprendidos.
+- **Ditado: pouco para aprender.** WER limpo 10,6 % → 10,5 %. Dos 62 erros, 57 são diferentes entre si e só 3 aparecem mais do que uma vez: frases variadas quase não repetem o mesmo erro. A aprendizagem ajuda sobretudo nos erros de todos os dias que se repetem (palavras e nomes que o Whisper ouve sempre mal); não resolve a distância à meta de WER, que é trabalho da T7.
+- **Palavras gramaticais.** Uma medição de ensaio, feita por engano sem o vocabulário pessoal (texto do ditado um pouco diferente) e ainda sem a regra das palavras gramaticais, deu 1 erro novo no ditado: a troca de uma preposição contraída do plural para o singular, aprendida em duas frases, estragou uma terceira frase onde a forma original estava certa. Com a regra, esse erro desaparece nesse texto. No texto final, com ou sem a regra, os resultados das repetições e dos erros novos são os mesmos; a regra só evita que trocas deste tipo cheguem a ficar ativas (mais tarde, no produto).
+- **Risco que a revisão cobre.** Uma troca ativa de uma palavra comum (como a saudação dos comandos) muda essa palavra em todo o texto seguinte. Nas 80 gravações não estragou nenhuma palavra certa, mas a revisão semanal serve para eliminar uma troca que não se queira.
+
 ## Distância às metas da Fase 2
 
-Valores da etapa `vocabulary`, o texto final da aplicação até agora (large-v3-turbo, limpeza por regras e vocabulário pessoal); entre parênteses, a baseline `raw` do large-v3. Intenção medida com o juiz revisto. As metas não baixam; cada linha diz que tarefa a trata.
+Valores da etapa `corrections`, o texto final da aplicação até agora (large-v3-turbo, limpeza por regras, vocabulário pessoal e correções aprendidas); entre parênteses, a baseline `raw` do large-v3. Intenção medida com o juiz revisto. As metas não baixam; cada linha diz que tarefa a trata.
 
 | Meta | Comandos | Ditado | Distância | Tarefa |
 |---|---|---|---|---|
-| WER final (referência limpa) ≤ 10 % | 29,7 % (28,3 %) | 10,6 % (13,5 %) | comandos +19,7 pp; ditado +0,6 pp | T6 e T7 |
-| Intenção preservada ≥ 95 % | 36,4 % (45,5 %) | 58,3 % (47,2 %) | comandos −58,6 pp; ditado −36,7 pp | T6 e T7 |
-| Erro em nomes de projeto ≤ 10 % (meta no ditado; comandos como indicador) | 15,8 % (21,1 %) | 0,0 % (0,0 %) | ditado cumprida; comandos +5,8 pp (6 nomes em 38), só indicador | T5; T6 nos comandos |
-| Erro em termos ingleses ≤ 10 % (meta no ditado; comandos como indicador) | 47,1 % (23,5 %) | 2,3 % (2,3 %) | ditado cumprida; comandos +37,1 pp (8 termos em 17), só indicador | T5; T6 nos comandos |
+| WER final (referência limpa) ≤ 10 % | 24,7 % (28,3 %) | 10,5 % (13,5 %) | comandos +14,7 pp; ditado +0,5 pp | T7 |
+| Intenção preservada ≥ 95 % | 36,4 % (45,5 %) | 58,3 % (47,2 %) | comandos −58,6 pp; ditado −36,7 pp | T7 |
+| Erro em nomes de projeto ≤ 10 % (meta no ditado; comandos como indicador) | 15,8 % (21,1 %) | 0,0 % (0,0 %) | ditado cumprida; comandos +5,8 pp (6 nomes em 38), só indicador | T5; a T6 não mudou os comandos |
+| Erro em termos ingleses ≤ 10 % (meta no ditado; comandos como indicador) | 47,1 % (23,5 %) | 2,3 % (2,3 %) | ditado cumprida; comandos +37,1 pp (8 termos em 17), só indicador | T5; a T6 não mudou os comandos |
 | Hesitações e repetições removidas ≥ 95 % | não se aplica | 96,4 % (64,3 %) | cumprida | T4 e T5 |
 | Palavras de conteúdo apagadas pela limpeza = 0 | não se aplica | 0 | cumprida na etapa `cleanup`; as 19 omissões do reconhecimento continuam visíveis | T4 |
 | Latência p95 ≤ 0,5 s do largar do gatilho ao texto final (até 15 s; meta do Sponsor) | cumprida | cumprida | cumprida com o large-v3-turbo nos dois conjuntos juntos, ao ritmo real e com a GPU livre; com o large-v3 (modo preciso) não; os tempos ficam só em `bench/results/` | T3 |
 | 0 caracteres perdidos ou duplicados na digitação | não medido | não medido | — | T11 |
-| Correções aprendidas: 100 % das repetições corrigidas, 0 erros novos | não medido | não medido | — | T6 |
+| Correções aprendidas: 100 % das repetições corrigidas, 0 erros novos | 18 de 18, 0 novos | 1 de 1, 0 novos | cumprida | T6 |
 
 A meta de intenção é a mais distante nos dois conjuntos. O juiz foi revisto à mão na T4 e era brando, não exigente: com o juiz revisto a distância aumentou, e a revisão manual dá valores ainda mais baixos (25,0 % nos comandos e 47,2 % no ditado, na etapa `streamed`). A distância vem sobretudo de erros de reconhecimento (palavras e nomes trocados), que a limpeza não corrige. Se no fim das camadas de adaptação (T7) o WER final e a intenção continuarem fora das metas, o resultado vai ao Sponsor como decisão, com a distância medida e as opções, sem baixar as metas.

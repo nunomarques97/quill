@@ -11,7 +11,9 @@ import json
 import tempfile
 import unittest
 from array import array
+from collections import Counter
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from bench import pipeline
@@ -150,7 +152,7 @@ class MeasureTest(unittest.TestCase):
             pipeline.measure(sets, "streamed", engine, judge_yes, None, TERMS, self.results / "pipeline" / "run",
                              results_dir=self.results, log=lambda line: None)
         with self.assertRaises(ValueError):
-            pipeline.measure(sets, "corrections", engine, judge_yes, None, TERMS, self.results / "pipeline" / "run",
+            pipeline.measure(sets, "profiles", engine, judge_yes, None, TERMS, self.results / "pipeline" / "run",
                              results_dir=self.results, log=lambda line: None, streamer=streamer)
 
     def test_cleanup_stage_cleans_the_streamed_text(self):
@@ -227,6 +229,29 @@ class MeasureTest(unittest.TestCase):
         self.assertGreater(commands, pipeline.MAX_NAME_ERROR)
         self.assertIn((True, f"info vocabulary: commands project-name error {100 * commands:.1f} % "
                              "(indicator, not a gate; target <= 10 % applies to dictation)"), results)
+
+    def test_corrections_stage_learns_online_after_the_vocabulary_stage(self):
+        sets = self.fx.loaded()
+        engine = engine_for(sets, lambda take: take.reference)
+
+        def streamer(takes, hints):  # the same misheard name in every take
+            return [(take.clean.replace("zeta-board", "zeta bord"), 0.1) for take in takes]
+
+        summary = pipeline.measure(sets, "corrections", engine, judge_yes, None, TERMS, self.results / "pipeline" / "run",
+                                   results_dir=self.results, log=lambda line: None, streamer=streamer)
+        self.assertEqual(summary["stages"], ["raw", "streamed", "cleanup", "vocabulary", "corrections"])
+        row = summary["sets"]["dictation"]["stages"]["corrections"]
+        for field in ("recurrences", "recurrences_fixed", "recurrences_fixed_rate", "recurrences_not_yet_active",
+                      "new_errors", "corrections_applied", "takes_with_corrections", "learned_active",
+                      "learned_pending", "learned_conflicts"):
+            self.assertIn(field, row)
+        self.assertEqual(row["new_errors"], 0)
+        self.assertEqual(pipeline._final_stage(summary["sets"]["dictation"])[0], "corrections")
+        self.assertTrue((self.results / "pipeline" / "run" / "dictation" / "corrections.json").is_file())
+        block = pipeline.render_block(summary)
+        self.assertIn("| ditado | corrections | 3 |", block)
+        self.assertIn("| Conjunto | Erros já aprendidos que se repetem |", block)
+        self.assertEqual([line for met, line in pipeline.check_targets(summary, ["corrections"]) if not met], [])
 
     def test_personal_vocabulary_streams_again_with_the_product_hints(self):
         from quill.vocabulary import parse_vocabulary
@@ -430,6 +455,10 @@ class MeasureTest(unittest.TestCase):
         written = summary_path.read_text(encoding="utf-8")
         self.assertNotIn("Privado", written)
         self.assertEqual(json.loads(written)["vocabulary"]["names"], 1)
+        # Later stages keep the personal vocabulary.
+        engine = engine_for(self.fx.loaded(), lambda take: take.clean)
+        self.assertEqual(run("--stage", "corrections", "--vocabulary", str(vocabulary), "--summary", str(summary_path), engine=engine), 0)
+        self.assertEqual(json.loads(summary_path.read_text(encoding="utf-8"))["vocabulary"]["names"], 1)
         # No terms in the commands fixture: reported, but the commands set is not a gate.
         self.assertEqual(run("--summary", str(summary_path), "--require", "vocabulary"), 0)
         self.assertIn("ok   vocabulary: dictation project-name error 0.0 % (target <= 10 %)", lines)
@@ -510,8 +539,62 @@ class TargetTest(unittest.TestCase):
             "FAIL vocabulary: dictation project-name error 20.0 % (target <= 10 %)",
             "FAIL vocabulary: dictation English-term error 11.0 % (target <= 10 %)",
         ])
+        summary = summary_with(stages=("raw", "corrections"), dictation={"recurrences": 4, "recurrences_fixed_rate": 0.75})
+        self.assertEqual(self.failed(summary, "corrections"),
+                         ["FAIL corrections: dictation learned recurrences fixed 75.0 % of 4 (target 100 %)"])
+        summary = summary_with(stages=("raw", "corrections"), dictation={"recurrences": 0, "recurrences_fixed_rate": None})
+        self.assertEqual(self.failed(summary, "corrections"), [])
+        self.assertIn((True, "ok   corrections: dictation no learned recurrence to fix (0 recurrences; target 100 % when present)"),
+                      pipeline.check_targets(summary, ["corrections"]))
+        self.assertEqual(len(self.failed(summary_with(stages=("raw", "vocabulary")), "corrections")), 2)
         self.assertEqual(len(self.failed(summary_with(latency={"p95_s": 0.6, "max_audio_s": 15.0}), "latency")), 1)
         self.assertEqual(len(self.failed(summary_with(), "unknown")), 1)
+
+
+def sample(hypothesis, clean):
+    return pipeline.Sample(SimpleNamespace(clean=clean), hypothesis, 0.0)
+
+
+class CorrectionsStageTest(unittest.TestCase):
+    """The online simulation with invented takes; ``clean`` is what the user wanted."""
+
+    def run_takes(self, *takes):
+        return pipeline.correct_samples([sample(h, c) for h, c in takes], lambda: 0.0)
+
+    def test_active_after_two_takes_then_every_recurrence_is_fixed(self):
+        takes = [(f"corre o kube control {word}", f"corre o kubectl {word}") for word in ("hoje", "agora", "logo", "já")]
+        corrected, info = self.run_takes(*takes)
+        self.assertEqual([s.hypothesis for s in corrected[2:]], ["corre o kubectl logo", "corre o kubectl já"])
+        self.assertEqual(corrected[1].hypothesis, "corre o kube control agora")  # seen once so far: not applied
+        self.assertEqual((info["recurrences"], info["recurrences_fixed"], info["recurrences_fixed_rate"]), (2, 2, 1.0))
+        self.assertEqual((info["recurrences_not_yet_active"], info["new_errors"], info["corrections_applied"]), (1, 0, 2))
+        self.assertEqual((info["learned_active"], info["learned_pending"], info["takes_with_corrections"]), (1, 0, 2))
+
+    def test_a_learned_replacement_that_breaks_a_right_word_is_a_new_error(self):
+        corrected, info = self.run_takes(("ram os testes", "run os testes"), ("ram outra vez", "run outra vez"),
+                                         ("a ram do servidor", "a ram do servidor"))
+        self.assertEqual(corrected[2].hypothesis, "a run do servidor")
+        self.assertEqual((info["new_errors"], info["recurrences"], info["recurrences_fixed_rate"]), (1, 0, None))
+        self.assertIn((False, "FAIL corrections: commands new word errors 1 (target 0)"),
+                      pipeline.check_targets(summary_with(stages=("raw", "corrections"), commands=info), ["corrections"]))
+
+    def test_conflicts_and_function_words_are_never_applied(self):
+        takes = (("o velo branco", "o velho branco"), ("o velo branco", "o vélo branco"),
+                 ("o velo branco", "o velho branco"), ("envio dos ficheiros", "envio do ficheiros"),
+                 ("abre dos painéis", "abre do painéis"), ("envio dos ficheiros", "envio dos ficheiros"))
+        corrected, info = self.run_takes(*takes)
+        self.assertEqual([s.hypothesis for s in corrected], [hypothesis for hypothesis, _ in takes])
+        self.assertEqual((info["learned_conflicts"], info["learned_active"], info["corrections_applied"]), (2, 0, 0))
+        self.assertEqual((info["new_errors"], info["recurrences"]), (0, 0))
+
+    def test_case_and_number_equivalences_are_not_errors(self):
+        _, info = self.run_takes(("abre o Painel", "abre o painel"), ("abre o Painel", "abre o painel"))
+        self.assertEqual((info["takes_with_corrections"], info["learned_pending"]), (0, 0))
+        self.assertEqual(pipeline.error_pairs("corre o ram", "corre o run"), Counter({(("ram",), ("run",)): 1}))
+
+    def test_correct_positions(self):
+        self.assertEqual(pipeline.correct_positions(["a", "b", "c"], ["a", "x", "c"]), frozenset({0, 2}))
+        self.assertEqual(pipeline.correct_positions(["a", "b"], []), frozenset())
 
 
 class DocTest(unittest.TestCase):

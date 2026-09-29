@@ -35,6 +35,7 @@ INDICATOR_POSITIONS = ("pointer", "bottom-center")
 CLEANUP_MODES = ("rules", "llm")
 ENGINE_MODELS = (DEFAULT_MODEL, PRECISE_MODEL)
 MIN_HOLD_RANGE = (50, 2000)
+EDIT_WINDOW_RANGE = (5, 600)
 
 # Virtual-key codes of the inputs a trigger may use.
 BUTTONS = {"middle": 0x04, "xbutton1": 0x05, "xbutton2": 0x06}
@@ -61,6 +62,7 @@ SCHEMA: dict[str, object] = {
     "indicator": {"position": None},
     "ollama": {"url": None, "model": None},
     "cleanup": {"mode": None},
+    "corrections": {"key": None, "edit_window_s": None},
     "paths": {"vocabulary": None, "corrections": None, "style": None},
     "profiles": {name: {"processes": None, "classes": None, "titles": None} for name in PROFILE_NAMES},
 }
@@ -114,6 +116,10 @@ class Config:
     corrections_path: Path
     style_dir: Path
     profiles: tuple[ProfileMatcher, ...]
+    # Learning from corrections: the correction key (None when disabled) and
+    # how long manual edits of a typed text are followed.
+    correction_key: Input | None = None
+    edit_window_s: int = 30
 
     def trigger(self, action: str) -> Trigger:
         for trigger in self.triggers:
@@ -241,6 +247,24 @@ def _triggers(data: dict[str, object]) -> tuple[Trigger, ...]:
     return tuple(triggers)
 
 
+def _correction_key(value: object, triggers: tuple[Trigger, ...]) -> Input | None:
+    field = "corrections.key"
+    if value == "":
+        return None
+    if not isinstance(value, str) or value not in KEYS:
+        raise ConfigError(f"quill config: {field} is not a supported key name")
+    if any(item.kind == "key" and item.vk == KEYS[value] for trigger in triggers for item in trigger.inputs):
+        raise ConfigError(f"quill config: {field} is already bound to a trigger")
+    return Input("key", value, KEYS[value])
+
+
+def _edit_window(value: object) -> int:
+    low, high = EDIT_WINDOW_RANGE
+    if not isinstance(value, int) or isinstance(value, bool) or not low <= value <= high:
+        raise ConfigError(f"quill config: corrections.edit_window_s must be an integer from {low} to {high}")
+    return value
+
+
 def _min_hold(value: object) -> int:
     low, high = MIN_HOLD_RANGE
     if not isinstance(value, int) or isinstance(value, bool) or not low <= value <= high:
@@ -295,8 +319,9 @@ def _profiles(data: dict[str, object]) -> tuple[ProfileMatcher, ...]:
 
 def validate(data: dict[str, object]) -> Config:
     _check_fields(data, SCHEMA, "")
+    triggers = _triggers(data)
     return Config(
-        triggers=_triggers(data),
+        triggers=triggers,
         min_hold_ms=_min_hold(_get(data, "input.min_hold_ms")),
         click_to_focus=_bool(_get(data, "input.click_to_focus"), "input.click_to_focus"),
         microphone=_text(_get(data, "audio.microphone"), "audio.microphone"),
@@ -309,6 +334,8 @@ def validate(data: dict[str, object]) -> Config:
         corrections_path=_local_path(_get(data, "paths.corrections"), "paths.corrections"),
         style_dir=_local_path(_get(data, "paths.style"), "paths.style"),
         profiles=_profiles(data),
+        correction_key=_correction_key(_get(data, "corrections.key"), triggers),
+        edit_window_s=_edit_window(_get(data, "corrections.edit_window_s")),
     )
 
 
@@ -332,7 +359,18 @@ def load_config(local: Path | None = LOCAL_CONFIG, example: Path = EXAMPLE_CONFI
         override = read_toml(local)
         _check_fields(override, SCHEMA, "")
         data = merge(data, override)
+        if "key" not in override.get("corrections", {}):
+            data = _free_default_correction_key(data)
     return validate(data)
+
+
+def _free_default_correction_key(data: dict[str, object]) -> dict[str, object]:
+    """The example's correction key gives way to a local trigger bound to the same key."""
+    key = _get(data, "corrections.key")
+    taken = {(item.kind, item.vk) for trigger in _triggers(data) for item in trigger.inputs}
+    if isinstance(key, str) and ("key", KEYS.get(key)) in taken:
+        return merge(data, {"corrections": {"key": ""}})
+    return data
 
 
 def main(argv: list[str] | None = None) -> int:

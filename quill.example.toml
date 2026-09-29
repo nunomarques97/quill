@@ -57,6 +57,17 @@ model = "qwen3:8b"
 # it deleted content words and added about 1 s at p95 (docs/research/FASE2.md).
 mode = "rules"
 
+# Learning from corrections (learned replacements live in paths.corrections).
+# Select the corrected text of the last dictation and press the correction
+# key; "" disables it. The key is not swallowed and may not be a trigger key.
+# Manual edits (typing, Backspace, Delete, arrows) of the typed text are
+# followed for edit_window_s seconds; a click, paste, undo or other window
+# stops following them. A replacement seen in two dictations is applied
+# automatically; review them with: py -3.12 -m quill.review
+[corrections]
+key = "f16"
+edit_window_s = 30
+
 # Personal data. Paths are relative to the repository and must stay inside
 # the ignored local/ folder.
 [paths]

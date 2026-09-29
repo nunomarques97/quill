@@ -9,6 +9,7 @@ Usage:
     py -3.12 -m bench.pipeline --summary PATH --check-doc DOC.md
     py -3.12 -m bench.pipeline --compare-cleanup bench/results/pipeline/<run>
     .venv\\Scripts\\python -m bench.pipeline --set all --stage vocabulary --summary PATH [--vocabulary FILE]
+    .venv\\Scripts\\python -m bench.pipeline --set all --stage corrections --summary PATH [--vocabulary FILE]
 
 Two sets are measured: ``commands`` (the 44 short takes of the reference
 project) and ``dictation`` (the dictation script recorded with bench.record).
@@ -30,6 +31,16 @@ the Whisper hints (``quill.vocabulary.hint_list`` priority order), the takes
 are streamed and cleaned again with the product hints before matching, so the
 row shows the whole effect of the vocabulary; the earlier stages keep the
 baseline hints (resolved names sorted, then the generic terms).
+``corrections`` is an online simulation of learning from corrections on the
+``vocabulary`` text, in the fixed take order of each set: each take first
+gets the replacements active so far (``quill.corrections``, the product rule:
+active once seen in two distinct dictations, conflicts never applied), then
+the simulated user corrects the typed text to the clean reference and the
+product derives and counts the replacements from that correction. A learned
+recurrence is an error in a take whose replacement was already active; the
+row adds ``recurrences_fixed_rate`` (target 100 %) and ``new_errors``
+(reference words that the take had right and the applied replacements made
+wrong; target 0).
 
 ``--compare-cleanup RUN`` needs no GPU: it reads the streamed outputs saved by
 an earlier run and compares the rules with the local qwen3:8b cleanup
@@ -68,15 +79,17 @@ from bench.metrics import (
     load_terms,
     write_summary,
 )
+from bench.normalize import normalize_words
 from bench.settings import RESULTS_DIR, Settings, SettingsError, load_settings
 from quill.cleanup import Cleanup, CleanupResult, clean_text
+from quill.corrections import ACTIVE, Corrections, Replacement, derive, phrase_key
 from quill.vocabulary import EMPTY as NO_VOCABULARY, LOCAL_VOCABULARY, Matcher, Vocabulary, VocabularyError, hint_list, hints_within_limit, load_vocabulary
 from quill.whisper import DEFAULT_MODEL
 
 SETS = ("commands", "dictation")
 # Cumulative stages, in order. Only the ones in IMPLEMENTED_STAGES can run.
 STAGE_ORDER = ("raw", "streamed", "cleanup", "vocabulary", "corrections", "profiles")
-IMPLEMENTED_STAGES = ("raw", "streamed", "cleanup", "vocabulary")
+IMPLEMENTED_STAGES = ("raw", "streamed", "cleanup", "vocabulary", "corrections")
 TARGET_NAMES = ("complete", "latency", "cleanup", "vocabulary", "corrections", "overall")
 SUMMARY_SCHEMA = 1
 DEFAULT_SUMMARY = RESULTS_DIR / "pipeline" / "summary.json"
@@ -265,6 +278,86 @@ def match_samples(samples: Sequence[Sample], matcher: Matcher, clock: Callable[[
         text = matcher.apply(sample.hypothesis)
         matched.append(Sample(sample.take, text, sample.seconds + clock() - started))
     return matched, changes
+
+
+def correct_positions(reference: Sequence[str], hypothesis: Sequence[str]) -> frozenset[int]:
+    """Reference word indexes aligned to an equal hypothesis word (one minimum-cost alignment)."""
+    n, m = len(reference), len(hypothesis)
+    cost = [[i + j if i == 0 or j == 0 else 0 for j in range(m + 1)] for i in range(n + 1)]
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            cost[i][j] = min(cost[i - 1][j - 1] + (reference[i - 1] != hypothesis[j - 1]), cost[i - 1][j] + 1, cost[i][j - 1] + 1)
+    found: set[int] = set()
+    i, j = n, m
+    while i > 0 and j > 0:
+        if reference[i - 1] == hypothesis[j - 1] and cost[i][j] == cost[i - 1][j - 1]:
+            found.add(i - 1)
+            i, j = i - 1, j - 1
+        elif cost[i][j] == cost[i - 1][j - 1] + 1:
+            i, j = i - 1, j - 1
+        elif cost[i][j] == cost[i - 1][j] + 1:
+            i -= 1
+        else:
+            j -= 1
+    return frozenset(found)
+
+
+def _measurable(replacements: Sequence[Replacement]) -> list[Replacement]:
+    """Replacements the WER sees: the normalizer's equivalences (case, numbers) are not errors."""
+    return [r for r in replacements if normalize_words(r.source) != normalize_words(r.target)]
+
+
+def error_pairs(hypothesis: str, reference: str) -> Counter:
+    """Every word error of ``hypothesis`` as a (source, target) key, without the rewrite guard."""
+    found = _measurable(derive(hypothesis, reference, case_sensitive=False, strict=False))
+    return Counter((r.key, phrase_key(r.target)) for r in found)
+
+
+def correct_samples(samples: Sequence[Sample], clock: Callable[[], float]) -> tuple[list[Sample], dict]:
+    """The corrections stage: apply what is active, then learn from the take's correction.
+
+    The simulated user corrects every typed take to its clean reference; the
+    product rule (``quill.corrections``) decides what is derived, counted and
+    activated. Returns the corrected samples and aggregate counts only.
+    """
+    corrections = Corrections.empty(0.0)
+    corrected: list[Sample] = []
+    recurrences = fixed = pending = new_errors = applications = learning_takes = 0
+    for index, sample in enumerate(samples):
+        reference = sample.take.clean
+        statuses = corrections.statuses()
+        active = {(e.key, e.target_key) for i, e in enumerate(corrections.entries) if statuses[i] == ACTIVE}
+        known = {(e.key, e.target_key) for e in corrections.entries}
+        started = clock()
+        text, applied = corrections.apply(sample.hypothesis)
+        corrected.append(Sample(sample.take, text, sample.seconds + clock() - started))
+        applications += applied
+        before, after = error_pairs(sample.hypothesis, reference), error_pairs(text, reference)
+        for pair, count in before.items():
+            if pair in active:
+                recurrences += count
+                fixed += max(0, count - after[pair])
+            elif pair in known:
+                pending += count
+        words = normalize_words(reference)
+        new_errors += len(correct_positions(words, normalize_words(sample.hypothesis)) - correct_positions(words, normalize_words(text)))
+        replacements = _measurable(derive(text, reference, case_sensitive=False))
+        learning_takes += bool(replacements)
+        corrections.learn(f"take-{index}", replacements, float(index))
+    counts = corrections.counts()
+    info = {
+        "recurrences": recurrences,
+        "recurrences_fixed": fixed,
+        "recurrences_fixed_rate": _round(fixed / recurrences) if recurrences else None,
+        "recurrences_not_yet_active": pending,
+        "new_errors": new_errors,
+        "corrections_applied": applications,
+        "takes_with_corrections": learning_takes,
+        "learned_active": counts["active"],
+        "learned_pending": counts["pending"],
+        "learned_conflicts": counts["conflict"],
+    }
+    return corrected, info
 
 
 def product_hints(vocabulary: Vocabulary, names: Sequence[str], terms: Sequence[str]) -> Hints:
@@ -493,6 +586,8 @@ def measure(
             elif current == "cleanup":
                 before = samples
                 samples = clean_samples(before, hints.vocabulary(), clock)
+            elif current == "corrections":  # online learning on the vocabulary text
+                samples, corrections_info = correct_samples(samples, clock)
             else:  # vocabulary: the cleaned text, streamed again first when the hints change
                 if restream:
                     streamed = streamer(dataset.takes, personal)
@@ -505,6 +600,8 @@ def measure(
             block["stages"][current] = stage_metrics(samples, terms, set_settings.markup, intent, note, before)
             if current == "vocabulary":
                 block["stages"][current]["vocabulary_changes"] = changes
+            if current == "corrections":
+                block["stages"][current].update(corrections_info)
             log(f"{set_name} / {current}: n={len(samples)}" + (f" ({note})" if note else ""))
     return summary
 
@@ -607,8 +704,14 @@ def check_targets(summary: dict, targets: Sequence[str]) -> list[tuple[bool, str
                         results.append((True, f"info {target}: {set_name} {label} {_pct(value)} (indicator, not a gate; target <= {100 * limit:.0f} % applies to dictation)"))
         elif target == "corrections":
             for set_name, stage, row in per_set(target, "corrections"):
-                fixed, new = row.get("recurrences_fixed_rate"), row.get("new_errors")
-                add(fixed is not None and fixed >= 1.0, target, f"{set_name} learned recurrences fixed {_pct(fixed)} (target 100 %)")
+                row = sets[set_name]["stages"]["corrections"]
+                fixed, new, recurrences = row.get("recurrences_fixed_rate"), row.get("new_errors"), row.get("recurrences")
+                if recurrences == 0:
+                    # Nothing learned was repeated: nothing left unfixed, and no evidence either.
+                    add(True, target, f"{set_name} no learned recurrence to fix (0 recurrences; target 100 % when present)")
+                else:
+                    add(fixed is not None and fixed >= 1.0, target,
+                        f"{set_name} learned recurrences fixed {_pct(fixed)} of {recurrences} (target 100 %)")
                 add(new is not None and new == 0, target, f"{set_name} new word errors {new} (target 0)")
         elif target == "overall":
             for set_name, stage, row in per_set(target):
@@ -623,6 +726,10 @@ def check_targets(summary: dict, targets: Sequence[str]) -> list[tuple[bool, str
 HEADER = (
     "Conjunto", "Etapa", "n", "WER literal", "WER limpo", "Erro termos EN", "Erro nomes",
     "Intenção preservada", "Hesitações removidas", "Palavras apagadas", "Apagadas pela limpeza",
+)
+CORRECTIONS_HEADER = (
+    "Conjunto", "Erros já aprendidos que se repetem", "Corrigidos", "Taxa corrigida", "Repetições antes de ativar",
+    "Erros novos", "Substituições aplicadas", "Ativas / pendentes / em conflito no fim",
 )
 SET_LABELS = {"commands": "comandos", "dictation": "ditado"}
 EMPTY = "—"
@@ -653,6 +760,18 @@ def render_block(summary: dict) -> str:
                 _pt_percent(row.get("intent_preserved")), _pt_percent(row.get("filler_removal_rate")),
                 EMPTY if row.get("content_deleted") is None else str(row["content_deleted"]),
                 EMPTY if row.get("content_deleted_by_cleanup") is None else str(row["content_deleted_by_cleanup"]),
+            )
+            lines.append("| " + " | ".join(cells) + " |")
+    corrections = [(name, row) for name in SETS
+                   if isinstance(row := (((summary.get("sets") or {}).get(name) or {}).get("stages") or {}).get("corrections"), dict)]
+    if corrections:
+        lines += ["", "| " + " | ".join(CORRECTIONS_HEADER) + " |", "|" + "---|" * len(CORRECTIONS_HEADER)]
+        for set_name, row in corrections:
+            cells = (
+                SET_LABELS[set_name], str(row.get("recurrences")), str(row.get("recurrences_fixed")),
+                _pt_percent(row.get("recurrences_fixed_rate")), str(row.get("recurrences_not_yet_active")),
+                str(row.get("new_errors")), str(row.get("corrections_applied")),
+                f"{row.get('learned_active')} / {row.get('learned_pending')} / {row.get('learned_conflicts')}",
             )
             lines.append("| " + " | ".join(cells) + " |")
     latency = summary.get("latency")
@@ -751,7 +870,7 @@ def main(
     parser.add_argument("--compare-cleanup", type=Path, default=None, metavar="RUN",
                         help="compare rules and qwen3:8b cleanup on RUN's saved streamed texts; no GPU")
     parser.add_argument("--vocabulary", type=Path, default=LOCAL_VOCABULARY,
-                        help="personal vocabulary for the vocabulary stage (default local/vocabulary.toml; missing is empty)")
+                        help="personal vocabulary for the vocabulary and later stages (default local/vocabulary.toml; missing is empty)")
     parser.add_argument("--summary", type=Path, default=DEFAULT_SUMMARY, help="aggregate summary JSON")
     parser.add_argument("--require", action="append", choices=TARGET_NAMES, default=[], help="exit 1 unless met")
     parser.add_argument("--check-doc", type=Path, default=None, help="exit 1 when DOC's block differs from the summary")
@@ -779,7 +898,9 @@ def main(
         if args.stage:
             settings = load_settings(args.config)
             sets = load_sets(settings, names)
-            vocabulary = load_vocabulary(args.vocabulary) if args.stage == "vocabulary" else NO_VOCABULARY
+            # Every stage from vocabulary on uses the personal vocabulary.
+            later = STAGE_ORDER.index(args.stage) >= STAGE_ORDER.index("vocabulary")
+            vocabulary = load_vocabulary(args.vocabulary) if later else NO_VOCABULARY
             engine = engine_factory()
             judge, unavailable = judge_factory()
             run_dir = Path(results_dir) / "pipeline" / time.strftime("%Y%m%d-%H%M%S")

@@ -39,6 +39,8 @@ py -3.12 -m bench.pipeline --set all --dry-run      # counts of both sets, no GP
 py -3.12 -m bench.pipeline --compare-cleanup bench/results/pipeline/<run>   # rules vs qwen3:8b, no GPU
 .venv\Scripts\python -m bench.pipeline --set all --stage vocabulary --summary docs/research/phase2-summary.json
 py -3.12 -m quill.vocabulary --check                # validate local/vocabulary.toml; counts only
+.venv\Scripts\python -m bench.pipeline --set all --stage corrections --summary docs/research/phase2-summary.json
+py -3.12 -m quill.review --list                     # learned corrections (local/corrections.json)
 py -3.12 -m bench.intent --run bench/results/pipeline/<run> --reviews bench/results/intent-review/<file>.json [--rejudge]
 .venv\Scripts\python -m bench.streaming --set all --mode deterministic   # streamed text quality
 .venv\Scripts\python -m bench.streaming --set all --mode realtime        # release-to-final latency
@@ -143,9 +145,11 @@ applies the product's deterministic cleanup rules (`quill.cleanup.clean_text`,
 with the hints vocabulary as protected words) to the streamed text.
 `--stage vocabulary` runs all three and then applies the product's
 post-recognition matcher (`quill.vocabulary.Matcher`) to the cleaned text; see
-[Personal vocabulary](#personal-vocabulary). Later stages (`corrections`,
-`profiles`) are cumulative and added by later tasks. Per set and stage the
-summary holds:
+[Personal vocabulary](#personal-vocabulary); this and every later stage use
+the personal vocabulary. `--stage corrections` runs all four and then
+simulates learning from corrections on the vocabulary text; see
+[Learning from corrections](#learning-from-corrections). The `profiles` stage
+is added by a later task. Per set and stage the summary holds:
 
 - `wer_verbatim` and `wer_clean`: corpus WER against the verbatim and the
   clean reference (equal for the commands set, which has no markup);
@@ -160,6 +164,10 @@ summary holds:
   stay visible in `content_deleted` and are never charged to the cleanup;
 - `vocabulary` stage only: `vocabulary_changes`, the spans the matcher
   rewrote;
+- `corrections` stage only: `recurrences`, `recurrences_fixed`,
+  `recurrences_fixed_rate`, `recurrences_not_yet_active`, `new_errors`,
+  `corrections_applied`, `takes_with_corrections` and the final
+  `learned_active`/`learned_pending`/`learned_conflicts` counts (see below);
 - `p50_s`/`p95_s` of the transcription time (moved to the ignored
   `timings.json` of the run, never into the committed summary).
 
@@ -176,7 +184,8 @@ Sponsor target; see [Streaming replay](#streaming-replay)), `cleanup`
 `content_deleted_by_cleanup`), `vocabulary` (name
 and term error <= 10 % on the dictation set; the commands set is printed as an
 `info` indicator and never fails, Sponsor decision 2026-09-29), `corrections` (100 % of learned recurrences
-fixed, 0 new errors) and `overall` (final-text WER <= 10 %, intent >= 95 %).
+fixed, 0 new errors, on both sets; a set with no learned recurrence has nothing
+left unfixed and prints so) and `overall` (final-text WER <= 10 %, intent >= 95 %).
 `--write-doc DOC` inserts the Portuguese table between
 `<!-- pipeline:summary:start -->` and `<!-- pipeline:summary:end -->`;
 `--check-doc DOC` exits 1 when that block differs from the summary.
@@ -190,6 +199,37 @@ implausible reply). It prints, per set and mode, WER, intent, removal,
 fallbacks; the aggregates, timings and per-take texts go only to
 `bench/results/cleanup/<time>/`. When Ollama or `qwen3:8b` is not ready only
 the rules are measured and the reason is printed.
+
+### Learning from corrections
+
+The product learns word and phrase replacements from the user's corrections
+(`quill/corrections.py`; the correction key and the manual-edit detection of
+`quill/edits.py` feed it, and `python -m quill.review` reviews what was
+learned). The `corrections` stage measures that rule on the real takes with
+an online simulation, in the fixed take order of each set:
+
+1. the take's `vocabulary` text gets the replacements active so far
+   (`Corrections.apply`: whole words, case-preserving, never across
+   punctuation);
+2. the simulated user corrects the typed text to the clean reference, and the
+   product's `derive` and `Corrections.learn` decide what is kept: at most
+   three words a side, no pure insertion or deletion, no rewrite (more than
+   five changed runs or fewer than half of the words unchanged), no swap
+   between function words only (`dos` -> `do` depends on the sentence), and
+   case or number differences that the normalizer ignores are not errors;
+3. a replacement seen in two distinct takes becomes active; one source with
+   two targets, or a pair and its reverse, is a conflict and never applied.
+
+Each take is its own dictation, so a take never counts twice. Per set:
+`recurrences` counts the word errors of a take whose replacement was already
+active, `recurrences_fixed` those the applied text no longer has
+(`recurrences_fixed_rate`, target 100 %), `recurrences_not_yet_active` the
+errors seen before but not active yet (the second sighting, which activates
+them, or a conflict), and `new_errors` the reference words the take had right
+(one minimum-cost word alignment) that the applied replacements made wrong
+(target 0). The errors themselves are listed with the same alignment without
+the rewrite guard, so every error of a take is checked. Only counts go to
+the summary; the corrected texts go to `corrections.json` of the run.
 
 ### Personal vocabulary
 

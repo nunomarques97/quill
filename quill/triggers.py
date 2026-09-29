@@ -71,7 +71,11 @@ PASS_THROUGH_KEYS = frozenset({0xA1, 0xA3, 0xA5})  # right Shift, right Ctrl, ri
 
 @dataclass(frozen=True)
 class InputEvent:
-    """One normalized hook event: a mouse button or a key going down or up."""
+    """One normalized hook event: a mouse button or a key going down or up.
+
+    ``time_ms`` is when the event happened; ``age_ms`` (diagnostics only) is
+    how long before the hook callback that was, or None when unknown.
+    """
 
     kind: str  # BUTTON or KEY
     vk: int
@@ -79,6 +83,7 @@ class InputEvent:
     time_ms: float
     injected: bool = False
     extra_info: int = 0
+    age_ms: float | None = None
 
     @property
     def is_injected(self) -> bool:

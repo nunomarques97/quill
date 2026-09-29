@@ -221,7 +221,9 @@ class FakeHooks:
     """Hook installer that records hooks and lets tests call the callbacks directly.
 
     ``lparam`` values are keys into ``structs`` instead of memory addresses.
-    ``run_loop`` blocks until ``post_quit``, like a message loop.
+    ``run_loop`` blocks until ``post_quit``, like a message loop. ``tick`` is
+    the fake GetTickCount; an event's ``time`` field defaults to it (age 0),
+    and a test passes an older ``time`` to model a callback that runs late.
     """
 
     def __init__(self, fail_kind: int | None = None) -> None:
@@ -230,7 +232,8 @@ class FakeHooks:
         self.handles: dict[int, int] = {}
         self.unhooked: list[int] = []
         self.next_calls: list[tuple[int, int, int]] = []
-        self.structs: dict[int, tuple[int, int, int]] = {}
+        self.structs: dict[int, tuple[int, int, int, int]] = {}
+        self.tick = 0
         self.loop_thread = 0
         self.quit = threading.Event()
         self._next = 1
@@ -267,24 +270,28 @@ class FakeHooks:
         self.quit.set()
         return True
 
-    def keyboard_fields(self, lparam: int) -> tuple[int, int, int]:
+    def tick_count(self) -> int:
+        return self.tick
+
+    def keyboard_fields(self, lparam: int) -> tuple[int, int, int, int]:
         return self.structs[lparam]
 
-    def mouse_fields(self, lparam: int) -> tuple[int, int, int]:
+    def mouse_fields(self, lparam: int) -> tuple[int, int, int, int]:
         return self.structs[lparam]
 
     # test helpers: return what the callback returned (1 = swallowed)
-    def _call(self, kind: int, wparam: int, fields: tuple[int, int, int], code: int) -> int:
+    def _call(self, kind: int, wparam: int, fields: tuple[int, int, int], time: int | None, code: int) -> int:
         lparam = self._next
         self._next += 1
-        self.structs[lparam] = fields
+        self.structs[lparam] = (*fields, self.tick if time is None else time)
         return self.hooks[kind](code, wparam, lparam)
 
-    def key(self, wparam: int, vk: int, flags: int = 0, extra: int = 0, code: int = 0) -> int:
-        return self._call(WH_KEYBOARD_LL, wparam, (vk, flags, extra), code)
+    def key(self, wparam: int, vk: int, flags: int = 0, extra: int = 0, code: int = 0, time: int | None = None) -> int:
+        return self._call(WH_KEYBOARD_LL, wparam, (vk, flags, extra), time, code)
 
-    def mouse(self, wparam: int, mouse_data: int = 0, flags: int = 0, extra: int = 0, code: int = 0) -> int:
-        return self._call(WH_MOUSE_LL, wparam, (mouse_data, flags, extra), code)
+    def mouse(self, wparam: int, mouse_data: int = 0, flags: int = 0, extra: int = 0, code: int = 0,
+              time: int | None = None) -> int:
+        return self._call(WH_MOUSE_LL, wparam, (mouse_data, flags, extra), time, code)
 
 
 class FakeIndicator:

@@ -537,6 +537,19 @@ def triggers_result():
             "clicks": [{"action": "send_claude", "reason": "clicked", "count": 1}]}
 
 
+def triggers_result_v2():
+    data = {**triggers_result(), "version": 2, "min_hold_ms": 250}
+    data["totals"] = {**data["totals"], "event_age_ms_p95": 812.5, "event_age_unknown": 1}
+    data["per_trigger"] = [{"trigger": "xbutton1", "presses": 2, "event_age_ms_p95": 812.5,
+                            "event_age_ms_max": 812.5, "event_age_unknown": 1}]
+    data["holds"] = [{"trigger": "xbutton1", "bucket": "100_249ms", "count": 1},
+                     {"trigger": "xbutton1", "bucket": "500_999ms", "count": 1}]
+    data["event_ages"] = [{"trigger": "xbutton1", "bucket": "under_16ms", "count": 2},
+                          {"trigger": "xbutton1", "bucket": "250ms_plus", "count": 1},
+                          {"trigger": "xbutton1", "bucket": "unknown", "count": 1}]
+    return data
+
+
 def indicator_result():
     return {"version": 1, "finished": "2026-09-29T19:49:11Z", "position": "pointer", "seconds": 51.7,
             "states_shown": 23, "foreground_samples": 1026, "foreground_was_indicator": 0, "frames": 1401,
@@ -589,6 +602,39 @@ class AcceptanceTest(unittest.TestCase):
             (Path(root) / "typing-1.json").write_text("not json", encoding="utf-8")
             with self.assertRaises(pipeline.SettingsError):
                 pipeline.acceptance_block(Path(root))
+
+    def test_trigger_results_of_both_versions_are_accepted(self):
+        v1 = pipeline.selftest_block("triggers", triggers_result())
+        v2 = pipeline.selftest_block("triggers", triggers_result_v2())
+        self.assertNotIn("holds", v1)  # a version-1 block is unchanged, so the committed summary stays valid
+        self.assertEqual({key: v2[key] for key in v1}, v1)
+        self.assertEqual(v2["min_hold_ms"], 250)
+        self.assertEqual(v2["holds"], triggers_result_v2()["holds"])
+        self.assertEqual(v2["event_ages"], triggers_result_v2()["event_ages"])
+        text = json.dumps(v2)
+        for timing in ("812", "event_age_ms", "per_trigger", "worker_lag", "hold_s_max"):
+            self.assertNotIn(timing, text)
+        for version in (None, 0, 3, "2"):
+            with self.assertRaises(pipeline.SettingsError):
+                pipeline.selftest_block("triggers", {**triggers_result(), "version": version})
+        with tempfile.TemporaryDirectory() as root:
+            (Path(root) / "triggers-20260929T194708Z.json").write_text(json.dumps(triggers_result()), encoding="utf-8")
+            (Path(root) / "triggers-20261001T100000Z.json").write_text(json.dumps(triggers_result_v2()),
+                                                                        encoding="utf-8")
+            self.assertEqual(pipeline.acceptance_block(Path(root))["triggers"], v2)
+
+    def test_block_renders_version_2_trigger_buckets_only_when_present(self):
+        summary = summary_with()
+        summary["acceptance"] = acceptance()
+        self.assertNotIn("Duração do toque", pipeline.render_block(summary))
+        summary["acceptance"]["triggers"] = pipeline.selftest_block("triggers", triggers_result_v2())
+        block = pipeline.render_block(summary)
+        self.assertIn("| xbutton1 | 100 a 249 ms | 1 |", block)
+        self.assertIn("| xbutton1 | 500 a 999 ms | 1 |", block)
+        self.assertIn("| xbutton1 | 250 ms ou mais | 1 |", block)
+        self.assertIn("| xbutton1 | desconhecido | 1 |", block)
+        document = pipeline.write_doc("# Doc\n", summary)
+        self.assertEqual(pipeline.check_doc(document, summary), [])
 
     def test_block_renders_command_mode_and_self_tests(self):
         summary = summary_with()

@@ -470,6 +470,7 @@ class LowLevelHooks:
         bind(user32, "PostThreadMessageW", w.BOOL, w.DWORD, w.UINT, w.WPARAM, w.LPARAM)
         bind(kernel32, "GetCurrentThreadId", w.DWORD)
         bind(kernel32, "GetModuleHandleW", w.HMODULE, w.LPCWSTR)
+        bind(kernel32, "GetTickCount", w.DWORD)
 
     def make_callback(self, function: object) -> object:
         """Wrap a Python function as a HOOKPROC; the caller keeps it alive while hooked."""
@@ -504,14 +505,18 @@ class LowLevelHooks:
     def post_quit(self, thread_id: int) -> bool:
         return bool(self._user32.PostThreadMessageW(thread_id, WM_QUIT, 0, 0))
 
-    @staticmethod
-    def keyboard_fields(lparam: int) -> tuple[int, int, int]:
-        """(vk, flags, extra info) of the KBDLLHOOKSTRUCT at ``lparam``."""
-        info = KBDLLHOOKSTRUCT.from_address(lparam)
-        return int(info.vkCode), int(info.flags), int(info.dwExtraInfo)
+    def tick_count(self) -> int:
+        """Milliseconds since boot (32 bits, wraps): the clock of the hook structures' ``time`` field."""
+        return int(self._kernel32.GetTickCount())
 
     @staticmethod
-    def mouse_fields(lparam: int) -> tuple[int, int, int]:
-        """(mouseData, flags, extra info) of the MSLLHOOKSTRUCT at ``lparam``."""
+    def keyboard_fields(lparam: int) -> tuple[int, int, int, int]:
+        """(vk, flags, extra info, event time) of the KBDLLHOOKSTRUCT at ``lparam``."""
+        info = KBDLLHOOKSTRUCT.from_address(lparam)
+        return int(info.vkCode), int(info.flags), int(info.dwExtraInfo), int(info.time)
+
+    @staticmethod
+    def mouse_fields(lparam: int) -> tuple[int, int, int, int]:
+        """(mouseData, flags, extra info, event time) of the MSLLHOOKSTRUCT at ``lparam``."""
         info = MSLLHOOKSTRUCT.from_address(lparam)
-        return int(info.mouseData), int(info.flags), int(info.dwExtraInfo)
+        return int(info.mouseData), int(info.flags), int(info.dwExtraInfo), int(info.time)

@@ -61,7 +61,10 @@ it. ``--add-command-mode RUN_SUMMARY`` (the aggregate summary of a
 ``bench.rewrite`` run) and ``--add-selftests DIR`` (the newest typing,
 triggers and indicator results of the Sponsor's manual desktop self-tests,
 ``local/selftest/``) merge whitelisted counts into ``--summary``: one-off
-manual steps, never a check; wall-clock timings are left out. A later
+manual steps, never a check; wall-clock timings are left out. Trigger
+results of version 1 and 2 are accepted; version 2 adds per-trigger press
+durations and hook callback delays as bucket counts (the millisecond p95 and
+maximum stay in the local file). A later
 ``--stage`` run writes a fresh summary, so the merges are repeated after it.
 ``--require TARGET`` exits 1 and prints measured-vs-target aggregates when
 a target is unmet or a set is incomplete. Nothing spoken is printed.
@@ -142,6 +145,9 @@ TRIGGER_FIELDS = {
     "signals": ("action", "signal", "reason"), "ignored": ("trigger", "reason"),
     "inputs": ("trigger", "event"), "clicks": ("action", "reason"),
 }
+TRIGGER_VERSIONS = (1, 2)
+# Version 2: per trigger input, press durations and hook callback delays as bucket counts.
+TRIGGER_BUCKET_FIELDS = {"holds": ("trigger", "bucket"), "event_ages": ("trigger", "bucket")}
 INDICATOR_KEYS = ("position", "states_shown", "foreground_samples", "foreground_was_indicator")
 
 START_MARKER = "<!-- pipeline:summary:start -->"
@@ -711,11 +717,19 @@ def selftest_block(name: str, data: dict) -> dict:
         return {"day": _day(data.get("finished_utc")), "passed": data.get("passed") is True,
                 **{key: totals.get(key) for key in TYPING_KEYS}}
     if name == "triggers":
+        version = data.get("version")
+        if version not in TRIGGER_VERSIONS:
+            raise SettingsError(f"triggers self-test result version {version!r} is not supported")
         errors = sum(totals.get(key) or 0 for key in ("callback_errors", "handler_errors", "machine_errors"))
-        return {"day": _day(data.get("finished_utc")), "passed": data.get("passed") is True,
-                "click_to_focus": data.get("click_to_focus") is True, "starts": totals.get("starts"),
-                "ends": totals.get("ends"), "errors": errors,
-                **{key: _count_rows(data.get(key), fields) for key, fields in TRIGGER_FIELDS.items()}}
+        block = {"day": _day(data.get("finished_utc")), "passed": data.get("passed") is True,
+                 "click_to_focus": data.get("click_to_focus") is True, "starts": totals.get("starts"),
+                 "ends": totals.get("ends"), "errors": errors,
+                 **{key: _count_rows(data.get(key), fields) for key, fields in TRIGGER_FIELDS.items()}}
+        if version >= 2:
+            min_hold = data.get("min_hold_ms")
+            block["min_hold_ms"] = min_hold if isinstance(min_hold, int) and not isinstance(min_hold, bool) else None
+            block.update({key: _count_rows(data.get(key), fields) for key, fields in TRIGGER_BUCKET_FIELDS.items()})
+        return block
     if name == "indicator":
         return {"day": _day(data.get("finished")), "passed": data.get("passed") is True,
                 **{key: data.get(key) for key in INDICATOR_KEYS}}
@@ -873,6 +887,14 @@ COMMAND_HEADER = (
 KIND_HEADER = ("Caso", "n", "Verificações passadas", "Corretas")
 ACCEPTANCE_HEADER = ("Verificação manual no desktop", "Data", "Resultado")
 TRIGGER_HEADER = ("Ação", "Sinal", "Motivo", "n")
+HOLD_HEADER = ("Gatilho", "Duração do toque", "n")
+EVENT_AGE_HEADER = ("Gatilho", "Atraso do callback do hook", "n")
+BUCKET_LABELS = {
+    "under_100ms": "menos de 100 ms", "100_249ms": "100 a 249 ms", "250_499ms": "250 a 499 ms",
+    "500_999ms": "500 a 999 ms", "1000_2999ms": "1 a 3 s", "3000ms_plus": "3 s ou mais",
+    "under_16ms": "menos de 16 ms", "16_49ms": "16 a 49 ms", "50_99ms": "50 a 99 ms",
+    "250ms_plus": "250 ms ou mais", "unknown": "desconhecido",
+}
 SET_LABELS = {"commands": "comandos", "dictation": "ditado"}
 EMPTY = "—"
 
@@ -988,6 +1010,12 @@ def _acceptance_lines(block: object) -> list[str]:
         lines += _table(TRIGGER_HEADER)
         for row in triggers["signals"]:
             lines.append(f"| {row['action']} | {row['signal']} | {row['reason'] or EMPTY} | {row['count']} |")
+    for key, header in (("holds", HOLD_HEADER), ("event_ages", EVENT_AGE_HEADER)):
+        rows = triggers.get(key) if isinstance(triggers, dict) else None
+        if rows:  # version 2 results only
+            lines += _table(header)
+            for row in rows:
+                lines.append(f"| {row['trigger']} | {BUCKET_LABELS.get(row['bucket'], row['bucket'])} | {row['count']} |")
     return lines
 
 

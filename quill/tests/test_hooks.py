@@ -74,9 +74,19 @@ class ClassifyTest(unittest.TestCase):
         # Pure memory reads of structures built here; no hook is involved.
         key = win32.KBDLLHOOKSTRUCT(F13, 0x64, LLKHF_INJECTED, 1234, QUILL_EXTRA_INFO)
         self.assertEqual(win32.LowLevelHooks.keyboard_fields(ctypes.addressof(key)),
-                         (F13, LLKHF_INJECTED, QUILL_EXTRA_INFO))
-        mouse = win32.MSLLHOOKSTRUCT(win32.wintypes.POINT(3, 4), X2, LLMHF_INJECTED, 99, 7)
-        self.assertEqual(win32.LowLevelHooks.mouse_fields(ctypes.addressof(mouse)), (X2, LLMHF_INJECTED, 7))
+                         (F13, LLKHF_INJECTED, QUILL_EXTRA_INFO, 1234))
+        mouse = win32.MSLLHOOKSTRUCT(win32.wintypes.POINT(3, 4), X2, LLMHF_INJECTED, 0xFFFFFFF0, 7)
+        self.assertEqual(win32.LowLevelHooks.mouse_fields(ctypes.addressof(mouse)),
+                         (X2, LLMHF_INJECTED, 7, 0xFFFFFFF0))
+
+    def test_event_age_uses_the_32_bit_tick_and_rejects_implausible_times(self) -> None:
+        self.assertEqual(hooks.event_age_ms(50_000, 50_000), 0.0)
+        self.assertEqual(hooks.event_age_ms(50_000, 49_000), 1000.0)
+        self.assertEqual(hooks.event_age_ms(5, 0xFFFFFFF0), 21.0)  # GetTickCount wrapped between the two
+        self.assertEqual(hooks.event_age_ms(10_000, 10_000 - hooks.MAX_EVENT_AGE_MS), hooks.MAX_EVENT_AGE_MS)
+        self.assertIsNone(hooks.event_age_ms(10_000, 10_000 - hooks.MAX_EVENT_AGE_MS - 1))  # too old
+        self.assertIsNone(hooks.event_age_ms(50_000, 50_010))  # from the future: a bad time field
+        self.assertIsNone(hooks.event_age_ms(50_000, 0))  # zero time field
 
 
 class RouterTest(unittest.TestCase):
@@ -126,6 +136,33 @@ class RouterTest(unittest.TestCase):
         self.router.keyboard(WM_KEYDOWN, F13, 0, 0)
         self.assertEqual(self.drain()[0][0].time_ms, 42.0)
 
+    def test_events_are_stamped_with_their_own_time_when_the_callback_runs_late(self) -> None:
+        now, tick = [10_000.0], [700_000]
+        router = HookRouter(BINDINGS, self.events, clock_ms=lambda: now[0], tick_count=lambda: tick[0])
+        router.mouse(WM_XBUTTONDOWN, X1, 0, 0, 699_000)  # happened 1 s before its callback
+        now[0], tick[0] = 10_005.0, 700_005
+        router.mouse(WM_XBUTTONUP, X1, 0, 0, 700_005)
+        down, up = (event for event, _ in self.drain())
+        self.assertEqual((down.time_ms, down.age_ms), (9_000.0, 1000.0))
+        self.assertEqual((up.time_ms, up.age_ms), (10_005.0, 0.0))
+        self.assertEqual(up.time_ms - down.time_ms, 1005.0)  # the real hold, not the 5 ms between callbacks
+
+    def test_bad_time_fields_fall_back_to_the_callback_time_and_stamps_never_go_back(self) -> None:
+        now, tick = [10_000.0], [700_000]
+        router = HookRouter(BINDINGS, self.events, clock_ms=lambda: now[0], tick_count=lambda: tick[0])
+        router.keyboard(WM_KEYDOWN, F13, 0, 0, 700_050)  # time field from the future
+        router.keyboard(WM_KEYUP, F13, 0, 0, 0)  # time field far in the past
+        router.keyboard(WM_KEYDOWN, F14, 0, 0)  # no time field: the fake-free default
+        now[0], tick[0] = 10_010.0, 700_010
+        router.keyboard(WM_KEYUP, F14, 0, 0, 699_900)  # older than the previous event's stamp
+        events = [event for event, _ in self.drain()]
+        self.assertEqual([event.age_ms for event in events], [None, None, None, 110.0])
+        self.assertEqual([event.time_ms for event in events], [10_000.0] * 4)
+        without_tick = HookRouter(BINDINGS, self.events, clock_ms=lambda: 42.0)
+        without_tick.keyboard(WM_KEYDOWN, F13, 0, 0, 1)
+        event = self.drain()[0][0]
+        self.assertEqual((event.time_ms, event.age_ms), (42.0, None))
+
 
 class Recorder:
     """Signal handler that records the thread it ran on."""
@@ -171,6 +208,30 @@ class ServiceTest(ServiceCase):
         self.assertEqual((signal.kind, signal.action, signal.trigger), (STOP, "dictation", "xbutton1"))
         self.assertEqual(recorder.threads, {"quill-triggers"})
         self.assertEqual(self.fake.next_calls, [])
+
+    def test_a_late_press_callback_is_timed_from_the_event_not_the_callback(self) -> None:
+        # Both callbacks run back to back, but the press happened 1 s earlier:
+        # the hold counts (confirm, then stop), as the user held the button.
+        recorder = Recorder()
+        service = self.service(recorder, min_hold_ms=250)
+        service.start()
+        self.fake.tick = 900_000
+        self.fake.mouse(WM_XBUTTONDOWN, X1, time=899_000)
+        self.fake.mouse(WM_XBUTTONUP, X1)
+        start, confirm, stop = (recorder.next() for _ in range(3))
+        self.assertEqual((start.kind, confirm.kind, stop.kind, stop.reason), (START, CONFIRM, STOP, "release"))
+        self.assertGreaterEqual(stop.held_ms, 1000.0)
+
+    def test_a_real_short_tap_still_cancels(self) -> None:
+        recorder = Recorder()
+        service = self.service(recorder, min_hold_ms=250)
+        service.start()
+        self.fake.tick = 900_000
+        self.fake.mouse(WM_XBUTTONDOWN, X1, time=899_990)
+        self.fake.mouse(WM_XBUTTONUP, X1, time=900_000)
+        start, cancel = recorder.next(), recorder.next()
+        self.assertEqual((start.kind, cancel.kind, cancel.reason), (START, CANCEL, "short_hold"))
+        self.assertLess(cancel.held_ms, 250.0)
 
     def test_passed_through_events_call_the_next_hook(self) -> None:
         recorder = Recorder()
@@ -383,7 +444,7 @@ class RealInstallerTest(unittest.TestCase):
 class SelftestTest(unittest.TestCase):
     """``python -m quill.selftest.triggers``: refusal without its flag and an aggregate of counts only."""
 
-    def test_without_flag_exits_two_and_installs_nothing(self) -> None:
+    def test_without_flag_only_dry_checks_and_installs_nothing(self) -> None:
         from quill.selftest import triggers as selftest
 
         used: list[str] = []
@@ -391,17 +452,37 @@ class SelftestTest(unittest.TestCase):
         def trap(name: str) -> mock.Mock:
             return mock.Mock(side_effect=lambda *args, **kwargs: used.append(name))
 
-        for args in ([], ["--seconds", "10"], ["--click-to-focus"]):
-            with mock.patch.object(selftest, "run", trap("run")), \
-                    mock.patch.object(hooks, "real_hooks", trap("installer")), \
-                    mock.patch.object(TriggerHooks, "start", trap("start")), \
-                    mock.patch.object(win32, "User32", trap("win32")), \
-                    mock.patch.object(threading.Thread, "start", trap("thread")), \
-                    contextlib.redirect_stderr(io.StringIO()) as err:
-                code = selftest.main(args)
-            self.assertEqual(code, 2, args)
-            self.assertIn("--allow-desktop-input", err.getvalue())
+        with tempfile.TemporaryDirectory() as folder:
+            missing = str(Path(folder) / "quill.toml")  # the example settings alone
+            for args in ([], ["--seconds", "10"], ["--click-to-focus"]):
+                with mock.patch.object(selftest, "run", trap("run")), \
+                        mock.patch.object(hooks, "real_hooks", trap("installer")), \
+                        mock.patch.object(TriggerHooks, "start", trap("start")), \
+                        mock.patch.object(win32, "User32", trap("win32")), \
+                        mock.patch.object(threading.Thread, "start", trap("thread")), \
+                        mock.patch.object(selftest, "write_result", trap("file")), \
+                        contextlib.redirect_stderr(io.StringIO()) as err, \
+                        contextlib.redirect_stdout(io.StringIO()) as out:
+                    code = selftest.main([*args, "--config", missing])
+                self.assertEqual(code, 0, args)
+                self.assertIn("--allow-desktop-input", err.getvalue())
+                self.assertIn("Dry check passed (nothing installed)", out.getvalue())
+                self.assertIn("xbutton1", out.getvalue())
+            self.assertEqual(list(Path(folder).iterdir()), [])
         self.assertEqual(used, [])
+
+    def test_without_flag_invalid_settings_exit_two(self) -> None:
+        from quill.selftest import triggers as selftest
+
+        with tempfile.TemporaryDirectory() as folder:
+            settings = Path(folder) / "quill.toml"
+            settings.write_text('min_hold_ms = "soon"\n', "utf-8")
+            with mock.patch.object(hooks, "real_hooks", side_effect=AssertionError("hooks installed")), \
+                    contextlib.redirect_stderr(io.StringIO()) as err, contextlib.redirect_stdout(io.StringIO()) as out:
+                code = selftest.main(["--config", str(settings)])
+        self.assertEqual(code, 2)
+        self.assertNotIn("Dry check passed", out.getvalue())
+        self.assertIn("--allow-desktop-input", err.getvalue())
 
     def test_run_prints_and_writes_trigger_names_and_counts_only(self) -> None:
         from quill.selftest import triggers as selftest
@@ -466,6 +547,78 @@ class SelftestTest(unittest.TestCase):
         for private in ("0x43", '"67"', " 67", "KEY_C", "640", "360"):
             self.assertNotIn(private, output)
         self.assertTrue(any("send_claude xbutton2" in line and "click-to-focus: clicked" in line for line in lines))
+        self.assertEqual(data["version"], 2)
+        self.assertEqual(data["min_hold_ms"], CONFIG.min_hold_ms)
+        holds = {(row["trigger"], row["bucket"]): row["count"] for row in data["holds"]}
+        self.assertEqual(holds[("xbutton1", "100_249ms")], 1)
+        self.assertEqual(holds[("xbutton2", "1000_2999ms")], 1)
+        self.assertNotIn("f13", {row["trigger"] for row in data["holds"]})  # injected presses never count
+
+    def test_result_has_per_trigger_hold_buckets_and_event_ages(self) -> None:
+        from quill.selftest import triggers as selftest
+
+        now = [0.0]
+        fake = FakeHooks()
+        lines: list[str] = []
+
+        def at(ms: int) -> None:
+            now[0], fake.tick = float(ms), ms
+
+        def session(seconds: float) -> None:
+            at(1000)
+            fake.mouse(WM_XBUTTONDOWN, X1)
+            at(1100)
+            fake.mouse(WM_XBUTTONUP, X1)  # a real 100 ms tap
+            at(2000)
+            fake.mouse(WM_XBUTTONDOWN, X1, time=1200)  # its callback ran 800 ms late
+            at(2010)
+            fake.mouse(WM_XBUTTONUP, X1)  # held 810 ms, although the callbacks were 10 ms apart
+            at(3000)
+            fake.mouse(WM_XBUTTONDOWN, X2, time=3050)  # a time field from the future: age unknown
+            at(3300)
+            fake.mouse(WM_XBUTTONUP, X2)
+            at(3400)
+
+        with tempfile.TemporaryDirectory() as folder:
+            code = selftest.run(CONFIG, 60, False, Path(folder), api=FakeWin32(), factory=lambda: fake,
+                                wait=session, clock_ms=lambda: now[0], out=lines.append)
+            data = json.loads(next(Path(folder).glob("triggers-*.json")).read_text("utf-8"))
+        self.assertEqual(code, 0)
+        signals = {(row["action"], row["signal"], row["reason"]): row["count"] for row in data["signals"]}
+        self.assertEqual(signals[("dictation", "cancel", "short_hold")], 1)
+        self.assertEqual(signals[("dictation", "stop", "release")], 1)
+        self.assertEqual(signals[("send_claude", "stop", "release")], 1)
+        self.assertEqual(data["holds"], [
+            {"trigger": "xbutton1", "bucket": "100_249ms", "count": 1},
+            {"trigger": "xbutton1", "bucket": "500_999ms", "count": 1},
+            {"trigger": "xbutton2", "bucket": "250_499ms", "count": 1},
+        ])
+        self.assertEqual(data["event_ages"], [
+            {"trigger": "xbutton1", "bucket": "under_16ms", "count": 3},
+            {"trigger": "xbutton1", "bucket": "250ms_plus", "count": 1},
+            {"trigger": "xbutton2", "bucket": "under_16ms", "count": 1},
+            {"trigger": "xbutton2", "bucket": "unknown", "count": 1},
+        ])
+        self.assertEqual(data["per_trigger"], [
+            {"trigger": "xbutton1", "presses": 2, "event_age_ms_p95": 800.0, "event_age_ms_max": 800.0,
+             "event_age_unknown": 0},
+            {"trigger": "xbutton2", "presses": 1, "event_age_ms_p95": 0.0, "event_age_ms_max": 0.0,
+             "event_age_unknown": 1},
+        ])
+        self.assertEqual((data["totals"]["event_age_ms_p95"], data["totals"]["event_age_unknown"]), (800.0, 1))
+        self.assertIsNotNone(data["totals"]["worker_lag_ms_p95"])
+        self.assertIn("xbutton1: 2 presses (100_249ms 1, 500_999ms 1); event age p95 800.0 ms, max 800.0 ms, "
+                      "unknown 0", lines)
+
+    def test_a_key_auto_repeat_keeps_the_first_down_for_the_hold(self) -> None:
+        from quill.selftest import triggers as selftest
+
+        now = [0.0]
+        tally = selftest.Tally(lambda: now[0], out=lambda line: None)
+        binding = BINDINGS[(KEY, F13)]
+        for time_ms, down in ((1000, True), (1500, True), (1900, True), (2100, False), (2200, False)):
+            tally.on_input(InputEvent(KEY, F13, down, time_ms, age_ms=0.0), binding, True)
+        self.assertEqual(dict(tally.holds), {("f13", "1000_2999ms"): 1})  # a release without a press is not a hold
 
 
 if __name__ == "__main__":

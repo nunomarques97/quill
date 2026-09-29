@@ -5,8 +5,9 @@ drops them (it silently removes a low-level hook that is too slow):
 
 - ``HookRouter``: called by the WH_KEYBOARD_LL / WH_MOUSE_LL callbacks. It
   classifies the event (a key, or a mouse button going down or up; pointer
-  moves and the wheel are dropped), enqueues it and returns the static
-  suppression decision. Constant work: no locks, no I/O, no logging.
+  moves and the wheel are dropped), stamps it with the time it happened,
+  enqueues it and returns the static suppression decision. Constant work: no
+  locks, no I/O, no logging.
 - ``TriggerWorker``: a thread that drains the queue into ``TriggerMachine``
   (``quill.triggers``), runs its timers and hands the signals to the
   application's handler. Handler errors are logged and never stop it.
@@ -77,20 +78,34 @@ XBUTTON_VKS = {XBUTTON1: VK_XBUTTON1, XBUTTON2: VK_XBUTTON2}
 START_TIMEOUT_S = 5.0
 STOP_TIMEOUT_S = 5.0
 
+# The ``time`` field of the hook structures is GetTickCount: 32-bit milliseconds that wrap.
+TICK_WRAP = 1 << 32
+# An event older than this when its callback runs is treated as a bad time
+# field, not as a delayed callback: it is stamped with the callback time.
+MAX_EVENT_AGE_MS = 5_000.0
+
 
 def monotonic_ms() -> float:
     return time.monotonic() * 1000.0
 
 
-def classify_key(wparam: int, vk: int, flags: int, extra: int, now_ms: float) -> InputEvent | None:
+def event_age_ms(now_tick: int, event_tick: int) -> float | None:
+    """How long before ``now_tick`` the event happened (across the 32-bit wrap), or None when implausible."""
+    age = (int(now_tick) - int(event_tick)) % TICK_WRAP
+    return float(age) if age <= MAX_EVENT_AGE_MS else None
+
+
+def classify_key(wparam: int, vk: int, flags: int, extra: int, time_ms: float,
+                 age_ms: float | None = None) -> InputEvent | None:
     """A keyboard hook event as an InputEvent, or None for other messages."""
     down = KEY_MESSAGES.get(wparam)
     if down is None:
         return None
-    return InputEvent(KEY, vk, down, now_ms, bool(flags & LLKHF_INJECTED), extra)
+    return InputEvent(KEY, vk, down, time_ms, bool(flags & LLKHF_INJECTED), extra, age_ms)
 
 
-def classify_mouse(wparam: int, mouse_data: int, flags: int, extra: int, now_ms: float) -> InputEvent | None:
+def classify_mouse(wparam: int, mouse_data: int, flags: int, extra: int, time_ms: float,
+                   age_ms: float | None = None) -> InputEvent | None:
     """A mouse-button hook event as an InputEvent; moves, wheels and unknown buttons give None."""
     button = BUTTON_MESSAGES.get(wparam)
     if button is not None:
@@ -102,7 +117,7 @@ def classify_mouse(wparam: int, mouse_data: int, flags: int, extra: int, now_ms:
         vk = XBUTTON_VKS.get((mouse_data >> 16) & 0xFFFF)
         if vk is None:
             return None
-    return InputEvent(BUTTON, vk, down, now_ms, bool(flags & LLMHF_INJECTED), extra)
+    return InputEvent(BUTTON, vk, down, time_ms, bool(flags & LLMHF_INJECTED), extra, age_ms)
 
 
 class HookRouter:
@@ -111,13 +126,34 @@ class HookRouter:
     Suppression is static (it depends on the bound input only), so the
     callback never waits for the worker. Events carrying Quill's own marker
     are never swallowed.
+
+    Events are stamped with the time they happened, not the time the
+    callback runs: Windows may call a hook late (for example while the hook
+    thread waits for the interpreter), and a press and release delivered
+    together would otherwise look like a short tap. The age comes from the
+    structure's ``time`` field and ``tick_count`` (the same GetTickCount
+    clock), and is subtracted from ``clock_ms``. Without ``tick_count`` or
+    with an implausible time field the callback time is used. Stamps never go
+    backwards, so the machine always sees events in order.
     """
 
     def __init__(self, bindings: Mapping[tuple[str, int], Binding], events: queue.SimpleQueue,
-                 clock_ms: Callable[[], float] = monotonic_ms) -> None:
+                 clock_ms: Callable[[], float] = monotonic_ms,
+                 tick_count: Callable[[], int] | None = None) -> None:
         self._suppressed = frozenset(key for key, binding in bindings.items() if binding.suppress)
         self._events = events
         self._clock_ms = clock_ms
+        self.tick_count = tick_count
+        self._last_ms = float("-inf")
+
+    def _stamp(self, event_tick: int | None) -> tuple[float, float | None]:
+        now = self._clock_ms()
+        age = None
+        if event_tick is not None and self.tick_count is not None:
+            age = event_age_ms(self.tick_count(), event_tick)
+        stamp = max(now - (age or 0.0), self._last_ms)
+        self._last_ms = stamp
+        return stamp, age
 
     def _route(self, event: InputEvent | None) -> bool:
         if event is None:
@@ -126,11 +162,11 @@ class HookRouter:
         self._events.put((event, suppress))
         return suppress
 
-    def keyboard(self, wparam: int, vk: int, flags: int, extra: int) -> bool:
-        return self._route(classify_key(wparam, vk, flags, extra, self._clock_ms()))
+    def keyboard(self, wparam: int, vk: int, flags: int, extra: int, event_tick: int | None = None) -> bool:
+        return self._route(classify_key(wparam, vk, flags, extra, *self._stamp(event_tick)))
 
-    def mouse(self, wparam: int, mouse_data: int, flags: int, extra: int) -> bool:
-        return self._route(classify_mouse(wparam, mouse_data, flags, extra, self._clock_ms()))
+    def mouse(self, wparam: int, mouse_data: int, flags: int, extra: int, event_tick: int | None = None) -> bool:
+        return self._route(classify_mouse(wparam, mouse_data, flags, extra, *self._stamp(event_tick)))
 
 
 SignalHandler = Callable[[Signal], None]
@@ -308,6 +344,7 @@ class HookThread:
             api = self.factory()
             api.ensure_queue()
             self._api = api
+            self.router.tick_count = api.tick_count
             self._thread_id = api.current_thread_id()
             self._callbacks = (api.make_callback(self.keyboard_proc), api.make_callback(self.mouse_proc))
             for kind, callback in ((WH_KEYBOARD_LL, self._callbacks[0]), (WH_MOUSE_LL, self._callbacks[1])):

@@ -36,7 +36,7 @@ class FakeWindows:
         self.windows = {10: 1, 20: 2, 30: 0}
         self.images = {1: "C:\\Program Files\\Invented\\Code.exe"}
         self.classes = {10: "Chrome_WidgetWin_1", 20: "CASCADIA_HOSTING_WINDOW_CLASS"}
-        self.titles = {10: "Claude Code - invented-folder - Visual Studio Code", 20: "Claude Code"}
+        self.titles = {10: "invented-folder - Visual Studio Code [Claude Code]", 20: "Claude Code"}
         self.fail = set()
 
     def is_window(self, hwnd):
@@ -70,14 +70,33 @@ class MatcherTest(unittest.TestCase):
         self.assertEqual(EXAMPLE.select(window("olk.exe")), "email")
 
     def test_precedence_first_match_wins(self):
-        # Claude Code in a VS Code tab matches both claude-code and vscode: claude-code comes first.
-        info = window("Code.exe", title="Claude Code - invented - Visual Studio Code")
+        # The Claude Code sidebar view in VS Code matches both claude-code and vscode: claude-code comes first.
+        info = window("Code.exe", title="invented - Visual Studio Code [Claude Code]")
         self.assertEqual(EXAMPLE.select(info), "claude-code")
         self.assertTrue(EXAMPLE.is_claude_code(info))
         reordered = Profiles([ProfileMatcher("vscode", processes=("Code.exe",)),
-                              ProfileMatcher("claude-code", processes=("Code.exe",), titles=("Claude Code",))])
+                              ProfileMatcher("claude-code", processes=("Code.exe",), titles=("[Claude Code]",))])
         self.assertEqual(reordered.select(info), "vscode")
         self.assertFalse(reordered.is_claude_code(info))
+
+    def test_vscode_is_claude_code_only_with_the_focused_view_marker(self):
+        # window.title ends with " [${focusedView}]": only the focused Claude Code view gives the marker.
+        for title in ("invented - Visual Studio Code [Claude Code]", "● x.py - invented - Visual Studio Code [claude  code]"):
+            self.assertTrue(EXAMPLE.is_claude_code(window("Code.exe", "Chrome_WidgetWin_1", title)), title)
+        for title in (
+            "Claude Code - invented - Visual Studio Code",  # a file or folder named Claude Code, no marker
+            "Invented topic - invented - Visual Studio Code []",  # the Claude Code editor tab: no focused view
+            "Claude Code notes.md - invented - Visual Studio Code [Text Editor]",
+            "invented - Visual Studio Code [Terminal]",  # the integrated terminal, whatever runs in it
+            "invented - Visual Studio Code [Explorer]",
+            "invented - Visual Studio Code",  # window.title not configured
+        ):
+            info = window("Code.exe", "Chrome_WidgetWin_1", title)
+            self.assertEqual(EXAMPLE.select(info), "vscode", title)
+            self.assertFalse(EXAMPLE.is_claude_code(info), title)
+        # The marker counts only in VS Code; Windows Terminal keeps its plain title rule.
+        self.assertFalse(EXAMPLE.is_claude_code(window("chrome.exe", title="Page [Claude Code]")))
+        self.assertTrue(EXAMPLE.is_claude_code(window(TERMINAL, title="Claude Code")))
 
     def test_claude_code_needs_the_process_and_the_title(self):
         self.assertEqual(EXAMPLE.select(window(TERMINAL, title="PowerShell")), DEFAULT)
@@ -118,7 +137,7 @@ class WindowInfoTest(unittest.TestCase):
 
     def test_reads_name_class_and_title(self):
         info = profiles.window_info(self.api, 10)
-        self.assertEqual(info, WindowInfo("Code.exe", "Chrome_WidgetWin_1", "Claude Code - invented-folder - Visual Studio Code"))
+        self.assertEqual(info, WindowInfo("Code.exe", "Chrome_WidgetWin_1", "invented-folder - Visual Studio Code [Claude Code]"))
         self.assertEqual(EXAMPLE.select(info), "claude-code")
 
     def test_elevated_process_reads_as_unknown(self):

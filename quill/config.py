@@ -1,7 +1,8 @@
 """Quill settings: the ignored local/quill.toml read over the committed example.
 
 ``load_config`` starts from ``quill.example.toml`` and merges
-``local/quill.toml`` over it table by table (a profile is replaced whole).
+``local/quill.toml`` over it table by table (a profile is replaced whole, with all
+its alternatives).
 The merged result is validated strictly: unknown field names, unsupported key
 or button names, an input bound twice, a non-loopback Ollama address or a
 personal-data path outside ``local/`` raise ``ConfigError``. Error messages
@@ -184,7 +185,13 @@ def _check_fields(data: object, schema: dict[str, object], path: str) -> None:
         if key not in schema:
             raise ConfigError(f"quill config: unknown field {here}")
         sub = schema[key]
-        if isinstance(sub, dict):
+        if path == "profiles" and isinstance(value, list):
+            # [[profiles.<name>]]: alternative matchers for one profile.
+            if not value:
+                raise ConfigError(f"quill config: {here} needs processes, classes or titles")
+            for index, entry in enumerate(value):
+                _check_fields(entry, sub, f"{here}[{index}]")
+        elif isinstance(sub, dict):
             _check_fields(value, sub, here)
         elif isinstance(value, dict):
             raise ConfigError(f"quill config: {here} must be a value, not a table")
@@ -307,13 +314,15 @@ def _local_path(value: object, field: str) -> Path:
 
 def _profiles(data: dict[str, object]) -> tuple[ProfileMatcher, ...]:
     profiles: list[ProfileMatcher] = []
-    for name, table in data.get("profiles", {}).items():
-        field = f"profiles.{name}"
-        fields = {key: _string_list(table.get(key, []), f"{field}.{key}")
-                  for key in ("processes", "classes", "titles")}
-        if not any(fields.values()):
-            raise ConfigError(f"quill config: {field} needs processes, classes or titles")
-        profiles.append(ProfileMatcher(name, **fields))
+    for name, tables in data.get("profiles", {}).items():
+        alternatives = tables if isinstance(tables, list) else [tables]
+        for index, table in enumerate(alternatives):
+            field = f"profiles.{name}[{index}]" if isinstance(tables, list) else f"profiles.{name}"
+            fields = {key: _string_list(table.get(key, []), f"{field}.{key}")
+                      for key in ("processes", "classes", "titles")}
+            if not any(fields.values()):
+                raise ConfigError(f"quill config: {field} needs processes, classes or titles")
+            profiles.append(ProfileMatcher(name, **fields))
     return tuple(profiles)
 
 
@@ -391,7 +400,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     enabled = [trigger.action for trigger in config.triggers if trigger.enabled]
     print(f"quill config: OK ({_label(args.check)}; triggers: {', '.join(enabled)}; "
-          f"{len(config.profiles)} profiles)")
+          f"{len(config.profiles)} profile matchers)")
     return 0
 
 

@@ -48,10 +48,40 @@ Um toque rápido no botão não faz nada. Se carregar noutra tecla enquanto segu
 10. No Claude Code, mantenha premido o botão 5 do rato (o botão lateral da frente), fale e largue. O texto é escrito e o Quill carrega em Enter para o enviar. Aparece "Enviado para o Claude Code".
 11. Se usar o botão 5 noutra janela, o texto é escrito sem Enter e o indicador avisa "Não é o Claude Code: escrito sem Enter".
 
+No VS Code, o Quill só reconhece o Claude Code quando ele está aberto na barra lateral e tem o foco. Prepare o VS Code uma vez:
+
+1. No VS Code, carregue em Ctrl+Shift+P, escreva `Open User Settings (JSON)` e carregue em Enter.
+2. Dentro das chavetas `{ }`, acrescente estas duas linhas (se já existir uma linha `"claudeCode.preferredLocation"`, substitua-a):
+
+   ```
+   "window.title": "${dirty}${activeEditorShort}${separator}${rootName}${separator}${profileName}${separator}${appName} [${focusedView}]",
+   "claudeCode.preferredLocation": "sidebar",
+   ```
+
+3. Guarde com Ctrl+S.
+4. Abra o Claude Code (o ícone do Claude na barra lateral) e clique na caixa de texto dele. O título da janela do VS Code passa a acabar em `[Claude Code]`.
+
+A partir daí, o botão 5 na caixa do Claude Code na barra lateral envia com Enter. Num ficheiro, no terminal integrado ou num separador do Claude Code aberto no editor, o texto é escrito sem Enter.
+
+## Reescrever texto selecionado (modo comando)
+
+12. Selecione o texto que quer mudar (por exemplo, arraste o rato por cima de um parágrafo).
+13. Mantenha premida a tecla F14, diga o que quer fazer com o texto e largue. Por exemplo: «põe isto mais formal», «traduz para inglês», «encurta», «faz uma lista». O indicador mostra "Modo comando" enquanto ouve. A tecla F14 nunca clica, por isso a seleção mantém-se.
+14. O modelo local (Ollama) reescreve o texto e o Quill escreve a nova versão por cima da seleção. Se algo falhar, a seleção fica igual e o indicador diz porquê. O modo comando não funciona em terminais.
+
+Em vez da F14 (ou além dela) pode usar a tecla F8. Para isso, em `local\quill.toml` escreva:
+
+```
+[triggers.command]
+keys = ["f14", "f8"]
+```
+
+A F14 fica para um botão do Streamlabs. Enquanto o Quill está ligado, a F8 deixa de fazer o que fazia nos outros programas (no VS Code, por exemplo, deixa de saltar para o problema seguinte). Depois de mudar o ficheiro, desligue e volte a ligar o Quill.
+
 ## Corrigir erros
 
-12. Se uma palavra sair mal, corrija-a à mão logo a seguir, ou selecione o texto já corrigido e carregue em F16. O Quill aprende a troca. Quando a mesma troca acontecer em dois ditados, passa a ser feita sozinha.
-13. Uma vez por semana, reveja o que o Quill aprendeu:
+15. Se uma palavra sair mal, corrija-a à mão logo a seguir, ou selecione o texto já corrigido e carregue em F16. O Quill aprende a troca. Quando a mesma troca acontecer em dois ditados, passa a ser feita sozinha.
+16. Uma vez por semana, reveja o que o Quill aprendeu:
 
     ```
     py -3.12 -m quill.review
@@ -61,14 +91,14 @@ Um toque rápido no botão não faz nada. Se carregar noutra tecla enquanto segu
 
 ## Arrancar com o Windows
 
-14. Para o Quill arrancar sozinho quando entra no Windows, corra uma vez:
+17. Para o Quill arrancar sozinho quando entra no Windows, corra uma vez:
 
     ```
     .venv\Scripts\python -m quill --install-startup
     ```
 
     Para deixar de arrancar com o Windows: `.venv\Scripts\python -m quill --remove-startup`. Se mudar a pasta do Quill de sítio, corra de novo o `--install-startup`.
-15. Quando arranca com o Windows não há janela do Terminal. Para o desligar: `.venv\Scripts\python -m quill --stop`.
+18. Quando arranca com o Windows não há janela do Terminal. Para o desligar: `.venv\Scripts\python -m quill --stop`.
 
 ## Se algo correr mal
 
@@ -79,6 +109,7 @@ O indicador mostra "Erro" com a causa e o ditado seguinte funciona normalmente:
 - "A janela ativa mudou; o texto não foi escrito": não mude de janela até o texto aparecer.
 - "Janela de administrador: não é possível escrever": o Quill não escreve em janelas abertas como administrador.
 - "Ollama indisponível: texto limpo pelas regras": o texto foi escrito na mesma, limpo pelas regras.
-- "O modo comando ainda não está disponível": a reescrita da seleção ainda está a ser construída.
+- "Selecione o texto antes de dar a instrução": o modo comando precisa de texto selecionado.
+- "Ollama indisponível; a seleção ficou igual": abra o Ollama e repita a instrução.
 
 O registo fica em `local\logs\quill.log`. Tem só eventos e tempos, nunca o que disse ou escreveu.

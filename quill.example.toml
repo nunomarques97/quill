@@ -88,7 +88,10 @@ style = "local/style"
 # "claude-code", "vscode", "whatsapp", "email". Within a profile every listed
 # field must match; a field matches when any entry does. processes and
 # classes compare whole names, titles compare substrings (both ignore case).
-# A profile in local/quill.toml replaces the profile of the same name here.
+# A profile written [[profiles.<name>]] (repeated) has alternatives: the
+# window gets the profile when any alternative matches.
+# A profile in local/quill.toml replaces the profile of the same name here,
+# with all its alternatives.
 # A process that cannot be read (an elevated window) matches no process list.
 #
 # Each profile shapes the final text; words are never changed:
@@ -98,11 +101,20 @@ style = "local/style"
 #   any other window (default): a final period, as the cleanup gives.
 #
 # claude-code is also what the send_claude trigger checks before pressing
-# Enter: a terminal or editor process plus "Claude Code" in the title (VS Code
-# shows it while the Claude Code tab is active, so this profile comes first).
-[profiles.claude-code]
-processes = ["WindowsTerminal.exe", "Code.exe"]
+# Enter, so it comes first and matches only a window that is Claude Code:
+# - Windows Terminal with "Claude Code" in the title;
+# - VS Code with the marker "[Claude Code]" in the title. VS Code shows it only
+#   when its window.title setting ends with " [${focusedView}]" and the
+#   Claude Code view in the sidebar has the focus. A Claude Code editor tab,
+#   the integrated terminal, a file or any other view gets the vscode profile:
+#   the text is typed without Enter.
+[[profiles.claude-code]]
+processes = ["WindowsTerminal.exe"]
 titles = ["Claude Code"]
+
+[[profiles.claude-code]]
+processes = ["Code.exe"]
+titles = ["[Claude Code]"]
 
 [profiles.vscode]
 processes = ["Code.exe"]

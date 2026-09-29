@@ -344,6 +344,24 @@ class SendClaudeTest(AppCase):
         self.assertEqual(self.api.enter_presses(), [])
         self.assertEqual(self.indicator.last, ("show", ERROR, S.MESSAGES[S.NOT_CLAUDE]))
 
+    def test_vscode_needs_the_focused_claude_code_view(self):
+        self.api.images[CLAUDE_PID] = "C:\\Invented\\Code.exe"
+        self.api.titles[CLAUDE_HWND] = "invented - Visual Studio Code [Claude Code]"
+        self.start()
+        self.api.under_pointer = CLAUDE_HWND
+        self.api.foreground = CLAUDE_HWND
+        self.hold((1,), which=XBUTTON2)
+        self.assertEqual(self.app.sessions.outcomes[-1].reason, S.SENT_ENTER)
+        self.assertEqual(self.api.enter_presses(), [False])
+        # The integrated terminal or a Claude Code editor tab: typed, never Enter.
+        for number, title in ((2, "invented - Visual Studio Code [Terminal]"),
+                              (3, "Invented topic - invented - Visual Studio Code []")):
+            self.api.titles[CLAUDE_HWND] = title
+            self.hold((number,), which=XBUTTON2)
+            self.assertEqual(self.app.sessions.outcomes[-1].reason, S.NOT_CLAUDE)
+            self.assertEqual(self.app.sessions.outcomes[-1].typed, len("w1."))
+        self.assertEqual(self.api.enter_presses(), [False])
+
 
 class LifecycleTest(AppCase):
     def test_start_stop_start(self):

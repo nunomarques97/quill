@@ -52,7 +52,11 @@ class ExampleTest(ConfigCase):
         self.assertEqual(settings.ollama_url, "http://127.0.0.1:11434")
         self.assertEqual(settings.ollama_model, "qwen3:8b")
         self.assertEqual(settings.cleanup_mode, "rules")
-        self.assertEqual([profile.name for profile in settings.profiles], ["claude-code", "vscode", "whatsapp", "email"])
+        self.assertEqual([profile.name for profile in settings.profiles],
+                         ["claude-code", "claude-code", "vscode", "whatsapp", "email"])
+        # Claude Code in VS Code needs the [Claude Code] marker of the window.title setting.
+        self.assertEqual([(profile.processes, profile.titles) for profile in settings.profiles[:2]],
+                         [(("WindowsTerminal.exe",), ("Claude Code",)), (("Code.exe",), ("[Claude Code]",))])
         local = config.LOCAL_DIR.resolve()
         for path in (settings.vocabulary_path, settings.corrections_path, settings.style_dir):
             self.assertTrue(path.is_relative_to(local))
@@ -84,6 +88,18 @@ class MergeTest(ConfigCase):
         profile = settings.profiles[0]
         self.assertEqual((profile.name, profile.processes, profile.titles), ("claude-code", (), ("Invented Agent",)))
         self.assertEqual(len(settings.profiles), 4)
+
+    def test_profile_alternatives_are_kept_in_order(self) -> None:
+        settings = self.load("[[profiles.vscode]]\nprocesses = [\"Invented.exe\"]\n"
+                             "[[profiles.vscode]]\nclasses = [\"InventedClass\"]\ntitles = [\"Invented\"]\n")
+        vscode = [profile for profile in settings.profiles if profile.name == "vscode"]
+        self.assertEqual([(p.processes, p.classes, p.titles) for p in vscode],
+                         [(("Invented.exe",), (), ()), ((), ("InventedClass",), ("Invented",))])
+        self.assertEqual([p.name for p in settings.profiles],
+                         ["claude-code", "claude-code", "vscode", "vscode", "whatsapp", "email"])
+        # A local table replaces both claude-code alternatives of the example.
+        replaced = self.load("[profiles.claude-code]\nprocesses = [\"Invented.exe\"]\ntitles = [\"Agent\"]\n")
+        self.assertEqual([p.name for p in replaced.profiles], ["claude-code", "vscode", "whatsapp", "email"])
 
     def test_all_function_keys_and_right_modifiers_are_accepted(self) -> None:
         keys = [f"f{number}" for number in range(13, 25)]
@@ -162,6 +178,12 @@ class RejectTest(ConfigCase):
         self.rejected("[ollama]\nmodel = \"qwen3:8b; rm\"\n", "ollama.model", "rm")
         self.rejected("[profiles.vscode]\n", "profiles.vscode")
         self.rejected("[profiles.vscode]\ntitles = [\"\"]\n", "profiles.vscode.titles[0]")
+        self.rejected("profiles.vscode = []\n", "profiles.vscode")
+        self.rejected("[[profiles.vscode]]\nprocesses = [\"x.exe\"]\n[[profiles.vscode]]\n", "profiles.vscode[1]")
+        self.rejected("[[profiles.vscode]]\nprocess = [\"x.exe\"]\n", "profiles.vscode[0].process")
+        self.rejected("[[profiles.vscode]]\ntitles = [3]\n", "profiles.vscode[0].titles[0]")
+        self.rejected("profiles.vscode = [3]\n", "profiles.vscode[0]")
+        self.rejected("[[profiles.slack]]\nprocesses = [\"x.exe\"]\n", "profiles.slack")
         self.rejected("input = 3\n", "input")
         self.rejected("[input.min_hold_ms]\nx = 1\n", "input.min_hold_ms")
 

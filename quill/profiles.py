@@ -10,10 +10,15 @@ substrings, all ignoring case. A process that cannot be read (an elevated or
 protected process, or a window that is gone) never matches a process list:
 the profile is not guessed from the title alone.
 
+A profile may have several matchers (``[[profiles.<name>]]``); it applies
+when any of them matches.
+
 Claude Code is the ``claude-code`` profile: a terminal or editor process plus
-a title (by default Windows Terminal or VS Code with "Claude Code" in the
-title). ``Profiles.is_claude_code`` is what the send trigger asks before it
-presses Enter.
+a title (by default Windows Terminal with "Claude Code" in the title, or VS
+Code with the "[Claude Code]" marker that its ``${focusedView}`` title
+variable shows while the Claude Code sidebar view has the focus).
+``Profiles.is_claude_code`` is what the send trigger asks before it presses
+Enter.
 
 Profile rules (``apply_profile``) run last, on the cleaned, matched and
 corrected text. They are deterministic, change only punctuation, spacing and

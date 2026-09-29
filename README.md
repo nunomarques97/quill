@@ -6,7 +6,7 @@ Put the cursor in any window, hold a key, speak European Portuguese (with Englis
 
 ## Status
 
-Phase 2: the dictation app runs locally (see "Running Quill" below); command mode and the Sponsor-run acceptance measurements are still open. Product brief: [docs/PRODUCT.md](docs/PRODUCT.md); Phase 2 results: [docs/research/FASE2.md](docs/research/FASE2.md).
+Phase 2: the dictation app and command mode run locally (see "Running Quill" below); the Sponsor-run acceptance measurements are still open. Product brief: [docs/PRODUCT.md](docs/PRODUCT.md); Phase 2 results: [docs/research/FASE2.md](docs/research/FASE2.md).
 
 The benchmark harness lives in [bench/](bench/README.md). Its results, the engine comparison and the pending engine/cost decision (in European Portuguese) are in [docs/research/ENGINES.md](docs/research/ENGINES.md); the aggregate numbers are in [docs/research/engines-summary.json](docs/research/engines-summary.json).
 
@@ -39,8 +39,21 @@ Quill runs locally: Whisper through faster-whisper on the GPU, with the personal
 ### Using it
 
 - **Dictation** (default: hold mouse button 4, or F13, or Right Ctrl): the microphone starts at the press, so no word is lost. After `min_hold_ms` Quill clicks once at the pointer to focus the text field under it (not for Right Ctrl, which types where the focus already is). Speak; the words appear live in the indicator. On release the rest is transcribed, cleaned (fillers, repetitions, punctuation), corrected with the personal vocabulary and the learned corrections, shaped by the active window's profile and typed into the window captured at the press. It never presses Enter.
-- **Send to Claude Code** (default: mouse button 5 or F15): the same, then one Enter, only when the text was typed completely and the target matches the `claude-code` profile. In any other window the text is typed without Enter and the indicator says so.
-- **Command** (default: F14): rewriting the selection with the local model is not available yet; the indicator says so and nothing is recorded.
+- **Send to Claude Code** (default: mouse button 5 or F15): the same, then one Enter, only when the text was typed completely and the target matches the `claude-code` profile. In any other window the text is typed without Enter and the indicator says so. By default that profile is Windows Terminal with "Claude Code" in the title, or VS Code with the `[Claude Code]` marker in the title. VS Code shows the marker only with this user setting, and only while the Claude Code view in the sidebar has the focus (set `"claudeCode.preferredLocation": "sidebar"` to open it there):
+
+  ```json
+  "window.title": "${dirty}${activeEditorShort}${separator}${rootName}${separator}${profileName}${separator}${appName} [${focusedView}]"
+  ```
+
+  A Claude Code editor tab or Claude Code in the integrated terminal cannot be told apart from a file or a shell, so there the text is typed without Enter.
+- **Command** (default: F14): select text, hold the key, speak an instruction (for example "põe isto mais formal", "traduz para inglês") and release. The selection is copied (the clipboard is put back), rewritten by the local Ollama model and typed over the selection. The trigger never clicks, so the selection is kept; terminals are refused, and on any failure the selection stays as it was and the indicator says why. Any free key can be added, for example F8 as well as F14 (F14 suits a Stream Deck style button):
+
+  ```toml
+  [triggers.command]
+  keys = ["f14", "f8"]
+  ```
+
+  A key bound to a trigger loses its normal action in every program while Quill runs (F8 is, for example, "next problem" in VS Code), and an input can belong to one trigger only.
 - A tap shorter than `min_hold_ms`, or another key pressed while a keyboard trigger is held (for example Right Ctrl+C), cancels: nothing is clicked or typed. While Quill runs, the bound mouse buttons and F keys do not do their normal action.
 - A new press while the previous text is still being finalized starts recording at once; texts are typed strictly in order, each one once, into its own target. When a target closed, the foreground window changed, the microphone or the engine failed, or Ollama is down (the cleanup falls back to the rules), the indicator shows the error in European Portuguese and the next dictation is unaffected.
 - **Correcting**: select the corrected text of the last dictation and press the correction key (default F16), or just edit it by hand right after it was typed. A replacement seen in two dictations is applied automatically from then on. Review what was learned with `py -3.12 -m quill.review` (a reminder appears weekly in `--check`).

@@ -37,6 +37,8 @@ Optional, decided by the research: a key that sends the text straight to Claude 
 - large-v3 stays available as a precise mode, selected with `[engine] model = "large-v3"` in the ignored `local/quill.toml`.
 - Safety net: if after the personal-vocabulary stage the project-name or English-term error with turbo stays above 10 % on either real set, this is reported to the Sponsor so the default can return to large-v3.
 - Safety-net outcome, after the personal-vocabulary stage: large-v3-turbo stays the default. The project-name and English-term targets (at most 10 %) apply to the real dictation set, which is how the product is used; the short commands set is a reported indicator, not a gate (large-v3 misses it too, and fails the latency target). Learning from corrections is expected to reduce the commands gap. The dictation targets are unchanged. See docs/research/FASE2.md.
+- Final-text WER and intent: keep the current engine and measure again after weeks of real use; the corrections made in daily use become the material for a later local fine-tuning trial, with no extra recording sessions. The targets are not lowered and the gap stays open until the new measurement. See docs/research/FASE2.md.
+- Command mode target: at least 90 % correct rewrites on the 20 real spoken rewrite instructions. Measured on 2026-09-29: 80 % (16 of 20). The gap stays open and is worked in the next run (prompt improvements and automatic rewrite of long dictations), like the WER and intent gap. See docs/research/FASE2.md.
 
 ## Non-negotiable rules
 

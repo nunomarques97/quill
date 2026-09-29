@@ -1,6 +1,6 @@
 # Quill: medições da Fase 2 com a voz real
 
-**Estado: baseline medida a 2026-09-28** (tarefa T2); **transcrição por blocos medida a 2026-09-29** (tarefa T3, etapa `streamed`); **juiz de intenção revisto e limpeza do texto medida a 2026-09-29** (tarefa T4, etapa `cleanup`); **vocabulário pessoal medido a 2026-09-29** (tarefa T5, etapa `vocabulary`); **aprendizagem de correções medida a 2026-09-29** (tarefa T6, etapa `corrections`); **perfis da janela ativa medidos a 2026-09-29** (tarefa T7, etapa `profiles`). Motor decidido pelo Sponsor: Whisper local (faster-whisper, float16, CUDA, RTX 5060 Ti) com vocabulário (`initial_prompt` e `hotwords`), 0 EUR/mês; o áudio não sai do PC. A baseline (`raw`) é do large-v3. Desde a decisão do Sponsor de 2026-09-29, o modelo por omissão da aplicação é o large-v3-turbo, porque só ele cumpre a meta de latência; o large-v3 fica como modo preciso (ver [Transcrição por blocos](#transcrição-por-blocos-etapa-streamed)). A etapa `profiles` é o texto final da aplicação.
+**Estado: baseline medida a 2026-09-28** (tarefa T2); **transcrição por blocos medida a 2026-09-29** (tarefa T3, etapa `streamed`); **juiz de intenção revisto e limpeza do texto medida a 2026-09-29** (tarefa T4, etapa `cleanup`); **vocabulário pessoal medido a 2026-09-29** (tarefa T5, etapa `vocabulary`); **aprendizagem de correções medida a 2026-09-29** (tarefa T6, etapa `corrections`); **perfis da janela ativa medidos a 2026-09-29** (tarefa T7, etapa `profiles`); **modo comando e verificações manuais no desktop medidos a 2026-09-29** (tarefa T11). Motor decidido pelo Sponsor: Whisper local (faster-whisper, float16, CUDA, RTX 5060 Ti) com vocabulário (`initial_prompt` e `hotwords`), 0 EUR/mês; o áudio não sai do PC. A baseline (`raw`) é do large-v3. Desde a decisão do Sponsor de 2026-09-29, o modelo por omissão da aplicação é o large-v3-turbo, porque só ele cumpre a meta de latência; o large-v3 fica como modo preciso (ver [Transcrição por blocos](#transcrição-por-blocos-etapa-streamed)). A etapa `profiles` é o texto final da aplicação.
 
 Este documento contém só números agregados: nenhum texto falado, nenhum nome de projeto real e nenhum caminho da máquina. Os resultados por frase ficam apenas em `bench/results/`, que o Git ignora. Os números vêm de [phase2-summary.json](phase2-summary.json); o harness está em [bench/](../../bench/README.md#pipeline-evaluation).
 
@@ -15,7 +15,9 @@ Este documento contém só números agregados: nenhum texto falado, nenhum nome 
 - **Correções aprendidas (T6, etapa `corrections`):** simulando, pela ordem fixa das gravações, um utilizador que corrige cada texto, com a regra do produto (aplica sozinha uma troca vista em dois ditados), todas as repetições de erros já aprendidos foram corrigidas (18 de 18 nos comandos e 1 de 1 no ditado) e nenhuma palavra certa passou a errada (meta 0). O WER dos comandos desce de 29,7 % para 24,7 % e o do ditado de 10,6 % para 10,5 %; termos, nomes e intenção não mudam. Ver [Correções aprendidas](#correções-aprendidas-etapa-corrections).
 - **Metas cumpridas no ditado:** erro em termos e em nomes ≤ 10 %; hesitações e repetições removidas ≥ 95 % e 0 palavras de conteúdo apagadas pela limpeza; correções aprendidas (100 % das repetições corrigidas, 0 erros novos), também nos comandos.
 - **Perfis da janela ativa (T7, etapa `profiles`):** cada ditado recebe as regras do perfil da janela de destino (Claude Code e VS Code técnicos, WhatsApp informal, email com frases completas). As regras só mudam pontuação e maiúsculas, por isso nenhuma métrica muda: mudaram 9 dos 36 ditados (os do WhatsApp perdem o ponto final) e nenhum comando. Ver [Perfis da janela ativa](#perfis-da-janela-ativa-etapa-profiles).
-- **Metas por cumprir, no texto final (etapa `profiles`):** WER final ≤ 10 % (ditado 10,5 %, comandos 24,7 %) e intenção ≥ 95 % (ditado 58,3 %, comandos 36,4 %). Foram ao Sponsor como decisão, com a distância e as opções. **Decisão do Sponsor (2026-09-29), opção B:** acabar agora a aplicação e voltar a medir depois de algumas semanas de uso real; as metas não baixam e esta distância fica registada como aberta. Ver [Decisão do Sponsor: WER final e intenção](#decisão-do-sponsor-wer-final-e-intenção). A digitação sem perdas ainda não tem medição (tarefa T11).
+- **Metas por cumprir, no texto final (etapa `profiles`):** WER final ≤ 10 % (ditado 10,5 %, comandos 24,7 %) e intenção ≥ 95 % (ditado 58,3 %, comandos 36,4 %). Foram ao Sponsor como decisão, com a distância e as opções. **Decisão do Sponsor (2026-09-29), opção B:** acabar agora a aplicação e voltar a medir depois de algumas semanas de uso real; as metas não baixam e esta distância fica registada como aberta. Ver [Decisão do Sponsor: WER final e intenção](#decisão-do-sponsor-wer-final-e-intenção).
+- **Digitação, gatilhos e indicador no desktop real (T11):** o Sponsor correu os self-tests manuais. A digitação escreveu 4190 de 4190 caracteres em 5 janelas, sem nenhum perdido, a mais ou trocado (meta 0), e o clipboard ficou igual; o indicador nunca ficou em primeiro plano (0 de 1026 amostras). Ver [Modo comando e verificações manuais](#modo-comando-e-verificações-manuais-t11).
+- **Modo comando (T11), nas 20 instruções faladas pelo Sponsor:** 16 de 20 reescritas corretas (80,0 %); WER da instrução 20,8 %. **Decisão do Sponsor (2026-09-29):** a meta do modo comando é ≥ 90 % de reescritas corretas nestas 20 instruções; os 80,0 % ficam registados como valor medido e a distância (2 reescritas) fica aberta para a próxima execução, como a do WER e da intenção. Ver [Modo comando e verificações manuais](#modo-comando-e-verificações-manuais-t11).
 - **Latência do largar do gatilho ao texto final (T3):** cumpre a meta de p95 ≤ 0,5 s com o large-v3-turbo, o novo motor por omissão; com o large-v3 nenhuma afinação a cumpria. Em troca, os comandos ficam piores com o turbo (termos ingleses 47,1 % e nomes 18,4 %), o que a T5 tem de recuperar (ver [Transcrição por blocos](#transcrição-por-blocos-etapa-streamed)).
 
 ## Conjuntos
@@ -63,6 +65,36 @@ Tabela gerada a partir de [phase2-summary.json](phase2-summary.json) por `py -3.
 |---|---|---|---|---|---|---|---|
 | comandos | 18 | 18 | 100,0 % | 4 | 0 | 18 | 3 / 31 / 4 |
 | ditado | 1 | 1 | 100,0 % | 2 | 0 | 1 | 1 / 49 / 0 |
+
+| Modo comando | n | WER da instrução | Instruções sem erros | Aceites pelo produto | Verificações passadas | Juiz sim | Corretas |
+|---|---|---|---|---|---|---|---|
+| large-v3-turbo + qwen3:8b | 20 | 20,8 % | 5 de 20 | 19 de 20 | 16 de 20 | 16 de 16 | 16 de 20 |
+
+| Caso | n | Verificações passadas | Corretas |
+|---|---|---|---|
+| corrigir | 3 | 3 | 3 |
+| encurtar | 3 | 1 | 1 |
+| formal | 3 | 3 | 3 |
+| informal | 1 | 1 | 1 |
+| inglês | 4 | 3 | 3 |
+| lista | 2 | 1 | 1 |
+| português | 2 | 2 | 2 |
+| simplificar | 1 | 1 | 1 |
+| simpático | 1 | 1 | 1 |
+
+| Verificação manual no desktop | Data | Resultado |
+|---|---|---|
+| digitação | 2026-09-29 | 4190 de 4190 caracteres em 5 janelas (20 de 20 casos certos); perdidos 0, a mais 0, trocados 0; clipboard alterado em 0 de 5 janelas |
+| gatilhos | 2026-09-29 | 8 inícios, 8 fins, 0 erros; clicar para focar ligado |
+| indicador | 2026-09-29 | 23 estados mostrados junto ao ponteiro; indicador em primeiro plano em 0 de 1026 amostras |
+
+| Ação | Sinal | Motivo | n |
+|---|---|---|---|
+| dictation | cancel | short_hold | 6 |
+| dictation | start | — | 6 |
+| send_claude | confirm | — | 2 |
+| send_claude | start | — | 2 |
+| send_claude | stop | release | 2 |
 <!-- pipeline:summary:end -->
 
 Leitura dos resultados:
@@ -191,8 +223,9 @@ Valores da etapa `profiles`, o texto final da aplicação (large-v3-turbo, limpe
 | Hesitações e repetições removidas ≥ 95 % | não se aplica | 96,4 % (64,3 %) | cumprida | T4 e T5 |
 | Palavras de conteúdo apagadas pela limpeza = 0 | não se aplica | 0 | cumprida na etapa `cleanup`; as 19 omissões do reconhecimento continuam visíveis | T4 |
 | Latência p95 ≤ 0,5 s do largar do gatilho ao texto final (até 15 s; meta do Sponsor) | cumprida | cumprida | cumprida com o large-v3-turbo nos dois conjuntos juntos, ao ritmo real e com a GPU livre; com o large-v3 (modo preciso) não; os tempos ficam só em `bench/results/` | T3 |
-| 0 caracteres perdidos ou duplicados na digitação | não medido | não medido | — | T11 |
+| 0 caracteres perdidos ou duplicados na digitação | não se aplica | não se aplica | cumprida: 0 perdidos, 0 a mais e 0 trocados em 4190 caracteres, em 5 janelas (self-test manual do Sponsor) | T11 |
 | Correções aprendidas: 100 % das repetições corrigidas, 0 erros novos | 18 de 18, 0 novos | 1 de 1, 0 novos | cumprida | T6 |
+| Modo comando: reescritas corretas ≥ 90 % nas 20 instruções faladas (meta do Sponsor, 2026-09-29) | não se aplica | não se aplica | 80,0 % (16 de 20) nas instruções de reescrita: −10,0 pp (a meta pede 18 de 20) | aberta: próxima execução (decisão do Sponsor, T11) |
 
 A meta de intenção é a mais distante nos dois conjuntos. O juiz foi revisto à mão na T4 e era brando, não exigente: com o juiz revisto a distância aumentou, e a revisão manual dá valores ainda mais baixos (25,0 % nos comandos e 47,2 % no ditado, na etapa `streamed`). A distância vem sobretudo de erros de reconhecimento (palavras e nomes trocados), que a limpeza não corrige. No fim das camadas de adaptação (T7), o WER final e a intenção continuam fora das metas nos dois conjuntos; o resultado foi ao Sponsor como decisão, sem baixar as metas, e o Sponsor escolheu voltar a medir depois do uso real (ver a secção seguinte).
 
@@ -219,3 +252,26 @@ A meta de intenção é a mais distante nos dois conjuntos. O juiz foi revisto �
 A recomendação foi A, como ensaio com critério de paragem, com B em paralelo.
 
 **Decisão do Sponsor (2026-09-29): opção B.** Acabar agora a aplicação (indicador, aplicação, modo comando e aceitação) e voltar a medir depois de algumas semanas de uso real, com o vocabulário e as correções que o uso diário for criando. Essas correções passam a ser o material de um ensaio posterior de afinação local (opção A), sem sessões de gravação extra. Nada é instalado agora. As metas não baixam: o WER final ≤ 10 % e a intenção ≥ 95 % continuam por cumprir nos dois conjuntos e esta distância fica registada como aberta até à nova medição.
+
+## Modo comando e verificações manuais (T11)
+
+As tabelas do modo comando e das verificações manuais estão no bloco gerado da [Baseline](#baseline-etapa-raw), a partir de [phase2-summary.json](phase2-summary.json). Foram juntadas ao resumo por `py -3.12 -m bench.pipeline --summary docs/research/phase2-summary.json --add-command-mode bench/results/rewrite/<run>/summary.json --add-selftests local/selftest`, um passo manual que guarda só contagens; os tempos ficam fora.
+
+**Método do modo comando.** O Sponsor gravou as 20 instruções do guião `bench/dictation/guiao-reescrita-pt.md` (1 take rejeitado e gravado outra vez). A seleção de cada linha é um texto inventado. `bench.rewrite` passa cada gravação pelo caminho do produto: a instrução é transcrita por blocos com o large-v3-turbo, no calendário por tempo de áudio, e a reescrita é feita pelo `qwen3:8b` local com o prompt e a validação do produto (temperatura 0). Depois vêm as verificações determinísticas (língua, termos a preservar, texto mais curto, lista ou texto mudado) e o juiz local. A medição foi corrida duas vezes e todas as contagens foram iguais; só os tempos mudaram.
+
+Leitura dos resultados:
+
+- **16 de 20 reescritas corretas (80,0 %).** O produto aceitou 19 das 20 respostas do modelo; 16 passaram as verificações, e o juiz disse sim a todas essas 16. Correção, formalidade, tom informal e simpático, simplificação e tradução para português acertaram em todas as gravações.
+- **2 das 4 falhas vêm do reconhecimento da instrução.** Numa instrução de encurtar e noutra de fazer uma lista, uma palavra-chave da instrução foi mal ouvida, e o modelo devolveu um texto que não encurtava nem era uma lista.
+- **1 falha é do modelo.** Uma instrução de encurtar, começada por uma hesitação, foi bem ouvida, mas o modelo devolveu o texto igual. O produto deteta isso, mostra que nada mudou e deixa a seleção como estava.
+- **1 falha é da verificação.** Uma tradução para inglês estava certa, mas escreveu um termo técnico a preservar numa forma flexionada. A verificação exige a palavra exata, por isso a reescrita conta como errada; a regra não foi aliviada.
+- **WER da instrução 20,8 %; 5 de 20 instruções sem nenhum erro.** As instruções são curtas: como no conjunto de comandos, cada palavra errada pesa muito.
+- **Latência** (só neste documento, porque muda de execução para execução): do largar do gatilho até à reescrita pronta, p50 cerca de 0,55 s e p95 cerca de 1,0 s nas duas execuções (1,01 e 1,03 s). A transcrição da instrução demora cerca de 0,2 s; o modelo, até cerca de 0,8 s no p95. Não inclui as duas cópias pelo clipboard nem a digitação, que a aplicação regista em cada comando.
+
+**Decisão do Sponsor (2026-09-29): meta do modo comando.** A meta é ≥ 90 % de reescritas corretas nas 20 instruções faladas do guião de reescrita. O valor medido hoje, 80,0 % (16 de 20), fica registado com a distância aberta: faltam 2 reescritas corretas. A distância é trabalhada na próxima execução, com melhorias no prompt e a reescrita automática de ditados longos, tal como a distância do WER e da intenção. A meta não baixa e a verificação rigorosa dos termos a preservar mantém-se.
+
+**Verificações manuais no desktop**, corridas pelo Sponsor com a flag explícita de cada self-test:
+
+- **Digitação:** 5 janelas (caixa de texto do Windows, área de texto e texto editável no Edge, consola e VS Code) e 20 casos (texto curto, acentuado, 600 caracteres e mudança de linha escrita como espaço). Foram escritos 4190 de 4190 caracteres, com 0 perdidos, 0 a mais e 0 trocados, todos à primeira tentativa. O clipboard ficou igual nas 5 janelas. A meta de 0 caracteres perdidos ou duplicados está cumprida.
+- **Indicador:** demonstração junto ao ponteiro, com 23 mudanças de estado. Em 1026 amostras da janela em primeiro plano, o indicador nunca lá esteve: não roubou o foco. O Sponsor usou depois a aplicação real com o indicador durante cerca de uma hora, sem problemas de foco. Isto é uma observação do Sponsor, não uma medição.
+- **Gatilhos:** 8 inícios e 8 fins, 0 erros. O botão 5 confirmou os 2 toques longos, clicou para focar nos 2 e terminou ao largar. O botão 4 foi premido 6 vezes, e as 6 terminaram como toque curto (menos de 250 ms), também as que o Sponsor diz ter segurado cerca de 1 s. A máquina de estados é a mesma para os dois botões e confirma um toque longo antes de tratar a largada, por isso o hook recebeu mesmo a largada do botão 4 menos de 250 ms depois de o premir. Pouco depois, na aplicação real, o botão 4 iniciou e escreveu ditados normalmente, segundo o registo local da aplicação. A causa fica por esclarecer: o self-test não guarda a duração por botão. Neste teste não foram experimentadas as teclas F13 a F15 nem o Ctrl da direita. O Sponsor não tem Ctrl da direita, e o modo comando foi usado na aplicação com o F8.

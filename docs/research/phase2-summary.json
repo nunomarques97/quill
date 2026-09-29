@@ -330,5 +330,177 @@
     "hints": 41,
     "hints_dropped": 0,
     "restreamed": true
+  },
+  "command_mode": {
+    "engine_model": "large-v3-turbo",
+    "rewrite_model": "qwen3:8b",
+    "judge": "local",
+    "takes": 20,
+    "instruction_wer": 0.2075,
+    "instruction_exact": 5,
+    "valid": 19,
+    "reasons": {
+      "command_rewritten": 19,
+      "command_unchanged": 1
+    },
+    "checks": {
+      "changed": 15,
+      "language": 19,
+      "list": 1,
+      "preserved": 18,
+      "shorter": 1
+    },
+    "checks_applicable": {
+      "changed": 15,
+      "language": 19,
+      "list": 2,
+      "preserved": 19,
+      "shorter": 2
+    },
+    "checks_passed": 16,
+    "judged": 16,
+    "judge_yes": 16,
+    "correct": 16,
+    "by_kind": {
+      "corrigir": {
+        "takes": 3,
+        "checks_passed": 3,
+        "correct": 3
+      },
+      "encurtar": {
+        "takes": 3,
+        "checks_passed": 1,
+        "correct": 1
+      },
+      "formal": {
+        "takes": 3,
+        "checks_passed": 3,
+        "correct": 3
+      },
+      "informal": {
+        "takes": 1,
+        "checks_passed": 1,
+        "correct": 1
+      },
+      "inglês": {
+        "takes": 4,
+        "checks_passed": 3,
+        "correct": 3
+      },
+      "lista": {
+        "takes": 2,
+        "checks_passed": 1,
+        "correct": 1
+      },
+      "português": {
+        "takes": 2,
+        "checks_passed": 2,
+        "correct": 2
+      },
+      "simplificar": {
+        "takes": 1,
+        "checks_passed": 1,
+        "correct": 1
+      },
+      "simpático": {
+        "takes": 1,
+        "checks_passed": 1,
+        "correct": 1
+      }
+    }
+  },
+  "acceptance": {
+    "typing": {
+      "day": "2026-09-29",
+      "passed": true,
+      "targets": 5,
+      "targets_passed": 5,
+      "cases": 20,
+      "cases_passed": 20,
+      "characters_expected": 4190,
+      "characters_typed": 4190,
+      "lost": 0,
+      "extra": 0,
+      "changed": 0,
+      "clipboard_changed_targets": 0
+    },
+    "triggers": {
+      "day": "2026-09-29",
+      "passed": true,
+      "click_to_focus": true,
+      "starts": 8,
+      "ends": 8,
+      "errors": 0,
+      "signals": [
+        {
+          "action": "dictation",
+          "signal": "cancel",
+          "reason": "short_hold",
+          "count": 6
+        },
+        {
+          "action": "dictation",
+          "signal": "start",
+          "reason": "",
+          "count": 6
+        },
+        {
+          "action": "send_claude",
+          "signal": "confirm",
+          "reason": "",
+          "count": 2
+        },
+        {
+          "action": "send_claude",
+          "signal": "start",
+          "reason": "",
+          "count": 2
+        },
+        {
+          "action": "send_claude",
+          "signal": "stop",
+          "reason": "release",
+          "count": 2
+        }
+      ],
+      "ignored": [],
+      "inputs": [
+        {
+          "trigger": "xbutton1",
+          "event": "down_suppressed",
+          "count": 6
+        },
+        {
+          "trigger": "xbutton1",
+          "event": "up_suppressed",
+          "count": 6
+        },
+        {
+          "trigger": "xbutton2",
+          "event": "down_suppressed",
+          "count": 2
+        },
+        {
+          "trigger": "xbutton2",
+          "event": "up_suppressed",
+          "count": 2
+        }
+      ],
+      "clicks": [
+        {
+          "action": "send_claude",
+          "reason": "clicked",
+          "count": 2
+        }
+      ]
+    },
+    "indicator": {
+      "day": "2026-09-29",
+      "passed": true,
+      "position": "pointer",
+      "states_shown": 23,
+      "foreground_samples": 1026,
+      "foreground_was_indicator": 0
+    }
   }
 }

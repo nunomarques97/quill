@@ -518,13 +518,153 @@ def summary_with(commands=None, dictation=None, latency=None, stages=("raw",)):
     }
 
 
+def typing_result(**totals):
+    return {"selftest": "typing", "version": 1, "finished_utc": "2026-09-29T19:45:55Z", "passed": True,
+            "totals": {"targets": 5, "targets_passed": 5, "cases": 20, "cases_passed": 20, "characters_expected": 4190,
+                       "characters_typed": 4190, "lost": 0, "extra": 0, "changed": 0, "clipboard_changed_targets": 0,
+                       **totals},
+            "targets": [{"name": "edit", "cases": [{"case": "short", "seconds": 0.047}]}]}
+
+
+def triggers_result():
+    return {"selftest": "triggers", "version": 1, "finished_utc": "2026-09-29T19:47:08Z", "passed": True,
+            "duration_s": 37.5, "click_to_focus": True,
+            "totals": {"starts": 2, "ends": 2, "callback_errors": 0, "handler_errors": 0, "machine_errors": 0,
+                       "worker_lag_ms_p95": 0.4, "hold_s_max": 1.17},
+            "signals": [{"action": "dictation", "signal": "cancel", "reason": "short_hold", "count": 1},
+                        {"action": "send_claude", "signal": "stop", "reason": "release", "count": 1}],
+            "ignored": [], "inputs": [{"trigger": "xbutton1", "event": "down_suppressed", "count": 1}],
+            "clicks": [{"action": "send_claude", "reason": "clicked", "count": 1}]}
+
+
+def indicator_result():
+    return {"version": 1, "finished": "2026-09-29T19:49:11Z", "position": "pointer", "seconds": 51.7,
+            "states_shown": 23, "foreground_samples": 1026, "foreground_was_indicator": 0, "frames": 1401,
+            "frame_ms_p50": 1.25, "frame_ms_p95": 1.66, "passed": True}
+
+
+def acceptance():
+    return {"typing": pipeline.selftest_block("typing", typing_result()),
+            "triggers": pipeline.selftest_block("triggers", triggers_result()),
+            "indicator": pipeline.selftest_block("indicator", indicator_result())}
+
+
+def rewrite_summary():
+    return {"schema": 1, "kind": "rewrite", "engine": {"model": "large-v3-turbo", "step_s": 0.5},
+            "rewrite_model": "qwen3:8b", "judge": "local", "takes": 20, "instruction_wer": 0.2075,
+            "instruction_exact": 5, "valid": 19, "valid_rate": 0.95,
+            "reasons": {"command_rewritten": 19, "command_unchanged": 1}, "invalid_details": {},
+            "checks": {"changed": 15}, "checks_applicable": {"changed": 15}, "checks_passed": 16,
+            "checks_passed_rate": 0.8, "judged": 16, "judge_yes": 16, "correct": 16, "correct_rate": 0.8,
+            "by_kind": {"encurtar": {"takes": 3, "checks_passed": 1, "correct": 1}},
+            "latency": {"total_p95_s": 1.011}, "dataset": {"recorded": 20}}
+
+
+class AcceptanceTest(unittest.TestCase):
+    def test_command_mode_keeps_counts_and_drops_timings(self):
+        block = pipeline.command_mode_block(rewrite_summary())
+        self.assertEqual(block["engine_model"], "large-v3-turbo")
+        self.assertEqual((block["takes"], block["correct"], block["instruction_wer"]), (20, 16, 0.2075))
+        self.assertNotIn("latency", block)
+        self.assertNotIn("1.011", json.dumps(block))
+        with self.assertRaises(pipeline.SettingsError):
+            pipeline.command_mode_block({"kind": "pipeline"})
+
+    def test_self_tests_keep_counts_only_and_take_the_newest_file(self):
+        with tempfile.TemporaryDirectory() as root:
+            folder = Path(root)
+            self.assertEqual(pipeline.acceptance_block(folder), {"typing": None, "triggers": None, "indicator": None})
+            (folder / "typing-20260929T100000Z.json").write_text(json.dumps(typing_result(lost=3)), encoding="utf-8")
+            (folder / "typing-20260929T194555Z.json").write_text(json.dumps(typing_result()), encoding="utf-8")
+            (folder / "triggers-20260929T194708Z.json").write_text(json.dumps(triggers_result()), encoding="utf-8")
+            (folder / "indicator-20260929T194911Z.json").write_text(json.dumps(indicator_result()), encoding="utf-8")
+            block = pipeline.acceptance_block(folder)
+        self.assertEqual(block, acceptance())
+        self.assertEqual(block["typing"]["lost"], 0)
+        self.assertEqual(block["typing"]["day"], "2026-09-29")
+        text = json.dumps(block)
+        for timing in ("seconds", "duration_s", "hold_s_max", "worker_lag", "frame_ms", "frames", "edit"):
+            self.assertNotIn(timing, text)
+        with tempfile.TemporaryDirectory() as root:
+            (Path(root) / "typing-1.json").write_text("not json", encoding="utf-8")
+            with self.assertRaises(pipeline.SettingsError):
+                pipeline.acceptance_block(Path(root))
+
+    def test_block_renders_command_mode_and_self_tests(self):
+        summary = summary_with()
+        summary["command_mode"] = pipeline.command_mode_block(rewrite_summary())
+        summary["acceptance"] = acceptance()
+        block = pipeline.render_block(summary)
+        self.assertIn("| large-v3-turbo + qwen3:8b | 20 | " + pipeline._pt_percent(0.2075)
+                      + " | 5 de 20 | 19 de 20 | 16 de 20 | 16 de 16 | 16 de 20 |", block)
+        self.assertIn("| encurtar | 3 | 1 | 1 |", block)
+        self.assertIn("perdidos 0, a mais 0, trocados 0", block)
+        self.assertIn("indicador em primeiro plano em 0 de 1026 amostras", block)
+        self.assertIn("| dictation | cancel | short_hold | 1 |", block)
+        self.assertNotIn("1,01", block)
+        summary["acceptance"] = {"typing": None, "triggers": None, "indicator": None}
+        self.assertIn("| digitação | — | não medida |", pipeline.render_block(summary))
+        document = pipeline.write_doc("# Doc\n", summary)
+        self.assertEqual(pipeline.check_doc(document, summary), [])
+
+    def test_cli_merges_into_an_existing_summary(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            path, rewrite, folder = root / "s.json", root / "rewrite.json", root / "selftest"
+            path.write_text(json.dumps(summary_with()), encoding="utf-8")
+            rewrite.write_text(json.dumps(rewrite_summary()), encoding="utf-8")
+            folder.mkdir()
+            (folder / "typing-20260929T194555Z.json").write_text(json.dumps(typing_result()), encoding="utf-8")
+            lines = []
+            code = pipeline.main(["--summary", str(path), "--add-command-mode", str(rewrite), "--add-selftests", str(folder),
+                                  "--require", "desktop"], out=lines.append)
+            self.assertEqual(code, 1)  # triggers and indicator results are missing
+            self.assertEqual(lines[0], "summary updated (command mode, self-tests)")
+            merged = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(merged["command_mode"]["correct"], 16)
+            self.assertIsNone(merged["acceptance"]["indicator"])
+            self.assertEqual(merged["sets"], summary_with()["sets"])
+            lines = []
+            self.assertEqual(pipeline.main(["--summary", str(path), "--add-command-mode", str(root / "none.json")],
+                                           out=lines.append), 2)
+            self.assertEqual(lines, ["error: rewrite summary not found (run bench.rewrite first)"])
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            pipeline.main(["--stage", "raw", "--add-selftests", "local/selftest"], out=lambda line: None)
+
+
 class TargetTest(unittest.TestCase):
     def failed(self, summary, *targets):
         return [line for met, line in pipeline.check_targets(summary, targets) if not met]
 
     def test_all_met(self):
         summary = summary_with(latency={"p95_s": 0.45, "max_audio_s": 15.0}, stages=pipeline.STAGE_ORDER)
+        summary["acceptance"] = acceptance()
         self.assertEqual(self.failed(summary, *pipeline.TARGET_NAMES), [])
+
+    def test_desktop_target_needs_every_self_test_and_zero_wrong_characters(self):
+        self.assertEqual(self.failed(summary_with(), "desktop"), [
+            "FAIL desktop: typing self-test not measured",
+            "FAIL desktop: trigger self-test not measured",
+            "FAIL desktop: indicator self-test not measured",
+        ])
+        for key in ("lost", "extra", "changed"):
+            summary = summary_with()
+            summary["acceptance"] = acceptance()
+            summary["acceptance"]["typing"][key] = 1
+            self.assertEqual(len(self.failed(summary, "desktop")), 1, key)
+        summary = summary_with()
+        summary["acceptance"] = acceptance()
+        summary["acceptance"]["typing"]["extra"] = 2
+        self.assertEqual(self.failed(summary, "desktop"),
+                         ["FAIL desktop: typing lost 0, duplicated or extra 2, changed 0 of 4190 characters (target 0)"])
+        summary["acceptance"] = acceptance()
+        summary["acceptance"]["indicator"]["foreground_was_indicator"] = 3
+        self.assertEqual(self.failed(summary, "desktop"),
+                         ["FAIL desktop: indicator in the foreground in 3 of 1026 samples (target 0)"])
+        summary["acceptance"] = acceptance()
+        summary["acceptance"]["triggers"]["errors"] = 1
+        summary["acceptance"]["typing"]["clipboard_changed_targets"] = 1
+        self.assertEqual(len(self.failed(summary, "desktop")), 2)
 
     def test_latency_target_is_half_a_second(self):
         self.assertEqual(pipeline.MAX_LATENCY_P95_S, 0.5)

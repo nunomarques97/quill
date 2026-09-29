@@ -49,6 +49,7 @@ py -3.12 -m bench.intent --run bench/results/pipeline/<run> --reviews bench/resu
 py -3.12 -m bench.record --set rewrite              # record the spoken rewrite instructions
 py -3.12 -m bench.rewrite --dry-run                 # rewrite script and recording counts, no GPU
 .venv\Scripts\python -m bench.rewrite                # command mode: instruction WER, correctness, latency
+py -3.12 -m bench.pipeline --summary docs/research/phase2-summary.json --add-command-mode bench/results/rewrite/<run>/summary.json --add-selftests local/selftest
 py -3.12 -m bench.pipeline --summary docs/research/phase2-summary.json --require complete --require overall
 py -3.12 -m bench.pipeline --summary docs/research/phase2-summary.json --write-doc docs/research/FASE2.md
 py -3.12 -m bench.pipeline --summary docs/research/phase2-summary.json --check-doc docs/research/FASE2.md
@@ -194,7 +195,13 @@ Sponsor target; see [Streaming replay](#streaming-replay)), `cleanup`
 and term error <= 10 % on the dictation set; the commands set is printed as an
 `info` indicator and never fails, Sponsor decision 2026-09-29), `corrections` (100 % of learned recurrences
 fixed, 0 new errors, on both sets; a set with no learned recurrence has nothing
-left unfixed and prints so) and `overall` (final-text WER <= 10 %, intent >= 95 %).
+left unfixed and prints so), `overall` (final-text WER <= 10 %, intent >= 95 %) and `desktop` (the Sponsor's
+manual self-tests: 0 characters lost, extra or changed while typing, the clipboard unchanged, no trigger
+error and the indicator never in the foreground).
+`--add-command-mode RUN_SUMMARY` (a `bench.rewrite` summary) and `--add-selftests DIR` (the newest
+`typing`, `triggers` and `indicator` results in `local/selftest/`) merge whitelisted counts into
+`--summary`, without timings. They are one-off manual steps, never a check; a later `--stage` run writes a
+fresh summary, so repeat them after it.
 `--write-doc DOC` inserts the Portuguese table between
 `<!-- pipeline:summary:start -->` and `<!-- pipeline:summary:end -->`;
 `--check-doc DOC` exits 1 when that block differs from the summary.

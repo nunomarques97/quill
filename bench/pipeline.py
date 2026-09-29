@@ -57,7 +57,13 @@ an earlier run and compares the rules with the local qwen3:8b cleanup
 ``--dry-run`` prints counts only and needs no GPU. Measurement writes per-take
 text only under bench/results/pipeline/<run>/; the summary JSON holds
 aggregates only and is refused when a spoken phrase or name would leak into
-it. ``--require TARGET`` exits 1 and prints measured-vs-target aggregates when
+it. ``--add-command-mode RUN_SUMMARY`` (the aggregate summary of a
+``bench.rewrite`` run) and ``--add-selftests DIR`` (the newest typing,
+triggers and indicator results of the Sponsor's manual desktop self-tests,
+``local/selftest/``) merge whitelisted counts into ``--summary``: one-off
+manual steps, never a check; wall-clock timings are left out. A later
+``--stage`` run writes a fresh summary, so the merges are repeated after it.
+``--require TARGET`` exits 1 and prints measured-vs-target aggregates when
 a target is unmet or a set is incomplete. Nothing spoken is printed.
 """
 
@@ -99,7 +105,7 @@ SETS = ("commands", "dictation")
 # Cumulative stages, in order. Only the ones in IMPLEMENTED_STAGES can run.
 STAGE_ORDER = ("raw", "streamed", "cleanup", "vocabulary", "corrections", "profiles")
 IMPLEMENTED_STAGES = STAGE_ORDER
-TARGET_NAMES = ("complete", "latency", "cleanup", "vocabulary", "corrections", "overall")
+TARGET_NAMES = ("complete", "latency", "cleanup", "vocabulary", "corrections", "overall", "desktop")
 SUMMARY_SCHEMA = 1
 DEFAULT_SUMMARY = RESULTS_DIR / "pipeline" / "summary.json"
 # The baseline engine of the raw stage; the streamed stage uses the product's.
@@ -121,6 +127,22 @@ MAX_TERM_ERROR = 0.10
 VOCABULARY_GATED_SETS = ("dictation",)
 MAX_FINAL_WER = 0.10
 MIN_INTENT = 0.95
+
+# Command mode and the manual desktop self-tests: deterministic counts only.
+COMMAND_MODE_KEYS = (
+    "takes", "instruction_wer", "instruction_exact", "valid", "reasons", "checks", "checks_applicable",
+    "checks_passed", "judged", "judge_yes", "correct", "by_kind",
+)
+SELFTESTS = ("typing", "triggers", "indicator")
+TYPING_KEYS = (
+    "targets", "targets_passed", "cases", "cases_passed", "characters_expected", "characters_typed",
+    "lost", "extra", "changed", "clipboard_changed_targets",
+)
+TRIGGER_FIELDS = {
+    "signals": ("action", "signal", "reason"), "ignored": ("trigger", "reason"),
+    "inputs": ("trigger", "event"), "clicks": ("action", "reason"),
+}
+INDICATOR_KEYS = ("position", "states_shown", "foreground_samples", "foreground_was_indicator")
 
 START_MARKER = "<!-- pipeline:summary:start -->"
 END_MARKER = "<!-- pipeline:summary:end -->"
@@ -656,6 +678,68 @@ def split_timings(summary: dict) -> dict:
     return timings
 
 
+# ---------------------------------------------------------------- command mode and self-tests
+
+
+def command_mode_block(rewrite: dict) -> dict:
+    """The deterministic part of a ``bench.rewrite`` summary: counts and rates, no latency."""
+    if not isinstance(rewrite, dict) or rewrite.get("kind") != "rewrite":
+        raise SettingsError("not a rewrite summary")
+    block = {"engine_model": (rewrite.get("engine") or {}).get("model"), "rewrite_model": rewrite.get("rewrite_model"),
+             "judge": rewrite.get("judge")}
+    block.update({key: rewrite.get(key) for key in COMMAND_MODE_KEYS})
+    return block
+
+
+def _count_rows(rows: object, fields: Sequence[str]) -> list[dict]:
+    """Rows of a self-test result reduced to the named fields and an integer count."""
+    kept = []
+    for row in rows if isinstance(rows, list) else []:
+        if isinstance(row, dict) and isinstance(row.get("count"), int):
+            kept.append({**{name: str(row.get(name, "")) for name in fields}, "count": row["count"]})
+    return kept
+
+
+def _day(value: object) -> str | None:
+    return value[:10] if isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}T.*", value) else None
+
+
+def selftest_block(name: str, data: dict) -> dict:
+    """Whitelisted counts of one manual self-test result; durations and frame times are left out."""
+    totals = data.get("totals") if isinstance(data.get("totals"), dict) else {}
+    if name == "typing":
+        return {"day": _day(data.get("finished_utc")), "passed": data.get("passed") is True,
+                **{key: totals.get(key) for key in TYPING_KEYS}}
+    if name == "triggers":
+        errors = sum(totals.get(key) or 0 for key in ("callback_errors", "handler_errors", "machine_errors"))
+        return {"day": _day(data.get("finished_utc")), "passed": data.get("passed") is True,
+                "click_to_focus": data.get("click_to_focus") is True, "starts": totals.get("starts"),
+                "ends": totals.get("ends"), "errors": errors,
+                **{key: _count_rows(data.get(key), fields) for key, fields in TRIGGER_FIELDS.items()}}
+    if name == "indicator":
+        return {"day": _day(data.get("finished")), "passed": data.get("passed") is True,
+                **{key: data.get(key) for key in INDICATOR_KEYS}}
+    raise ValueError(f"unknown self-test: {name}")
+
+
+def acceptance_block(folder: Path) -> dict:
+    """The newest result of each manual self-test under ``folder``; a missing one is None."""
+    block: dict = {}
+    for name in SELFTESTS:
+        files = sorted(Path(folder).glob(f"{name}-*.json"))
+        if not files:
+            block[name] = None
+            continue
+        try:
+            data = json.loads(files[-1].read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            raise SettingsError(f"{name} self-test result is not valid JSON") from None
+        if not isinstance(data, dict):
+            raise SettingsError(f"{name} self-test result is not a JSON object")
+        block[name] = selftest_block(name, data)
+    return block
+
+
 # ---------------------------------------------------------------- targets
 
 
@@ -746,6 +830,29 @@ def check_targets(summary: dict, targets: Sequence[str]) -> list[tuple[bool, str
                 wer, intent = row.get("wer_clean"), row.get("intent_preserved")
                 add(wer is not None and wer <= MAX_FINAL_WER, target, f"{set_name} final-text WER {_pct(wer)} ({stage}; target <= {100 * MAX_FINAL_WER:.0f} %)")
                 add(intent is not None and intent >= MIN_INTENT, target, f"{set_name} intent preserved {_pct(intent)} ({stage}; target >= {100 * MIN_INTENT:.0f} %)")
+        elif target == "desktop":
+            acceptance = summary.get("acceptance") if isinstance(summary.get("acceptance"), dict) else {}
+            typing, triggers, indicator = (acceptance.get(name) for name in SELFTESTS)
+            if not isinstance(typing, dict):
+                add(False, target, "typing self-test not measured")
+            else:
+                lost, extra, changed = (typing.get(key) for key in ("lost", "extra", "changed"))
+                add(typing.get("passed") is True and lost == extra == changed == 0, target,
+                    f"typing lost {lost}, duplicated or extra {extra}, changed {changed} "
+                    f"of {typing.get('characters_expected')} characters (target 0)")
+                add(typing.get("clipboard_changed_targets") == 0, target,
+                    f"clipboard changed in {typing.get('clipboard_changed_targets')} of {typing.get('targets')} targets (target 0)")
+            if not isinstance(triggers, dict):
+                add(False, target, "trigger self-test not measured")
+            else:
+                add(triggers.get("passed") is True and triggers.get("errors") == 0, target,
+                    f"trigger self-test errors {triggers.get('errors')}, starts {triggers.get('starts')}, ends {triggers.get('ends')}")
+            if not isinstance(indicator, dict):
+                add(False, target, "indicator self-test not measured")
+            else:
+                stolen = indicator.get("foreground_was_indicator")
+                add(indicator.get("passed") is True and stolen == 0, target,
+                    f"indicator in the foreground in {stolen} of {indicator.get('foreground_samples')} samples (target 0)")
     return results
 
 
@@ -759,6 +866,13 @@ CORRECTIONS_HEADER = (
     "Conjunto", "Erros já aprendidos que se repetem", "Corrigidos", "Taxa corrigida", "Repetições antes de ativar",
     "Erros novos", "Substituições aplicadas", "Ativas / pendentes / em conflito no fim",
 )
+COMMAND_HEADER = (
+    "Modo comando", "n", "WER da instrução", "Instruções sem erros", "Aceites pelo produto", "Verificações passadas",
+    "Juiz sim", "Corretas",
+)
+KIND_HEADER = ("Caso", "n", "Verificações passadas", "Corretas")
+ACCEPTANCE_HEADER = ("Verificação manual no desktop", "Data", "Resultado")
+TRIGGER_HEADER = ("Ação", "Sinal", "Motivo", "n")
 SET_LABELS = {"commands": "comandos", "dictation": "ditado"}
 EMPTY = "—"
 
@@ -802,12 +916,79 @@ def render_block(summary: dict) -> str:
                 f"{row.get('learned_active')} / {row.get('learned_pending')} / {row.get('learned_conflicts')}",
             )
             lines.append("| " + " | ".join(cells) + " |")
+    lines += _command_lines(summary.get("command_mode"))
+    lines += _acceptance_lines(summary.get("acceptance"))
     latency = summary.get("latency")
     if isinstance(latency, dict) and latency.get("p95_s") is not None:
         lines.append("")
         lines.append(f"Latência da aplicação (largar a tecla até ao texto), p95: {_pt_seconds(latency['p95_s'])} s")
     lines.append(END_MARKER)
     return "\n".join(lines) + "\n"
+
+
+def _of(count: object, total: object) -> str:
+    return f"{EMPTY if count is None else count} de {EMPTY if total is None else total}"
+
+
+def _table(header: Sequence[str]) -> list[str]:
+    return ["", "| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
+
+
+def _command_lines(block: object) -> list[str]:
+    """Command-mode counts: the instruction transcription, the product's validation, checks and judge."""
+    if not isinstance(block, dict):
+        return []
+    takes = block.get("takes")
+    judge_yes = block.get("judge_yes")
+    cells = (
+        f"{block.get('engine_model')} + {block.get('rewrite_model')}", str(takes),
+        _pt_percent(block.get("instruction_wer")), _of(block.get("instruction_exact"), takes),
+        _of(block.get("valid"), takes), _of(block.get("checks_passed"), takes),
+        EMPTY if judge_yes is None else _of(judge_yes, block.get("judged")),
+        EMPTY if block.get("correct") is None else _of(block.get("correct"), takes),
+    )
+    lines = _table(COMMAND_HEADER) + ["| " + " | ".join(cells) + " |"]
+    kinds = block.get("by_kind") if isinstance(block.get("by_kind"), dict) else {}
+    if kinds:
+        lines += _table(KIND_HEADER)
+        for kind, row in kinds.items():
+            correct = row.get("correct")
+            lines.append(f"| {kind} | {row.get('takes')} | {row.get('checks_passed')} | {EMPTY if correct is None else correct} |")
+    return lines
+
+
+def _acceptance_lines(block: object) -> list[str]:
+    """The Sponsor's manual desktop self-tests: typing, triggers and indicator counts."""
+    if not isinstance(block, dict):
+        return []
+    typing, triggers, indicator = (block.get(name) for name in SELFTESTS)
+    lines = _table(ACCEPTANCE_HEADER)
+    if isinstance(typing, dict):
+        lines.append(
+            f"| digitação | {typing.get('day')} | {_of(typing.get('characters_typed'), typing.get('characters_expected'))} "
+            f"caracteres em {typing.get('targets')} janelas ({_of(typing.get('cases_passed'), typing.get('cases'))} casos certos); "
+            f"perdidos {typing.get('lost')}, a mais {typing.get('extra')}, trocados {typing.get('changed')}; "
+            f"clipboard alterado em {_of(typing.get('clipboard_changed_targets'), typing.get('targets'))} janelas |")
+    else:
+        lines.append(f"| digitação | {EMPTY} | não medida |")
+    if isinstance(triggers, dict):
+        lines.append(
+            f"| gatilhos | {triggers.get('day')} | {triggers.get('starts')} inícios, {triggers.get('ends')} fins, "
+            f"{triggers.get('errors')} erros; clicar para focar {'ligado' if triggers.get('click_to_focus') else 'desligado'} |")
+    else:
+        lines.append(f"| gatilhos | {EMPTY} | não medidos |")
+    if isinstance(indicator, dict):
+        place = "ponteiro" if indicator.get("position") == "pointer" else "fundo do ecrã"
+        lines.append(
+            f"| indicador | {indicator.get('day')} | {indicator.get('states_shown')} estados mostrados junto ao {place}; "
+            f"indicador em primeiro plano em {_of(indicator.get('foreground_was_indicator'), indicator.get('foreground_samples'))} amostras |")
+    else:
+        lines.append(f"| indicador | {EMPTY} | não medido |")
+    if isinstance(triggers, dict) and triggers.get("signals"):
+        lines += _table(TRIGGER_HEADER)
+        for row in triggers["signals"]:
+            lines.append(f"| {row['action']} | {row['signal']} | {row['reason'] or EMPTY} | {row['count']} |")
+    return lines
 
 
 def write_doc(document: str, summary: dict) -> str:
@@ -903,6 +1084,10 @@ def main(
     parser.add_argument("--require", action="append", choices=TARGET_NAMES, default=[], help="exit 1 unless met")
     parser.add_argument("--check-doc", type=Path, default=None, help="exit 1 when DOC's block differs from the summary")
     parser.add_argument("--write-doc", type=Path, default=None, help="insert or replace the block in DOC")
+    parser.add_argument("--add-command-mode", type=Path, default=None, metavar="RUN_SUMMARY",
+                        help="merge the counts of a bench.rewrite summary into --summary (manual step)")
+    parser.add_argument("--add-selftests", type=Path, default=None, metavar="DIR",
+                        help="merge the newest manual self-test counts from DIR (local/selftest) into --summary")
     args = parser.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -919,8 +1104,12 @@ def main(
         if args.stage:
             parser.error("--compare-cleanup and --stage are separate runs")
         return run_compare(args.config, names, args.compare_cleanup, judge_factory, cleaners_factory, results_dir, out)
-    if not (args.stage or args.require or args.check_doc or args.write_doc):
-        parser.error("nothing to do: give --dry-run, --stage, --compare-cleanup, --require, --check-doc or --write-doc")
+    merging = bool(args.add_command_mode or args.add_selftests)
+    if not (args.stage or args.require or args.check_doc or args.write_doc or merging):
+        parser.error("nothing to do: give --dry-run, --stage, --compare-cleanup, --require, --check-doc, --write-doc, "
+                     "--add-command-mode or --add-selftests")
+    if args.stage and merging:
+        parser.error("--add-command-mode and --add-selftests merge into an existing summary: run them after --stage")
 
     try:
         if args.stage:
@@ -950,6 +1139,23 @@ def main(
             out(f"summary written ({', '.join(summary['sets'])}); per-take outputs under bench/results/")
         else:
             summary = _read_summary(args.summary)
+        if merging:
+            if args.add_command_mode:
+                try:
+                    rewrite = json.loads(args.add_command_mode.read_text(encoding="utf-8"))
+                except FileNotFoundError:
+                    raise SettingsError("rewrite summary not found (run bench.rewrite first)") from None
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    raise SettingsError("rewrite summary is not valid JSON") from None
+                summary["command_mode"] = command_mode_block(rewrite)
+            if args.add_selftests:
+                if not args.add_selftests.is_dir():
+                    raise SettingsError("self-test folder not found")
+                summary["acceptance"] = acceptance_block(args.add_selftests)
+            # The merged blocks hold counts and reason codes only; no text to check against.
+            write_summary(args.summary, summary, [], [])
+            merged = [name for name, given in (("command mode", args.add_command_mode), ("self-tests", args.add_selftests)) if given]
+            out(f"summary updated ({', '.join(merged)})")
     except (SettingsError, DatasetError, VocabularyError) as exc:
         out(f"error: {exc}")
         return 2

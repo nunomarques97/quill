@@ -1,12 +1,16 @@
-"""Record the dictation script take by take through MME at 16 kHz mono PCM16.
+"""Record a committed script take by take through MME at 16 kHz mono PCM16.
 
 Usage:
     py -3.12 -m bench.record                   # record every take not recorded yet
     py -3.12 -m bench.record --redo dt-05,dt-07
+    py -3.12 -m bench.record --set rewrite     # the command-mode rewrite instructions
     py -3.12 -m bench.record --list-devices    # MME inputs; the microphone is not opened
 
-Each phrase is shown with the ``<projeto-N>`` placeholders replaced by the
-names from the local configuration. Enter starts and stops a take; ``s``
+Two sets are recorded: ``dictation`` (the default, ``dt-NN``) and
+``rewrite`` (``rw-NN``, the spoken instructions of command mode; the
+invented selected text of each take is shown first, for context only, and is
+not read aloud). Each phrase is shown with the ``<projeto-N>`` placeholders
+replaced by the names from the local configuration. Enter starts and stops a take; ``s``
 skips it (it stays pending), ``q`` quits, ``r`` repeats the take just saved.
 A take is rejected, and asked again, when it has 0.5 s or more of exact
 zeros, falls behind (or runs ahead of) the clock, is near-silent or shorter
@@ -45,6 +49,7 @@ from bench.audio_mme import (
 )
 from bench.dataset import (
     DISCARDED_MARKER,
+    PLACEHOLDER,
     DatasetError,
     ScriptRow,
     display_text,
@@ -57,6 +62,7 @@ from bench.dataset import (
 from bench.settings import LOCAL_DIR, Settings, SettingsError, load_settings
 
 MANIFEST_VERSION = 1
+RECORDED_SETS = ("dictation", "rewrite")
 
 
 class Console:
@@ -136,10 +142,12 @@ class Session:
     capture_factory: Callable[[], Capture]
     console: Console
     now: Callable[[], datetime] = datetime.now
+    # Text shown before the phrase for context, never read aloud (rewrite set: the selected text).
+    context: Callable[[ScriptRow], str | None] = field(default=lambda row: None, repr=False)
 
     def __post_init__(self) -> None:
         if not _inside(self.recordings_dir, LOCAL_DIR) or not _inside(self.manifest_path, LOCAL_DIR):
-            raise SettingsError("dictation recordings must stay under the ignored local/ folder")
+            raise SettingsError("recordings must stay under the ignored local/ folder")
 
     # ------------------------------------------------------------ manifest
 
@@ -169,7 +177,7 @@ class Session:
         if redo:
             unknown = [take_id for take_id in redo if take_id not in by_id]
             if unknown:
-                raise DatasetError(f"not in the dictation script: {', '.join(unknown)}")
+                raise DatasetError(f"not in the recording script: {', '.join(unknown)}")
             return [by_id[take_id] for take_id in redo]
         manifest = self.load_manifest()
         return [row for row in self.rows if not self.recorded(manifest, row.id)]
@@ -208,7 +216,12 @@ class Session:
         while True:
             say()
             say(f"[{position}] {row.id} · {row.style or '—'} · {row.case or '—'}")
-            say(f"  {self.phrase(row)}")
+            context = self.context(row)
+            if context:
+                say(f"  Texto selecionado (não ler): {context}")
+                say(f"  Instrução a dizer: {self.phrase(row)}")
+            else:
+                say(f"  {self.phrase(row)}")
             answer = ask("Enter = gravar · s = saltar · q = sair: ")
             if answer == "q":
                 return "quit"
@@ -253,6 +266,14 @@ class Session:
         return report
 
 
+def rewrite_context(settings: Settings) -> Callable[[ScriptRow], str | None]:
+    """The invented selected text of each rewrite take, shown while recording its instruction."""
+    from bench.rewrite import load_rewrite_rows
+
+    selections = {row.id: row.selection for row in load_rewrite_rows(settings)}
+    return lambda row: selections.get(row.id)
+
+
 def list_devices(settings_path: Path | None, api: object | None = None, console: Console | None = None) -> int:
     console = console or Console()
     try:
@@ -275,8 +296,9 @@ def list_devices(settings_path: Path | None, api: object | None = None, console:
 
 
 def main(argv: list[str] | None = None, *, api: object | None = None, console: Console | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="bench.record", description="Record the dictation script through MME.")
+    parser = argparse.ArgumentParser(prog="bench.record", description="Record a committed script through MME.")
     parser.add_argument("--config", type=Path, default=None, help="settings file (default local/bench.toml)")
+    parser.add_argument("--set", choices=RECORDED_SETS, default="dictation", help="script to record (default dictation)")
     parser.add_argument("--list-devices", action="store_true", help="list MME inputs without opening them")
     parser.add_argument("--redo", default="", help="comma-separated take ids to record again")
     args = parser.parse_args(argv)
@@ -285,10 +307,14 @@ def main(argv: list[str] | None = None, *, api: object | None = None, console: C
     console = console or Console()
     try:
         settings = load_settings(args.config)
-        dictation = settings.dictation
-        rows = load_script(dictation)
-        mapping = dictation_projects(dictation, settings)
-        known = load_reference_names(dictation.reference_config)
+        chosen = settings.for_set(args.set)
+        rows = load_script(chosen)
+        context = rewrite_context(chosen) if args.set == "rewrite" else (lambda row: None)
+        if any(PLACEHOLDER.search(row.text) for row in rows) or args.set == "dictation":
+            mapping = dictation_projects(chosen, settings)
+            known = load_reference_names(chosen.reference_config)
+        else:
+            mapping, known = {}, frozenset()
         device = configured_device(settings)
         api = api if api is not None else WinMM()
         index = select_device(input_devices(api), device)
@@ -296,10 +322,11 @@ def main(argv: list[str] | None = None, *, api: object | None = None, console: C
             rows=rows,
             mapping=mapping,
             known=known,
-            recordings_dir=dictation.recordings_dir,
-            manifest_path=dictation.manifest,
+            recordings_dir=chosen.recordings_dir,
+            manifest_path=chosen.manifest,
             capture_factory=lambda: Capture(api, index),
             console=console,
+            context=context,
         )
         redo = [part.strip() for part in args.redo.split(",") if part.strip()]
         session.run(redo)

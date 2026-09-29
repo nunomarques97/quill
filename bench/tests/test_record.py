@@ -317,5 +317,84 @@ class SessionTest(unittest.TestCase):
         self.assertIn("Todas as frases do guião já estão gravadas.", self.console.lines)
 
 
+class RewriteSetTest(unittest.TestCase):
+    """The rewrite set: the invented selection is shown for context, the instruction is recorded."""
+
+    def setUp(self):
+        from bench import settings as bench_settings
+        from bench.tests.test_rewrite import SCRIPT as REWRITE_SCRIPT
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.local = self.root / "local"
+        for module in (record, bench_settings):
+            patcher = mock.patch.object(module, "LOCAL_DIR", self.local)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.recordings = self.local / "recordings" / "rewrite"
+        self.script = self.root / "reescrita.md"
+        self.script.write_text(REWRITE_SCRIPT, encoding="utf-8")
+        self.reference = self.root / "reference.toml"
+        self.reference.write_text('[[projetos]]\nnome = "invented"\n', encoding="utf-8")
+        self.config = self.root / "bench.toml"
+        self.config.write_text(
+            f'[paths]\nrecordings_dir = "r"\nrecording_script = "s"\nreference_config = "{self.reference.as_posix()}"\n'
+            f'[dictation]\nrecordings_dir = "{(self.local / "dictation").as_posix()}"\n'
+            f'[rewrite]\nrecordings_dir = "{self.recordings.as_posix()}"\nrecording_script = "{self.script.as_posix()}"\n'
+            'expected_takes = 4\nmin_takes = 1\n[recorder]\ndevice = "Invented Mic"\n', encoding="utf-8")
+        self.fake = FakeWaveIn()
+
+    def speak(self, seconds):
+        def answer():
+            steps = round(seconds / 0.05)
+            for _ in range(steps):
+                self.fake.advance(0.05)
+                self.capture.pump()
+            return ""
+        return answer
+
+    def test_records_the_instruction_with_the_selection_as_context(self):
+        settings = record.load_settings(self.config).for_set("rewrite")
+        rows = parse_script(self.script.read_text(encoding="utf-8"), "rw", markup=True)
+        console = ScriptedConsole(["", self.speak(1.5), "q"])
+
+        def new_capture():
+            self.capture = Capture(self.fake, 0, background=False, clock=self.fake.clock)
+            return self.capture
+
+        session = record.Session(rows=rows, mapping={}, known=frozenset(), recordings_dir=settings.recordings_dir,
+                                 manifest_path=settings.manifest, capture_factory=new_capture, console=console,
+                                 context=record.rewrite_context(settings), now=lambda: datetime(2026, 1, 2, 3, 4, 5))
+        report = session.run()
+        self.assertEqual((report.saved, report.quit), (["rw-01"], True))
+        shown = "\n".join(console.lines)
+        self.assertIn("rw-01 · — · formal", shown)
+        self.assertIn("Texto selecionado (não ler): olá, a entrega do bolo verde passa para quinta", shown)
+        self.assertIn("Instrução a dizer: hum… põe isto mais formal.", shown)
+        manifest = json.loads(settings.manifest.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["gravacoes"]["rw-01"]["projetos"], {})
+        dataset = load_dataset(settings)
+        self.assertEqual(([t.id for t in dataset.takes], dataset.pending), (["rw-01"], ("rw-02", "rw-03", "rw-04")))
+        self.assertEqual(dataset.takes[0].clean, "põe isto mais formal.")
+        self.assertEqual(self.fake.opened, self.fake.closed)
+
+    def test_main_records_the_rewrite_set(self):
+        console = ScriptedConsole(["q"])
+        self.assertEqual(record.main(["--config", str(self.config), "--set", "rewrite"], api=self.fake,
+                                     console=console), 0)
+        self.assertEqual(self.fake.opened, 0)  # quit before recording: the microphone was never opened
+        shown = "\n".join(console.lines)
+        self.assertIn("[1/4] rw-01", shown)
+        self.assertIn("Texto selecionado (não ler):", shown)
+        self.assertFalse(self.recordings.exists())
+
+    def test_rewrite_recordings_must_stay_under_local(self):
+        with self.assertRaises(record.SettingsError):
+            record.Session(rows=[], mapping={}, known=frozenset(), recordings_dir=self.root / "elsewhere",
+                           manifest_path=self.root / "elsewhere" / "manifesto.json", capture_factory=None,
+                           console=ScriptedConsole([]))
+
+
 if __name__ == "__main__":
     unittest.main()

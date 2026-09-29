@@ -15,7 +15,9 @@ model and the personal vocabulary as hints (``quill.streaming``), the
 indicator (``quill.indicator``), the text pipeline (``TextPipeline``:
 cleanup, vocabulary matching, learned corrections, the target window's
 profile) and the injector (``quill.inject``). Sessions are run by
-``quill.session.SessionManager``. Learning from corrections is wired too:
+``quill.session.SessionManager``. Command mode (``quill.command``) rewrites
+the selection with the local Ollama model when the command trigger is bound.
+Learning from corrections is wired too:
 the correction key and manual-edit detection (``quill.corrections``,
 ``quill.edits``) see the key events of the hooks in memory only.
 
@@ -42,6 +44,7 @@ from pathlib import Path
 
 from quill import startup
 from quill.cleanup import Cleanup
+from quill.command import COMMAND_TIMEOUT_S, CommandMode, CommandRewriter
 from quill.config import LOCAL_CONFIG, REPO_ROOT, Config, ConfigError, load_config
 from quill.corrections import CorrectionKey, CorrectionStore, Dictation, Learner, new_dictation_id
 from quill.edits import EditTracker, KeyTranslator, ManualEdits
@@ -321,6 +324,7 @@ class Parts:
     hooks_factory: Callable[[], object] = real_hooks
     layout: object | None = None  # keyboard layout for manual-edit detection; None disables it
     client: object | None = None  # local Ollama client (llm cleanup)
+    command_client: object | None = None  # local Ollama client of command mode; None disables it
     vocabulary: Vocabulary = field(default_factory=Vocabulary)
     generic_terms: Sequence[str] = ()
     clock: Callable[[], float] = time.perf_counter
@@ -328,6 +332,7 @@ class Parts:
     wall_clock: Callable[[], float] = time.time
     focus_options: dict = field(default_factory=dict)
     inject_options: dict = field(default_factory=dict)
+    command_options: dict = field(default_factory=dict)
 
 
 class QuillApp:
@@ -343,6 +348,11 @@ class QuillApp:
         self.pipeline = TextPipeline(config, vocabulary=parts.vocabulary, generic_terms=parts.generic_terms,
                                      describe=lambda target: window_info(api, target.hwnd), learner=self.learner,
                                      client=parts.client)
+        self.command: CommandMode | None = None
+        if config.trigger("command").enabled and parts.command_client is not None:
+            rewriter = CommandRewriter(parts.command_client, config.ollama_model)
+            self.command = CommandMode(api, self.injector, rewriter, lambda target: window_info(api, target.hwnd),
+                                       **parts.command_options)
         self.correction_key = CorrectionKey(self.learner, self._read_selection, api.foreground_window)
         self.edits: ManualEdits | None = None
         if parts.layout is not None:
@@ -353,7 +363,7 @@ class QuillApp:
                                      EditTracker(config.edit_window_s), api.foreground_window)
         self.sessions = SessionManager(
             transcriber=self.transcriber, capture_factory=parts.capture_factory, focus=self.focus,
-            injector=self.injector, indicator=parts.indicator, pipeline=self.pipeline,
+            injector=self.injector, indicator=parts.indicator, pipeline=self.pipeline, command=self.command,
             on_session_start=self._session_started, on_typed=self._typed, housekeeping=self._housekeeping,
             clock=parts.clock,
         )
@@ -389,8 +399,8 @@ class QuillApp:
         except BaseException:
             self.stop()
             raise
-        log.info("Quill started (engine %s, cleanup %s, indicator %s)", self.config.engine_model,
-                 self.config.cleanup_mode, self.config.indicator_position)
+        log.info("Quill started (engine %s, cleanup %s, indicator %s, command mode %s)", self.config.engine_model,
+                 self.config.cleanup_mode, self.config.indicator_position, "on" if self.command else "off")
 
     def _wait_loaded(self, started: float) -> None:
         while not self.transcriber.ready.wait(LOAD_WAIT_S):
@@ -541,6 +551,8 @@ def real_parts(config: Config) -> Parts:
         instance=InstanceLock(),
         layout=Win32Layout(),
         client=OllamaClient(config.ollama_url) if config.cleanup_mode == "llm" else None,
+        command_client=(OllamaClient(config.ollama_url, timeout_s=COMMAND_TIMEOUT_S)
+                        if config.trigger("command").enabled else None),
         vocabulary=vocabulary,
         generic_terms=terms,
     )
@@ -621,7 +633,9 @@ def check_readiness(config: Config, *, models_dir: Path | None = None, venv: Pat
         detail = f"{config.ollama_model} " + ("installed" if found else "not installed")
     except OSError as exc:
         found, detail = False, f"Ollama not reachable ({type(exc).__name__})"
-    usage = "used by the llm cleanup" if needed else "not used while cleanup is rules"
+    uses = [use for use, on in (("used by the llm cleanup", needed),
+                                 ("used by command mode", config.trigger("command").enabled)) if on]
+    usage = " and ".join(uses) if uses else "not used (rules cleanup, no command trigger)"
     lines.append(CheckLine("ollama", found, f"{detail}; {usage}", required=needed))
 
     try:

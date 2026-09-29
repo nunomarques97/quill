@@ -2,8 +2,10 @@
 
 ``load_settings`` returns the settings of the commands set (the 44 takes read
 in place from the reference project) with the dictation set attached as
-``settings.dictation``. The dictation set lives in this repository: its script
-is committed and its recordings stay under the ignored ``local/`` folder.
+``settings.dictation`` and the command-mode set of spoken rewrite
+instructions as ``settings.rewrite``. Both live in this repository: their
+scripts are committed and their recordings stay under the ignored ``local/``
+folder.
 """
 
 from __future__ import annotations
@@ -25,6 +27,12 @@ DICTATION_RECORDINGS = LOCAL_DIR / "recordings" / "dictation"
 DICTATION_PREFIX = "dt"
 DICTATION_EXPECTED_TAKES = 36
 DICTATION_MIN_TAKES = 30
+
+REWRITE_SCRIPT = REPO_ROOT / "bench" / "dictation" / "guiao-reescrita-pt.md"
+REWRITE_RECORDINGS = LOCAL_DIR / "recordings" / "rewrite"
+REWRITE_PREFIX = "rw"
+REWRITE_EXPECTED_TAKES = 20
+REWRITE_MIN_TAKES = 16
 
 ID_PREFIX = re.compile(r"^[a-z]{2,8}$")
 PLACEHOLDER_KEY = re.compile(r"^<projeto-\d+>$")
@@ -51,6 +59,8 @@ class Settings:
     # Placeholder -> project name shown while recording (dictation set only).
     projects: tuple[tuple[str, str], ...] | None = None
     dictation: Settings | None = None
+    # Spoken rewrite instructions for command mode (commands set only).
+    rewrite: Settings | None = None
     # MME input device name for bench.record; None falls back to the reference config.
     recorder_device: str | None = None
 
@@ -61,8 +71,9 @@ class Settings:
     def for_set(self, name: str) -> Settings:
         if name == self.name:
             return self
-        if self.dictation is not None and name == self.dictation.name:
-            return self.dictation
+        for extra in (self.dictation, self.rewrite):
+            if extra is not None and name == extra.name:
+                return extra
         raise SettingsError(f"unknown dataset set: {name}")
 
 
@@ -82,50 +93,64 @@ def _inside(path: Path, root: Path) -> bool:
     return resolved == root.resolve() or root.resolve() in resolved.parents
 
 
-def _dictation(data: dict, reference_config: Path) -> Settings:
-    table = data.get("dictation", {})
+def _script_set(data: dict, section: str, reference_config: Path, *, recordings: Path, script: Path, prefix: str,
+                expected: int, minimum: int, projects: bool) -> Settings:
+    """A set recorded with bench.record from a committed script: [dictation] or [rewrite]."""
+    table = data.get(section, {})
     if not isinstance(table, dict):
-        raise SettingsError("benchmark settings: [dictation] must be a table")
+        raise SettingsError(f"benchmark settings: [{section}] must be a table")
 
     def text(key: str) -> str | None:
         value = table.get(key)
         if value is not None and (not isinstance(value, str) or not value.strip()):
-            raise SettingsError(f"benchmark settings: [dictation].{key} must be a non-empty string")
+            raise SettingsError(f"benchmark settings: [{section}].{key} must be a non-empty string")
         return value
 
-    recordings_dir = _repo_path(text("recordings_dir")) if text("recordings_dir") else DICTATION_RECORDINGS
+    recordings_dir = _repo_path(text("recordings_dir")) if text("recordings_dir") else recordings
     if not _inside(recordings_dir, LOCAL_DIR):
-        raise SettingsError("benchmark settings: [dictation].recordings_dir must be under the ignored local/ folder")
-    script = _repo_path(text("recording_script")) if text("recording_script") else DICTATION_SCRIPT
-    prefix = text("id_prefix") or DICTATION_PREFIX
+        raise SettingsError(f"benchmark settings: [{section}].recordings_dir must be under the ignored local/ folder")
+    script = _repo_path(text("recording_script")) if text("recording_script") else script
+    prefix = text("id_prefix") or prefix
     if not ID_PREFIX.match(prefix):
-        raise SettingsError("benchmark settings: [dictation].id_prefix must be 2-8 lowercase letters")
-    expected = _positive(table.get("expected_takes", DICTATION_EXPECTED_TAKES), "[dictation].expected_takes")
-    minimum = _positive(table.get("min_takes", DICTATION_MIN_TAKES), "[dictation].min_takes")
+        raise SettingsError(f"benchmark settings: [{section}].id_prefix must be 2-8 lowercase letters")
+    expected = _positive(table.get("expected_takes", expected), f"[{section}].expected_takes")
+    minimum = _positive(table.get("min_takes", minimum), f"[{section}].min_takes")
     if minimum > expected:
-        raise SettingsError("benchmark settings: [dictation].min_takes cannot exceed expected_takes")
-    projects = table.get("projects")
+        raise SettingsError(f"benchmark settings: [{section}].min_takes cannot exceed expected_takes")
     mapping: tuple[tuple[str, str], ...] | None = None
-    if projects is not None:
-        if not isinstance(projects, dict):
-            raise SettingsError("benchmark settings: [dictation.projects] must be a table")
-        for key, value in projects.items():
+    table_projects = table.get("projects") if projects else None
+    if table_projects is not None:
+        if not isinstance(table_projects, dict):
+            raise SettingsError(f"benchmark settings: [{section}.projects] must be a table")
+        for key, value in table_projects.items():
             if not PLACEHOLDER_KEY.match(key) or not isinstance(value, str) or not value.strip():
-                raise SettingsError("benchmark settings: [dictation.projects] maps \"<projeto-N>\" to a project name")
-        mapping = tuple(sorted((key, value.strip()) for key, value in projects.items()))
+                raise SettingsError(f"benchmark settings: [{section}.projects] maps \"<projeto-N>\" to a project name")
+        mapping = tuple(sorted((key, value.strip()) for key, value in table_projects.items()))
     return Settings(
         recordings_dir=recordings_dir,
         recording_script=script,
         reference_config=reference_config,
         manifest=recordings_dir / DEFAULT_MANIFEST_NAME,
         expected_takes=expected,
-        name="dictation",
+        name=section,
         id_prefix=prefix,
         min_takes=minimum,
         markup=True,
         allow_pending=True,
         projects=mapping,
     )
+
+
+def _dictation(data: dict, reference_config: Path) -> Settings:
+    return _script_set(data, "dictation", reference_config, recordings=DICTATION_RECORDINGS, script=DICTATION_SCRIPT,
+                       prefix=DICTATION_PREFIX, expected=DICTATION_EXPECTED_TAKES, minimum=DICTATION_MIN_TAKES,
+                       projects=True)
+
+
+def _rewrite(data: dict, reference_config: Path) -> Settings:
+    return _script_set(data, "rewrite", reference_config, recordings=REWRITE_RECORDINGS, script=REWRITE_SCRIPT,
+                       prefix=REWRITE_PREFIX, expected=REWRITE_EXPECTED_TAKES, minimum=REWRITE_MIN_TAKES,
+                       projects=False)
 
 
 def load_settings(path: Path | None = None) -> Settings:
@@ -177,5 +202,6 @@ def load_settings(path: Path | None = None) -> Settings:
         manifest=manifest,
         expected_takes=expected,
         dictation=_dictation(data, reference_config),
+        rewrite=_rewrite(data, reference_config),
         recorder_device=device.strip() if isinstance(device, str) else None,
     )

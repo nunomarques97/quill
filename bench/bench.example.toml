@@ -30,6 +30,16 @@ expected_takes = 44
 # "<projeto-1>" = "first-project-name"
 # "<projeto-2>" = "second-project-name"
 
+# Optional: the command-mode set of spoken rewrite instructions (defaults
+# shown), recorded with `bench.record --set rewrite`. Its script is committed
+# invented text; its recordings stay under the ignored local/ folder.
+# [rewrite]
+# recordings_dir = "local/recordings/rewrite"   # must be under local/
+# recording_script = "bench/dictation/guiao-reescrita-pt.md"
+# id_prefix = "rw"
+# expected_takes = 20
+# min_takes = 16
+
 # Optional: MME input device used by bench.record. A name truncated by MME to
 # 31 characters still matches. Without it the reference config's microphone
 # name ([microfone].nome) is used.

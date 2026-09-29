@@ -9,7 +9,8 @@ hook worker thread and runs each hold as a session:
   a press only shows the ``loading`` state: nothing is recorded, and its
   release does nothing.
 - ``confirm``: the dictation and send-to-Claude triggers click at the pointer
-  (``quill.focus``) and capture the target window.
+  (``quill.focus``) and capture the target window; the command trigger never
+  clicks and captures the foreground window, where the selection is.
 - ``stop``: the capture stops, the final transcription is requested and the
   session is queued for finalization; the hook thread is free again, so a new
   press starts capturing immediately.
@@ -20,7 +21,10 @@ One finalizer thread takes the released sessions strictly in release order:
 it waits for the final text, runs the text pipeline (cleanup, vocabulary,
 learned corrections, the target's profile), types the text once into the
 session's own target and, for the send trigger, presses Enter only after a
-successful injection into a Claude Code window. A failure (microphone,
+successful injection into a Claude Code window. A command session hands
+the final text, the spoken instruction, to ``quill.command.CommandMode``,
+which copies the selection, rewrites it with the local model and types the
+rewrite over it; the indicator shows ``command`` while it listens. A failure (microphone,
 engine, target gone, foreground changed, ...) ends that session with the
 ``error`` state and a European Portuguese message; the next session is not
 affected. The capture, the transcription job and the indicator state are
@@ -47,6 +51,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from quill import command as commands
 from quill import inject
 from quill import focus as focus_reasons
 from quill.indicator.render import COMMAND, ERROR, LISTENING, LOADING, SENT, TRANSCRIBING
@@ -83,7 +88,7 @@ MESSAGES = {
     ENGINE_ERROR: "O reconhecimento de voz falhou",
     ENGINE_TIMEOUT: "O reconhecimento de voz demorou demasiado",
     NO_SPEECH: "Não ouvi nada",
-    COMMAND_UNAVAILABLE: "O modo comando ainda não está disponível",
+    COMMAND_UNAVAILABLE: "O modo comando não está disponível",
     MODEL_UNAVAILABLE: "Modelo de voz indisponível",
     INTERNAL_ERROR: "Erro interno; o texto não foi escrito",
     NOT_CLAUDE: "Não é o Claude Code: escrito sem Enter",
@@ -103,6 +108,7 @@ MESSAGES = {
     focus_reasons.NO_POINTER: "Nenhum campo de texto sob o ponteiro",
     focus_reasons.BUTTON_HELD: "Solte o outro botão do rato e tente de novo",
     focus_reasons.FOCUS_NOT_MOVED: "O campo não recebeu o foco; tente de novo",
+    **commands.MESSAGES,
 }
 INTERRUPTED = " (escrita interrompida)"
 # Endings where the whole text was typed but something is worth showing.
@@ -207,7 +213,8 @@ class SessionManager:
     ``stop``) that delivers PCM16 16 kHz chunks to ``on_data``; ``focus`` is
     a ``quill.focus.ClickToFocus``; ``injector`` a ``quill.inject.Injector``;
     ``indicator`` a ``quill.indicator.Indicator``; ``pipeline(raw, target)``
-    returns a ``Processed``. ``on_session_start`` runs when a hold starts
+    returns a ``Processed``; ``command`` is a ``quill.command.CommandMode``
+    (None: the command trigger only says it is unavailable). ``on_session_start`` runs when a hold starts
     recording and ``on_typed(target, text)`` after a successful injection
     (manual-edit detection and the correction key); ``housekeeping`` runs
     on the finalizer thread about every ``poll_s``.
@@ -215,6 +222,7 @@ class SessionManager:
 
     def __init__(self, *, transcriber: object, capture_factory: Callable[[Callable[[bytes], None]], object],
                  focus: object, injector: object, indicator: object, pipeline: TextPipeline,
+                 command: object | None = None,
                  on_session_start: Callable[[], None] | None = None,
                  on_typed: Callable[[Target, str], None] | None = None,
                  housekeeping: Callable[[], None] | None = None,
@@ -226,6 +234,7 @@ class SessionManager:
         self.injector = injector
         self.indicator = _SafeIndicator(indicator)
         self.pipeline = pipeline
+        self.command = command
         self.on_session_start = on_session_start
         self.on_typed = on_typed
         self.housekeeping = housekeeping
@@ -332,11 +341,11 @@ class SessionManager:
                     self.indicator.show(ERROR, MESSAGES[MODEL_UNAVAILABLE], hide_after_s=ERROR_SHOW_S)
                 else:
                     self.indicator.show(LOADING)
-            elif hold.action == COMMAND_ACTION:
+            elif hold.action == COMMAND_ACTION and self.command is None:
                 hold.error = COMMAND_UNAVAILABLE
             else:
                 self._live.append(hold)
-                self.indicator.show(LISTENING)
+                self.indicator.show(COMMAND if hold.action == COMMAND_ACTION else LISTENING)
         if stale is not None:
             self._fail(stale, INTERNAL_ERROR)
         if hold.loading:
@@ -368,7 +377,9 @@ class SessionManager:
     def _confirm(self) -> None:
         with self._lock:
             hold = self._active
-        if hold is None or hold.loading or hold.error is not None or hold.action not in CLICK_ACTIONS:
+        if hold is None or hold.loading or hold.error is not None:
+            return
+        if hold.action not in CLICK_ACTIONS and hold.action != COMMAND_ACTION:
             return
         try:
             result = self.focus.on_confirm(hold.action, hold.trigger)
@@ -413,7 +424,10 @@ class SessionManager:
             self._fail(hold, MIC_ERROR)
             return
         if hold.target is None:
-            self._fail(hold, hold.focus_reason if hold.focus_reason in MESSAGES else FOCUS_FAILED)
+            if hold.action == COMMAND_ACTION:
+                self._fail(hold, commands.NO_TARGET)
+            else:
+                self._fail(hold, hold.focus_reason if hold.focus_reason in MESSAGES else FOCUS_FAILED)
             return
         hold.handle = hold.asr.release()
         hold.released_at = self.clock()
@@ -475,6 +489,9 @@ class SessionManager:
                 log.warning("session %d: engine failed (%s)", hold.number, result.error)
                 self._fail(hold, ENGINE_ERROR)
                 return
+            if hold.action == COMMAND_ACTION:
+                self._finalize_command(hold, result.text, engine_at)
+                return
             if not result.text.strip():
                 self._fail(hold, NO_SPEECH)
                 return
@@ -511,6 +528,17 @@ class SessionManager:
         except Exception as exc:  # noqa: BLE001 - the message may not carry text: log the type only
             log.error("session %d: finalization failed (%s)", hold.number, type(exc).__name__)
             self._fail(hold, INTERNAL_ERROR)
+
+    def _finalize_command(self, hold: _Hold, instruction: str, engine_at: float) -> None:
+        outcome = self.command.run(instruction, hold.target)
+        latency = self.clock() - hold.released_at
+        steps = ", ".join(f"{name[:-2]} {seconds * 1000:.0f} ms" for name, seconds in outcome.timings.items())
+        log.info("session %d: command %s; release to done %.0f ms (engine %.0f ms%s)", hold.number, outcome.reason,
+                 latency * 1000, (engine_at - hold.released_at) * 1000, f", {steps}" if steps else "")
+        if outcome.ok:
+            self._end(hold, outcome.reason, typed=outcome.typed, latency=latency)
+        else:
+            self._fail(hold, outcome.reason, typed=outcome.typed)
 
     def _press_enter(self, hold: _Hold) -> bool:
         try:
@@ -580,7 +608,7 @@ class SessionManager:
         return all(other.number <= hold.number for other in self._live)
 
     def _show_outcome(self, hold: _Hold, reason: str, typed: int) -> None:
-        if reason in (TYPED, CANCELLED):
+        if reason in (TYPED, CANCELLED, commands.REWRITTEN):
             older = self._live[-1] if self._live else None
             if older is not None:
                 # An older session is still being finalized: show it again.

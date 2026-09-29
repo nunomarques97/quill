@@ -14,8 +14,11 @@
 buttons = ["xbutton1"]
 keys = ["f13", "right_ctrl"]
 
-# Hold with text selected and speak an instruction to rewrite the selection.
-# The command trigger never clicks, so the selection is kept.
+# Hold with text selected and speak an instruction to rewrite the selection
+# ("põe isto mais formal", "traduz para inglês", "encurta"). The command
+# trigger never clicks, so the selection is kept. On release the selection is
+# copied (the clipboard is put back), rewritten by the local [ollama] model and
+# typed over the selection. Terminals are refused. Empty lists disable it.
 [triggers.command]
 buttons = []
 keys = ["f14"]

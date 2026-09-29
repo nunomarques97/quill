@@ -46,6 +46,9 @@ py -3.12 -m quill.profiles --check                  # style samples per profile 
 py -3.12 -m bench.intent --run bench/results/pipeline/<run> --reviews bench/results/intent-review/<file>.json [--rejudge]
 .venv\Scripts\python -m bench.streaming --set all --mode deterministic   # streamed text quality
 .venv\Scripts\python -m bench.streaming --set all --mode realtime        # release-to-final latency
+py -3.12 -m bench.record --set rewrite              # record the spoken rewrite instructions
+py -3.12 -m bench.rewrite --dry-run                 # rewrite script and recording counts, no GPU
+.venv\Scripts\python -m bench.rewrite                # command mode: instruction WER, correctness, latency
 py -3.12 -m bench.pipeline --summary docs/research/phase2-summary.json --require complete --require overall
 py -3.12 -m bench.pipeline --summary docs/research/phase2-summary.json --write-doc docs/research/FASE2.md
 py -3.12 -m bench.pipeline --summary docs/research/phase2-summary.json --check-doc docs/research/FASE2.md
@@ -285,6 +288,34 @@ again), never an entry.
   the entry plus a suffix (plurals stay). Shorter entries change only on an
   exact folded match or a variant; two entries equally close leave the span
   alone. It uses the vocabulary list only, never the reference text.
+
+### Command mode (rewrite set)
+
+The `rewrite` set measures command mode: with text selected, the Sponsor
+holds the command trigger and says what to do with it.
+
+- The script `bench/dictation/guiao-reescrita-pt.md` is committed invented
+  text with the columns `id` (`rw-NN`), `caso`, `frase` (the spoken
+  instruction, with the dictation markup), `seleção` (the invented selected
+  text), `língua` (`pt` or `en`, the language of the rewrite) and
+  `preservar` (terms the rewrite must keep, `;`-separated, or `—`).
+- `py -3.12 -m bench.record --set rewrite` records it under
+  `local/recordings/rewrite/` (the optional `[rewrite]` table in
+  `local/bench.toml` changes the folder, script or minimum; any folder must
+  be under `local/`). The recorder shows the selection for context, marked
+  not to be read, and then the instruction to say.
+- `bench.rewrite` replays each take through the product's streaming engine,
+  sends the transcribed instruction and the selection to
+  `quill.command.CommandRewriter` (the product's Ollama model, prompt and
+  validation) and measures instruction WER, rewrite correctness
+  (deterministic checks: accepted by the product, target language, preserved
+  terms, shorter for `encurtar`, hyphen items for `lista`, changed text
+  otherwise; plus the local judge unless `--no-judge`) and p50/p95 latency of
+  the instruction, the rewrite and both.
+- Per-take text and the human-checkable table (with an empty Sponsor column)
+  go only to `bench/results/rewrite/<run>/`. The summary holds aggregates
+  only, is written under `bench/results/` by default and is refused when a
+  spoken or script text would leak into it.
 
 ### Streaming replay
 

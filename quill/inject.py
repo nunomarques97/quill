@@ -217,6 +217,10 @@ class Injector:
             return NO_TARGET, "no foreground window at key press"
         return self._target_problem(target) or self._integrity_problem(target)
 
+    def check(self, target: Target | None) -> tuple[str, str] | None:
+        """(reason, detail) when ``target`` would be refused now; None when it may receive input."""
+        return self._preflight(target)
+
     def _wait_modifiers(self, wait_s: float) -> bool:
         deadline = self.clock() + wait_s
         while any(self.api.key_down(vk) for vk in SHORTCUT_MODIFIERS):

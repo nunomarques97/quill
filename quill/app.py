@@ -72,6 +72,7 @@ from quill.hooks import TriggerHooks, monotonic_ms, real_hooks
 from quill.indicator.render import ERROR, LOADING
 from quill.inject import NEWLINE_SHIFT_ENTER, NEWLINE_SPACE, Injector, Target
 from quill.notify import ALERTS_DIR, AlertListener
+from quill.projects import ProjectDetector, ProjectFolders
 from quill.profiles import CLAUDE_CODE, Profiles, StyleError, WindowInfo, apply_profile, load_style_samples, style_prompt, window_info
 from quill.session import CLEANUP_FALLBACK, Processed, SessionManager
 from quill.streaming import StreamingTranscriber, options_for
@@ -292,12 +293,17 @@ class TextPipeline:
     the rewrite keeps one paragraph (the ``vscode`` layout, same style).
     ``use_vocabulary`` swaps the words to keep and the matcher at once; a
     call already running finishes with the ones it started with.
+    In the ``claude-code`` and ``vscode`` profiles ``projects``
+    (``quill.projects.ProjectDetector``) names the window's project and its
+    local folder; when it finds none (or is None) the project is today's
+    hint from the window title (``quill.autorewrite.project_hint``).
     """
 
     def __init__(self, config: Config, *, vocabulary: Vocabulary, generic_terms: Sequence[str],
                  describe: Callable[[Target], WindowInfo | None], learner: Learner | None = None,
-                 client: object | None = None) -> None:
+                 client: object | None = None, projects: ProjectDetector | None = None) -> None:
         self.config = config
+        self.projects = projects
         self.generic_terms = tuple(generic_terms)
         self.use_vocabulary(vocabulary)
         self.profiles = Profiles(config.profiles)
@@ -355,9 +361,16 @@ class TextPipeline:
         newline, rewrite_profile = NEWLINE_SPACE, profile
         if profile == CLAUDE_CODE:
             newline, rewrite_profile = (NEWLINE_SPACE, EDITOR_PROFILE) if terminal else (NEWLINE_SHIFT_ENTER, profile)
-        project = project_hint(info, names) if profile in (CLAUDE_CODE, EDITOR_PROFILE) else ""
+        project, folder = "", None
+        if profile in (CLAUDE_CODE, EDITOR_PROFILE):
+            found = (self.projects.detect(info, target.pid, claude_code=profile == CLAUDE_CODE)
+                     if self.projects is not None else None)
+            if found is not None:
+                project, folder = found.name, found.folder
+            else:
+                project = project_hint(info, names)
         return Processed(text, profile, profile == CLAUDE_CODE, notice, keep=keep, project=project,
-                         rewrite_profile=rewrite_profile, newline=newline)
+                         project_folder=folder, rewrite_profile=rewrite_profile, newline=newline)
 
 
 # ---------------------------------------------------------------- parts and app
@@ -383,6 +396,7 @@ class Parts:
     speaker: object | None = None  # spoken project names (quill.speech.Speaker); None: only the sound
     launcher: object | None = None  # opens voice-command shortcuts (quill.shortcuts.ShellLauncher); None: off
     voice_model: object | None = None  # decodes the voice holds (load / transcribe / close); None: ``model`` does
+    processes: object | None = None  # reads a terminal's Claude Code session (quill.win32.Processes); None: titles only
     vocabulary: Vocabulary = field(default_factory=Vocabulary)
     generic_terms: Sequence[str] = ()
     vocabulary_file: VocabularyFile | None = None  # read again before each dictation; None: never reloaded
@@ -405,9 +419,11 @@ class QuillApp:
         hints = whisper_hints(parts.vocabulary, (), parts.generic_terms)
         self.transcriber = StreamingTranscriber(parts.model, options_for(config.engine_model), hints)
         self.learner = Learner(CorrectionStore(config.corrections_path), clock=parts.wall_clock)
+        self.projects = ProjectDetector(ProjectFolders(config.project_context.folders, config.voice.shortcut_dirs),
+                                        parts.processes)
         self.pipeline = TextPipeline(config, vocabulary=parts.vocabulary, generic_terms=parts.generic_terms,
                                      describe=lambda target: window_info(api, target.hwnd), learner=self.learner,
-                                     client=parts.client)
+                                     client=parts.client, projects=self.projects)
         self.command: CommandMode | None = None
         if config.trigger("command").enabled and parts.command_client is not None:
             # The names and terms a rewrite keeps verbatim follow the reloaded vocabulary.
@@ -751,7 +767,7 @@ def real_parts(config: Config) -> Parts:
     from quill.sound import WinsoundPlayer
     from quill.speech import real_speaker
     from quill.whisper import Whisper
-    from quill.win32 import User32
+    from quill.win32 import Processes, User32
 
     source, terms = load_personal(config)
     return Parts(
@@ -778,6 +794,7 @@ def real_parts(config: Config) -> Parts:
         launcher=ShellLauncher() if config.trigger("voice").enabled else None,
         voice_model=(WarmModel(Whisper(config.voice.model))
                      if config.trigger("voice").enabled and config.voice.model != config.engine_model else None),
+        processes=Processes(),
     )
 
 

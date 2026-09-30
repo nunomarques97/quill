@@ -616,3 +616,55 @@ class FakeAlertEvents:
     def open(self) -> list[str]:
         with self._condition:
             return list(self.names.values())
+
+
+class FakeProcesses:
+    """A process table in memory for ``quill.projects``: nothing real is listed, opened or read.
+
+    ``table`` maps pid -> (parent pid, image name, creation time or None);
+    ``directories`` maps pid -> current directory, or an exception to raise.
+    ``integrity`` maps pid -> integrity RID (default medium, like Quill);
+    ``other_users`` holds the pids of another user. ``calls`` records reads.
+    """
+
+    def __init__(self, table: dict[int, tuple[int, str, int | None]] | None = None,
+                 directories: dict[int, object] | None = None) -> None:
+        self.table = dict(table or {})
+        self.directories = dict(directories or {})
+        self.integrity: dict[int, int | None] = {}
+        self.other_users: set[int] = set()
+        self.own = INTEGRITY_MEDIUM
+        self.fail_list: Exception | None = None
+        self.vanish: set[int] = set()  # pids whose creation time changes while their directory is read
+        self.calls: list[tuple[str, int]] = []
+
+    def processes(self) -> list[tuple[int, int, str]]:
+        self.calls.append(("processes", 0))
+        if self.fail_list is not None:
+            raise self.fail_list
+        return [(pid, parent, image) for pid, (parent, image, _) in self.table.items()]
+
+    def created(self, pid: int) -> int | None:
+        entry = self.table.get(pid)
+        return None if entry is None else entry[2]
+
+    def same_user(self, pid: int) -> bool:
+        return pid in self.table and pid not in self.other_users
+
+    def own_integrity(self) -> int | None:
+        return self.own
+
+    def process_integrity(self, pid: int) -> int | None:
+        return self.integrity.get(pid, INTEGRITY_MEDIUM) if pid in self.table else None
+
+    def current_directory(self, pid: int) -> str:
+        self.calls.append(("current_directory", pid))
+        if pid in self.vanish:
+            parent, image, created = self.table[pid]
+            self.table[pid] = (parent, image, (created or 0) + 1)
+        value = self.directories.get(pid)
+        if isinstance(value, Exception):
+            raise value
+        if value is None:
+            raise OSError("fake: process not readable")
+        return value

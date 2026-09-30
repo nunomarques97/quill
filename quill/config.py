@@ -9,10 +9,12 @@ local file that binds mouse 5 to ``send_claude`` keeps loading).
 The merged result is validated strictly: unknown field names, unsupported key
 or button names, an input bound twice within the same file, a non-loopback Ollama address or a
 personal-data path outside ``local/``, a voice trigger with a mouse button or
-more than one key, or a shortcut folder that is not an absolute path raise
+more than one key, a shortcut folder or a project folder that is not an
+absolute path, or a project folder in the committed example raise
 ``ConfigError``. Error messages
 name the field only, never its value, because values can be personal (for
-example the microphone name).
+example the microphone name); a project folder is named by its position,
+never by its project name.
 
 Usage: py -3.12 -m quill.config --check [PATH]
 """
@@ -25,7 +27,7 @@ import re
 import sys
 import tomllib
 import urllib.parse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from quill.notify import DEFAULT_FILTER, FILTERS
@@ -73,6 +75,12 @@ MAX_TEXT = 200
 # [voice_commands] shortcut_dirs: how many folders, and how long each path may be.
 MAX_SHORTCUT_DIRS = 20
 MAX_PATH_TEXT = 260
+# [project_context] folders: how many projects, and how long a project name may be.
+MAX_PROJECT_FOLDERS = 100
+MAX_PROJECT_NAME = 60
+
+# A schema entry whose value is a table of free names (validated by its own reader).
+NAMES_TABLE = "names"
 
 # Allowed fields: a dict is a table, None a value.
 SCHEMA: dict[str, object] = {
@@ -89,6 +97,7 @@ SCHEMA: dict[str, object] = {
     "claude_alert": {"enabled": None, "sound": None, "filter": None, "speak_project": None, "speech_volume": None,
                      "speech_rate": None},
     "voice_commands": {"shortcut_dirs": None, "model": None},
+    "project_context": {"folders": NAMES_TABLE},
     "paths": {"vocabulary": None, "corrections": None, "style": None},
     "profiles": {name: {"processes": None, "classes": None, "titles": None} for name in PROFILE_NAMES},
 }
@@ -171,6 +180,15 @@ class VoiceSettings:
 
 
 @dataclass(frozen=True)
+class ProjectContext:
+    """``[project_context]``: ``folders`` maps a project name to its absolute local
+    folder (only in the ignored ``local/quill.toml``); ``quill.projects`` reads it
+    before the targets of the ``[voice_commands]`` shortcuts."""
+
+    folders: tuple[tuple[str, Path], ...] = field(default=(), repr=False)
+
+
+@dataclass(frozen=True)
 class Config:
     triggers: tuple[Trigger, ...]
     min_hold_ms: int
@@ -192,6 +210,7 @@ class Config:
     autorewrite: AutoRewrite = AutoRewrite()
     claude_alert: ClaudeAlert = ClaudeAlert()
     voice: VoiceSettings = VoiceSettings()
+    project_context: ProjectContext = ProjectContext()
 
     def trigger(self, action: str) -> Trigger:
         for trigger in self.triggers:
@@ -256,7 +275,10 @@ def _check_fields(data: object, schema: dict[str, object], path: str) -> None:
         if key not in schema:
             raise ConfigError(f"quill config: unknown field {here}")
         sub = schema[key]
-        if path == "profiles" and isinstance(value, list):
+        if sub == NAMES_TABLE:
+            if not isinstance(value, dict):
+                raise ConfigError(f"quill config: {here} must be a table")
+        elif path == "profiles" and isinstance(value, list):
             # [[profiles.<name>]]: alternative matchers for one profile.
             if not value:
                 raise ConfigError(f"quill config: {here} needs processes, classes or titles")
@@ -403,8 +425,7 @@ def _voice(data: dict[str, object]) -> VoiceSettings:
     folders: list[Path] = []
     for index, item in enumerate(value):
         here = f"{field}[{index}]"
-        if (not isinstance(item, str) or not item.strip() or len(item) > MAX_PATH_TEXT
-                or any(ord(ch) < 0x20 or 0x7F <= ord(ch) <= 0x9F for ch in item)):
+        if not _printable_path(item):
             raise ConfigError(f"quill config: {here} must be a path of at most {MAX_PATH_TEXT} printable characters")
         path = Path(item)
         if not path.is_absolute():
@@ -412,6 +433,36 @@ def _voice(data: dict[str, object]) -> VoiceSettings:
         folders.append(path)
     model = _choice(_get(data, "voice_commands.model"), "voice_commands.model", ENGINE_MODELS)
     return VoiceSettings(tuple(folders), model)
+
+
+def _printable_path(item: object) -> bool:
+    return (isinstance(item, str) and bool(item.strip()) and len(item) <= MAX_PATH_TEXT
+            and not any(ord(ch) < 0x20 or 0x7F <= ord(ch) <= 0x9F for ch in item))
+
+
+def _project_context(data: dict[str, object]) -> ProjectContext:
+    """``[project_context] folders``; an entry is named by its position only (its name is personal)."""
+    field_name = "project_context.folders"
+    table = _get(data, field_name)
+    if not isinstance(table, dict):
+        raise ConfigError(f"quill config: {field_name} must be a table of project names and folders")
+    if len(table) > MAX_PROJECT_FOLDERS:
+        raise ConfigError(f"quill config: {field_name} takes at most {MAX_PROJECT_FOLDERS} projects")
+    folders: list[tuple[str, Path]] = []
+    for index, (name, value) in enumerate(table.items()):
+        here = f"{field_name} entry {index + 1}"
+        if (not name.strip() or len(name) > MAX_PROJECT_NAME or not name.isprintable()
+                or not any(ch.isalnum() for ch in name)):
+            raise ConfigError(f"quill config: {here} needs a printable project name of at most "
+                              f"{MAX_PROJECT_NAME} characters")
+        if not _printable_path(value):
+            raise ConfigError(f"quill config: {here} must be a folder path of at most {MAX_PATH_TEXT} printable "
+                              "characters")
+        path = Path(value)
+        if not path.is_absolute():
+            raise ConfigError(f"quill config: {here} must be an absolute folder path")
+        folders.append((name.strip(), path))
+    return ProjectContext(tuple(folders))
 
 
 def _min_hold(value: object) -> int:
@@ -491,6 +542,7 @@ def validate(data: dict[str, object]) -> Config:
         autorewrite=_autorewrite(data, triggers, correction),
         claude_alert=_claude_alert(data),
         voice=_voice(data),
+        project_context=_project_context(data),
     )
 
 
@@ -510,6 +562,10 @@ def load_config(local: Path | None = LOCAL_CONFIG, example: Path = EXAMPLE_CONFI
     """The example merged with ``local`` (skipped when None or missing), validated."""
     data = read_toml(example)
     _check_fields(data, SCHEMA, "")
+    if data.get("project_context", {}).get("folders"):
+        # The example is committed: project folders are personal and belong in local/quill.toml only.
+        raise ConfigError(f"quill config: project_context.folders must be empty in {_label(example)}; "
+                          "set it in local/quill.toml")
     if local is not None and local.exists() and local.resolve() != example.resolve():
         override = read_toml(local)
         _check_fields(override, SCHEMA, "")

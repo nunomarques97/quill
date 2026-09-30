@@ -91,6 +91,7 @@ from array import array
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Protocol
 
 from quill import autorewrite
@@ -246,10 +247,13 @@ class Processed:
     claude_code: bool
     # A reason code worth showing although the text was typed (CLEANUP_FALLBACK).
     notice: str | None = None
-    # Context of the automatic rewrite: words kept verbatim, the project read from
-    # the window title, and the profile its layout follows (None: ``profile``).
+    # Context of the automatic rewrite: words kept verbatim, the project of the
+    # window (``quill.projects``, else the hint read from its title), that
+    # project's local folder when known, and the profile its layout follows
+    # (None: ``profile``).
     keep: tuple[str, ...] = field(default=(), repr=False)
     project: str = field(default="", repr=False)
+    project_folder: Path | None = field(default=None, repr=False)
     rewrite_profile: str | None = None
     # How line breaks are typed (``quill.inject`` newline policy).
     newline: str = NEWLINE_SPACE

@@ -415,6 +415,48 @@ class VoiceTest(ConfigCase):
         self.rejected("[voice_commands]\nfolders = []\n", "voice_commands.folders")
 
 
+class ProjectContextTest(ConfigCase):
+    """[project_context] folders: project names to absolute local folders, only in the local file."""
+
+    def test_the_example_leaves_it_empty(self) -> None:
+        self.assertEqual(load_config(None).project_context.folders, ())
+
+    def test_local_folders_are_read_in_order(self) -> None:
+        alpha, beta = str(self.folder / "alpha-app"), str(self.folder / "Beta Site")
+        settings = self.load(f"[project_context.folders]\nalpha-app = '{alpha}'\n\"Beta Site\" = '{beta}'\n")
+        self.assertEqual(settings.project_context.folders, (("alpha-app", Path(alpha)), ("Beta Site", Path(beta))))
+        # The inline form of the example works too, and a missing folder is accepted here (no folder at a press).
+        absent = str(self.folder / "absent")
+        settings = self.load(f"[project_context]\nfolders = {{ gamma = '{absent}' }}\n")
+        self.assertEqual(settings.project_context.folders, (("gamma", Path(absent)),))
+
+    def test_values_are_checked_naming_the_entry_never_the_name_or_path(self) -> None:
+        field = "project_context.folders entry 2"
+        good = f"alpha = '{self.folder}'\n"
+        for bad in ("'relative\\Invented'", "3", "'  '", '"C:\\\\Invented\\u0007Hub"',
+                    "'C:\\" + "a" * config.MAX_PATH_TEXT + "'"):
+            message = self.rejected(f"[project_context.folders]\n{good}secretproj = {bad}\n", field,
+                                    "secretproj", "Invented", "aaaa")
+            self.assertNotIn(str(self.folder), message)
+        self.rejected(f"[project_context.folders]\n{good}\"???\" = '{self.folder}'\n", field)
+        self.rejected(f"[project_context.folders]\n{good}\"{'n' * 61}\" = '{self.folder}'\n", field, "nnnn")
+        many = "".join(f"p{index} = 'C:\\\\P{index}'\n" for index in range(config.MAX_PROJECT_FOLDERS + 1))
+        self.rejected(f"[project_context.folders]\n{many}", "project_context.folders", "P1")
+        self.rejected("[project_context]\nfolders = ['C:\\\\Invented']\n", "project_context.folders", "Invented")
+        self.rejected("[project_context]\nother = 1\n", "project_context.other")
+
+    def test_a_folder_in_the_example_is_refused(self) -> None:
+        example = self.folder / "example.toml"
+        text = config.EXAMPLE_CONFIG.read_text("utf-8").replace(
+            "folders = {}", f"folders = {{ invented = '{self.folder}' }}")
+        self.assertNotEqual(text, config.EXAMPLE_CONFIG.read_text("utf-8"))
+        example.write_text(text, "utf-8")
+        with self.assertRaises(ConfigError) as caught:
+            load_config(None, example)
+        self.assertIn("project_context.folders", str(caught.exception))
+        self.assertNotIn("invented", str(caught.exception))
+
+
 class CliTest(ConfigCase):
     def run_cli(self, *args: str) -> tuple[int, str, str]:
         out, err = io.StringIO(), io.StringIO()

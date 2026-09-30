@@ -11,6 +11,12 @@ self-test, which creates its own windows, adds those calls in a subclass. Its
 only mouse input is a button click at the current pointer position
 (click-to-focus); it never moves the pointer. ``LowLevelHooks`` installs the
 trigger hooks and, like ``User32``, is never created by tests.
+
+``Processes`` lists processes and reads, read-only, the current directory of
+one process of the same user (``quill.projects`` finds the project of a
+Claude Code session in a terminal with it). It opens a process with
+query-limited and VM-read access only, never enables a privilege, and is
+never created by tests either.
 """
 
 from __future__ import annotations
@@ -92,8 +98,18 @@ INTEGRITY_HIGH = 0x3000
 INTEGRITY_SYSTEM = 0x4000
 
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+PROCESS_VM_READ = 0x0010
 TOKEN_QUERY = 0x0008
+TOKEN_USER = 1
 TOKEN_INTEGRITY_LEVEL = 25
+MAX_TOKEN_INFORMATION = 4096
+TH32CS_SNAPPROCESS = 0x00000002
+PROCESS_BASIC_INFORMATION_CLASS = 0
+# 64-bit layout: PEB.ProcessParameters, and RTL_USER_PROCESS_PARAMETERS.CurrentDirectory.DosPath.
+PEB_PROCESS_PARAMETERS = 0x20
+PARAMETERS_CURRENT_DIRECTORY = 0x38
+MAX_PROCESSES = 8192  # entries of one process snapshot
+MAX_DIRECTORY_CHARS = 4096  # characters of a current directory worth reading
 
 GMEM_MOVEABLE = 0x0002
 
@@ -187,12 +203,82 @@ if sys.platform == "win32":
 
     WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ULONG_PTR),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260),
+        ]
+
+    class PROCESS_BASIC_INFORMATION(ctypes.Structure):
+        _fields_ = [
+            ("ExitStatus", wintypes.LONG),
+            ("PebBaseAddress", ctypes.c_void_p),
+            ("AffinityMask", ULONG_PTR),
+            ("BasePriority", wintypes.LONG),
+            ("UniqueProcessId", ULONG_PTR),
+            ("InheritedFromUniqueProcessId", ULONG_PTR),
+        ]
+
+    class UNICODE_STRING(ctypes.Structure):
+        _fields_ = [("Length", wintypes.USHORT), ("MaximumLength", wintypes.USHORT), ("Buffer", ctypes.c_void_p)]
+
 
 def bind(dll: object, name: str, restype: object, *argtypes: object) -> None:
     """Declare the signature of one exported function."""
     function = getattr(dll, name)
     function.restype = restype
     function.argtypes = list(argtypes)
+
+
+def _bind_tokens(kernel32: object, advapi32: object) -> None:
+    """The process and token calls ``User32`` and ``Processes`` share."""
+    w = wintypes
+    bind(kernel32, "GetCurrentProcess", w.HANDLE)
+    bind(kernel32, "OpenProcess", w.HANDLE, w.DWORD, w.BOOL, w.DWORD)
+    bind(kernel32, "CloseHandle", w.BOOL, w.HANDLE)
+    bind(advapi32, "OpenProcessToken", w.BOOL, w.HANDLE, w.DWORD, ctypes.POINTER(w.HANDLE))
+    bind(advapi32, "GetTokenInformation", w.BOOL, w.HANDLE, ctypes.c_int, ctypes.c_void_p, w.DWORD,
+         ctypes.POINTER(w.DWORD))
+    bind(advapi32, "GetSidSubAuthorityCount", ctypes.POINTER(ctypes.c_ubyte), ctypes.c_void_p)
+    bind(advapi32, "GetSidSubAuthority", ctypes.POINTER(w.DWORD), ctypes.c_void_p, w.DWORD)
+
+
+def _token_information(kernel32: object, advapi32: object, process: int, kind: int) -> object | None:
+    """One ``GetTokenInformation`` buffer of a process token, or None when Windows refuses it."""
+    token = wintypes.HANDLE()
+    if not advapi32.OpenProcessToken(process, TOKEN_QUERY, ctypes.byref(token)):
+        return None
+    try:
+        size = wintypes.DWORD()
+        advapi32.GetTokenInformation(token, kind, None, 0, ctypes.byref(size))
+        if not size.value or size.value > MAX_TOKEN_INFORMATION:
+            return None
+        buffer = ctypes.create_string_buffer(size.value)
+        if not advapi32.GetTokenInformation(token, kind, buffer, size, ctypes.byref(size)):
+            return None
+        return buffer
+    finally:
+        kernel32.CloseHandle(token)
+
+
+def _token_integrity(kernel32: object, advapi32: object, process: int) -> int | None:
+    """Integrity RID of a process token; None when Windows refuses to tell."""
+    buffer = _token_information(kernel32, advapi32, process, TOKEN_INTEGRITY_LEVEL)
+    if buffer is None:
+        return None
+    sid = ctypes.cast(buffer, ctypes.POINTER(TOKEN_MANDATORY_LABEL)).contents.Label.Sid
+    count = advapi32.GetSidSubAuthorityCount(sid).contents.value
+    if not count:
+        return None
+    return int(advapi32.GetSidSubAuthority(sid, count - 1).contents.value)
 
 
 class User32:
@@ -228,21 +314,14 @@ class User32:
         bind(user32, "SetClipboardData", w.HANDLE, w.UINT, w.HANDLE)
         bind(user32, "GetClipboardSequenceNumber", w.DWORD)
         bind(user32, "GetClipboardFormatNameW", ctypes.c_int, w.UINT, w.LPWSTR, ctypes.c_int)
-        bind(kernel32, "GetCurrentProcess", w.HANDLE)
+        _bind_tokens(kernel32, advapi32)
         bind(kernel32, "GetCurrentProcessId", w.DWORD)
-        bind(kernel32, "OpenProcess", w.HANDLE, w.DWORD, w.BOOL, w.DWORD)
-        bind(kernel32, "CloseHandle", w.BOOL, w.HANDLE)
         bind(kernel32, "QueryFullProcessImageNameW", w.BOOL, w.HANDLE, w.DWORD, w.LPWSTR, ctypes.POINTER(w.DWORD))
         bind(kernel32, "GlobalAlloc", w.HGLOBAL, w.UINT, ctypes.c_size_t)
         bind(kernel32, "GlobalFree", w.HGLOBAL, w.HGLOBAL)
         bind(kernel32, "GlobalLock", ctypes.c_void_p, w.HGLOBAL)
         bind(kernel32, "GlobalUnlock", w.BOOL, w.HGLOBAL)
         bind(kernel32, "GlobalSize", ctypes.c_size_t, w.HGLOBAL)
-        bind(advapi32, "OpenProcessToken", w.BOOL, w.HANDLE, w.DWORD, ctypes.POINTER(w.HANDLE))
-        bind(advapi32, "GetTokenInformation", w.BOOL, w.HANDLE, ctypes.c_int, ctypes.c_void_p, w.DWORD,
-              ctypes.POINTER(w.DWORD))
-        bind(advapi32, "GetSidSubAuthorityCount", ctypes.POINTER(ctypes.c_ubyte), ctypes.c_void_p)
-        bind(advapi32, "GetSidSubAuthority", ctypes.POINTER(w.DWORD), ctypes.c_void_p, w.DWORD)
 
     # ------------------------------------------------------------ input
 
@@ -342,25 +421,7 @@ class User32:
     # ------------------------------------------------------------ processes
 
     def _token_integrity(self, process: int) -> int | None:
-        token = wintypes.HANDLE()
-        if not self._advapi32.OpenProcessToken(process, TOKEN_QUERY, ctypes.byref(token)):
-            return None
-        try:
-            size = wintypes.DWORD()
-            self._advapi32.GetTokenInformation(token, TOKEN_INTEGRITY_LEVEL, None, 0, ctypes.byref(size))
-            if not size.value:
-                return None
-            buffer = ctypes.create_string_buffer(size.value)
-            if not self._advapi32.GetTokenInformation(token, TOKEN_INTEGRITY_LEVEL, buffer, size,
-                                                      ctypes.byref(size)):
-                return None
-            sid = ctypes.cast(buffer, ctypes.POINTER(TOKEN_MANDATORY_LABEL)).contents.Label.Sid
-            count = self._advapi32.GetSidSubAuthorityCount(sid).contents.value
-            if not count:
-                return None
-            return int(self._advapi32.GetSidSubAuthority(sid, count - 1).contents.value)
-        finally:
-            self._kernel32.CloseHandle(token)
+        return _token_integrity(self._kernel32, self._advapi32, process)
 
     def own_integrity(self) -> int | None:
         return self._token_integrity(self._kernel32.GetCurrentProcess())
@@ -446,6 +507,146 @@ class User32:
             self._kernel32.GlobalFree(handle)
             return False
         return True
+
+
+class Processes:
+    """Real process listing and read-only current-directory reads (``quill.projects``).
+
+    Every open asks for ``PROCESS_QUERY_LIMITED_INFORMATION`` (plus
+    ``PROCESS_VM_READ`` for the directory) and nothing more; no privilege is
+    ever enabled, so a process of another user or a protected one cannot be
+    opened. Tests never create this class; they pass a fake.
+    """
+
+    def __init__(self) -> None:
+        if sys.platform != "win32":
+            raise Win32Error("process reads are only available on Windows")
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        ntdll = ctypes.WinDLL("ntdll")
+        self._kernel32, self._advapi32, self._ntdll = kernel32, advapi32, ntdll
+        w = wintypes
+        _bind_tokens(kernel32, advapi32)
+        bind(kernel32, "CreateToolhelp32Snapshot", w.HANDLE, w.DWORD, w.DWORD)
+        bind(kernel32, "Process32FirstW", w.BOOL, w.HANDLE, ctypes.POINTER(PROCESSENTRY32W))
+        bind(kernel32, "Process32NextW", w.BOOL, w.HANDLE, ctypes.POINTER(PROCESSENTRY32W))
+        bind(kernel32, "GetProcessTimes", w.BOOL, w.HANDLE, ctypes.POINTER(w.FILETIME), ctypes.POINTER(w.FILETIME),
+             ctypes.POINTER(w.FILETIME), ctypes.POINTER(w.FILETIME))
+        bind(kernel32, "IsWow64Process", w.BOOL, w.HANDLE, ctypes.POINTER(w.BOOL))
+        bind(kernel32, "ReadProcessMemory", w.BOOL, w.HANDLE, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t,
+             ctypes.POINTER(ctypes.c_size_t))
+        bind(ntdll, "NtQueryInformationProcess", w.LONG, w.HANDLE, ctypes.c_int, ctypes.c_void_p, w.ULONG,
+             ctypes.POINTER(w.ULONG))
+        bind(advapi32, "EqualSid", w.BOOL, ctypes.c_void_p, ctypes.c_void_p)
+
+    def processes(self, limit: int = MAX_PROCESSES) -> list[tuple[int, int, str]]:
+        """(pid, parent pid, image file name) of the running processes, at most ``limit``."""
+        snapshot = self._kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        if not snapshot or snapshot == ctypes.c_void_p(-1).value:
+            raise Win32Error("process snapshot failed")
+        try:
+            entry = PROCESSENTRY32W()
+            entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+            found: list[tuple[int, int, str]] = []
+            more = self._kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+            while more and len(found) < limit:
+                found.append((int(entry.th32ProcessID), int(entry.th32ParentProcessID), entry.szExeFile))
+                more = self._kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+            return found
+        finally:
+            self._kernel32.CloseHandle(snapshot)
+
+    def _open(self, pid: int, access: int) -> int:
+        process = self._kernel32.OpenProcess(access, False, pid)
+        if not process:
+            raise Win32Error("process not open")
+        return process
+
+    def created(self, pid: int) -> int | None:
+        """The creation time of a process (FILETIME units), or None when it cannot be read."""
+        try:
+            process = self._open(pid, PROCESS_QUERY_LIMITED_INFORMATION)
+        except Win32Error:
+            return None
+        try:
+            times = [wintypes.FILETIME() for _ in range(4)]
+            if not self._kernel32.GetProcessTimes(process, *(ctypes.byref(item) for item in times)):
+                return None
+            return (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
+        finally:
+            self._kernel32.CloseHandle(process)
+
+    def same_user(self, pid: int) -> bool:
+        """Whether the process runs as the user Quill runs as; False when it cannot be told."""
+        try:
+            process = self._open(pid, PROCESS_QUERY_LIMITED_INFORMATION)
+        except Win32Error:
+            return False
+        try:
+            theirs = _token_information(self._kernel32, self._advapi32, process, TOKEN_USER)
+            own = _token_information(self._kernel32, self._advapi32, self._kernel32.GetCurrentProcess(), TOKEN_USER)
+            if theirs is None or own is None:
+                return False
+            sids = [ctypes.cast(buffer, ctypes.POINTER(SID_AND_ATTRIBUTES)).contents.Sid for buffer in (theirs, own)]
+            return bool(self._advapi32.EqualSid(*sids))
+        finally:
+            self._kernel32.CloseHandle(process)
+
+    def own_integrity(self) -> int | None:
+        return _token_integrity(self._kernel32, self._advapi32, self._kernel32.GetCurrentProcess())
+
+    def process_integrity(self, pid: int) -> int | None:
+        """Integrity RID of a process; None when Windows refuses to tell."""
+        try:
+            process = self._open(pid, PROCESS_QUERY_LIMITED_INFORMATION)
+        except Win32Error:
+            return None
+        try:
+            return _token_integrity(self._kernel32, self._advapi32, process)
+        finally:
+            self._kernel32.CloseHandle(process)
+
+    def _read(self, process: int, address: int, size: int) -> bytes:
+        buffer = ctypes.create_string_buffer(size)
+        done = ctypes.c_size_t()
+        if not address or not self._kernel32.ReadProcessMemory(process, ctypes.c_void_p(address), buffer, size,
+                                                               ctypes.byref(done)) or done.value != size:
+            raise Win32Error("process memory not readable")
+        return buffer.raw
+
+    def current_directory(self, pid: int, max_chars: int = MAX_DIRECTORY_CHARS) -> str:
+        """The current directory of a 64-bit process, read from its process parameters.
+
+        Raises ``Win32Error`` when the process cannot be opened or read, is a
+        32-bit process, or the directory is empty, longer than ``max_chars``
+        or not UTF-16. The directory is never logged.
+        """
+        if ctypes.sizeof(ctypes.c_void_p) != 8:
+            raise Win32Error("process reads need a 64-bit Quill")
+        process = self._open(pid, PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ)
+        try:
+            wow64 = wintypes.BOOL()
+            if not self._kernel32.IsWow64Process(process, ctypes.byref(wow64)) or wow64.value:
+                raise Win32Error("not a 64-bit process")
+            info = PROCESS_BASIC_INFORMATION()
+            size = wintypes.ULONG()
+            if self._ntdll.NtQueryInformationProcess(process, PROCESS_BASIC_INFORMATION_CLASS, ctypes.byref(info),
+                                                     ctypes.sizeof(info), ctypes.byref(size)) != 0:
+                raise Win32Error("process information not readable")
+            peb = info.PebBaseAddress or 0
+            parameters = int.from_bytes(self._read(process, peb + PEB_PROCESS_PARAMETERS if peb else 0, 8), "little")
+            raw = self._read(process, parameters + PARAMETERS_CURRENT_DIRECTORY if parameters else 0,
+                             ctypes.sizeof(UNICODE_STRING))
+            path = UNICODE_STRING.from_buffer_copy(raw)
+            if not path.Length or path.Length % 2 or path.Length > 2 * max_chars:
+                raise Win32Error("current directory out of bounds")
+            data = self._read(process, path.Buffer or 0, path.Length)
+            try:
+                return data.decode("utf-16-le")
+            except UnicodeDecodeError:
+                raise Win32Error("current directory not text") from None
+        finally:
+            self._kernel32.CloseHandle(process)
 
 
 class LowLevelHooks:

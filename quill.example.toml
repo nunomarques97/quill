@@ -193,6 +193,24 @@ speech_rate = 1.0
 shortcut_dirs = []
 model = "large-v3"
 
+# The project of the Claude Code or VS Code window a dictation goes to
+# (quill.projects). Quill reads the project name from the window title (a
+# project hub title "<projeto> | <ficheiro> - Visual Studio Code [<vista>]",
+# or the folder part of VS Code's standard title), or, for Claude Code in a
+# terminal, from the folder the single Claude Code session of that window
+# runs in (its nearest Git root). The name leads to the project folder
+# through folders below first, then through the targets of the
+# [voice_commands] shortcuts (a folder, or a VS Code shortcut to a folder or
+# a .code-workspace file). Names compare ignoring case, accents and
+# punctuation. An unknown project keeps the hint from the window title.
+# folders maps a project name to its absolute local folder. Project names
+# and folders are personal: set them only in local/quill.toml, for example
+#   [project_context.folders]
+#   "nome-do-projeto" = 'D:\pasta\do\projeto'
+# Here it stays empty.
+[project_context]
+folders = {}
+
 # Personal data. Paths are relative to the repository and must stay inside
 # the ignored local/ folder. style is a folder of writing samples:
 # <profile>.txt (for example whatsapp.txt), or default.txt for every profile

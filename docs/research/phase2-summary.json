@@ -33,7 +33,8 @@
     "cleanup",
     "vocabulary",
     "corrections",
-    "profiles"
+    "profiles",
+    "rewrite"
   ],
   "sets": {
     "commands": {
@@ -174,6 +175,36 @@
           "profile_takes": {
             "default": 44
           }
+        },
+        "rewrite": {
+          "n": 44,
+          "wer_verbatim": 0.2472,
+          "wer_clean": 0.2472,
+          "term_error_rate": 0.4706,
+          "term_occurrences": 17,
+          "name_error_rate": 0.1579,
+          "name_occurrences": 38,
+          "intent_preserved": 0.3636,
+          "intent_judged": 44,
+          "intent_note": null,
+          "filler_spans": null,
+          "filler_removal_rate": null,
+          "content_words": null,
+          "content_deleted": null,
+          "content_deleted_by_cleanup": null,
+          "max_audio_s": 6.272,
+          "long_takes": 0,
+          "rewritten": 0,
+          "unchanged": 0,
+          "refused": 0,
+          "refusal_reasons": {},
+          "failed": 0,
+          "timeouts": 0,
+          "word_changes": 0,
+          "content_deleted_by_rewrite": null,
+          "content_fixed_by_rewrite": null,
+          "wer_clean_long_before": null,
+          "wer_clean_long": null
         }
       }
     },
@@ -318,6 +349,38 @@
             "vscode": 9,
             "whatsapp": 9
           }
+        },
+        "rewrite": {
+          "n": 36,
+          "wer_verbatim": 0.171,
+          "wer_clean": 0.1031,
+          "term_error_rate": 0.0,
+          "term_occurrences": 44,
+          "name_error_rate": 0.0,
+          "name_occurrences": 9,
+          "intent_preserved": 0.5833,
+          "intent_judged": 36,
+          "intent_note": null,
+          "filler_spans": 56,
+          "filler_removal_rate": 0.9643,
+          "content_words": 960,
+          "content_deleted": 19,
+          "content_deleted_by_cleanup": null,
+          "max_audio_s": 18.048,
+          "long_takes": 7,
+          "rewritten": 3,
+          "unchanged": 3,
+          "refused": 1,
+          "refusal_reasons": {
+            "added": 1
+          },
+          "failed": 0,
+          "timeouts": 0,
+          "word_changes": 2,
+          "content_deleted_by_rewrite": 0,
+          "content_fixed_by_rewrite": 2,
+          "wer_clean_long_before": 0.1225,
+          "wer_clean_long": 0.1159
         }
       }
     }
@@ -330,6 +393,13 @@
     "hints": 41,
     "hints_dropped": 46,
     "restreamed": true
+  },
+  "rewrite": {
+    "model": "qwen3:8b",
+    "min_audio_s": 15.0,
+    "min_words": 40,
+    "timeout_s": 4.0,
+    "product_default": true
   },
   "command_mode": {
     "engine_model": "large-v3-turbo",

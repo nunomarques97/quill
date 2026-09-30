@@ -37,6 +37,10 @@ CLEANUP_MODES = ("rules", "llm")
 ENGINE_MODELS = (DEFAULT_MODEL, PRECISE_MODEL)
 MIN_HOLD_RANGE = (50, 2000)
 EDIT_WINDOW_RANGE = (5, 600)
+# Automatic rewrite of long dictations: what counts as long, and how long the model may take.
+REWRITE_AUDIO_RANGE = (5.0, 120.0)
+REWRITE_WORDS_RANGE = (10, 1000)
+REWRITE_TIMEOUT_RANGE = (0.5, 30.0)
 
 # Virtual-key codes of the inputs a trigger may use.
 BUTTONS = {"middle": 0x04, "xbutton1": 0x05, "xbutton2": 0x06}
@@ -64,6 +68,7 @@ SCHEMA: dict[str, object] = {
     "ollama": {"url": None, "model": None},
     "cleanup": {"mode": None},
     "corrections": {"key": None, "edit_window_s": None},
+    "autorewrite": {"enabled": None, "min_audio_s": None, "min_words": None, "timeout_s": None},
     "paths": {"vocabulary": None, "corrections": None, "style": None},
     "profiles": {name: {"processes": None, "classes": None, "titles": None} for name in PROFILE_NAMES},
 }
@@ -103,6 +108,17 @@ class ProfileMatcher:
 
 
 @dataclass(frozen=True)
+class AutoRewrite:
+    """``[autorewrite]``: a dictation longer than ``min_audio_s`` seconds of audio or
+    ``min_words`` words is checked by the local model, which may take ``timeout_s``."""
+
+    enabled: bool = False
+    min_audio_s: float = 15.0
+    min_words: int = 40
+    timeout_s: float = 4.0
+
+
+@dataclass(frozen=True)
 class Config:
     triggers: tuple[Trigger, ...]
     min_hold_ms: int
@@ -121,6 +137,7 @@ class Config:
     # how long manual edits of a typed text are followed.
     correction_key: Input | None = None
     edit_window_s: int = 30
+    autorewrite: AutoRewrite = AutoRewrite()
 
     def trigger(self, action: str) -> Trigger:
         for trigger in self.triggers:
@@ -272,6 +289,26 @@ def _edit_window(value: object) -> int:
     return value
 
 
+def _number(value: object, field: str, bounds: tuple[float, float]) -> float:
+    low, high = bounds
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not low <= value <= high:
+        raise ConfigError(f"quill config: {field} must be a number from {low:g} to {high:g}")
+    return float(value)
+
+
+def _autorewrite(data: dict[str, object]) -> AutoRewrite:
+    words = _get(data, "autorewrite.min_words")
+    low, high = REWRITE_WORDS_RANGE
+    if not isinstance(words, int) or isinstance(words, bool) or not low <= words <= high:
+        raise ConfigError(f"quill config: autorewrite.min_words must be an integer from {low} to {high}")
+    return AutoRewrite(
+        enabled=_bool(_get(data, "autorewrite.enabled"), "autorewrite.enabled"),
+        min_audio_s=_number(_get(data, "autorewrite.min_audio_s"), "autorewrite.min_audio_s", REWRITE_AUDIO_RANGE),
+        min_words=words,
+        timeout_s=_number(_get(data, "autorewrite.timeout_s"), "autorewrite.timeout_s", REWRITE_TIMEOUT_RANGE),
+    )
+
+
 def _min_hold(value: object) -> int:
     low, high = MIN_HOLD_RANGE
     if not isinstance(value, int) or isinstance(value, bool) or not low <= value <= high:
@@ -345,6 +382,7 @@ def validate(data: dict[str, object]) -> Config:
         profiles=_profiles(data),
         correction_key=_correction_key(_get(data, "corrections.key"), triggers),
         edit_window_s=_edit_window(_get(data, "corrections.edit_window_s")),
+        autorewrite=_autorewrite(data),
     )
 
 

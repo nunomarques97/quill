@@ -11,6 +11,7 @@ Usage:
     .venv\\Scripts\\python -m bench.pipeline --set all --stage vocabulary --summary PATH [--vocabulary FILE]
     .venv\\Scripts\\python -m bench.pipeline --set all --stage corrections --summary PATH [--vocabulary FILE]
     .venv\\Scripts\\python -m bench.pipeline --set all --stage profiles --summary PATH [--vocabulary FILE]
+    .venv\\Scripts\\python -m bench.pipeline --set all --stage rewrite --summary PATH [--vocabulary FILE]
 
 Two sets are measured: ``commands`` (the 44 short takes of the reference
 project) and ``dictation`` (the dictation script recorded with bench.record).
@@ -48,7 +49,23 @@ the ``corrections`` text: each dictation take gets the profile of its script
 without one (the commands set) the ``default`` profile. The rules change
 punctuation and sentence-start capitals only; the row adds
 ``profile_changes`` (takes whose text changed) and ``profile_takes`` (takes
-per profile). It is the final text of the application.
+per profile). It is the final text of the application while the automatic
+rewrite is off.
+``rewrite`` applies the product's automatic rewrite of long dictations
+(``quill.autorewrite``, the local Ollama model of quill's config) to the
+``profiles`` text: a take over the ``[autorewrite]`` thresholds of
+quill.example.toml (audio seconds or words) is rewritten with its profile,
+the product's words to keep (personal vocabulary, resolved names, generic
+terms) and, in the editor profiles (claude-code, vscode), the take's project
+standing in for the project read from the window title; every other take is
+unchanged. The measurement ignores the product timeout, so the counts do not
+depend on the machine's load; the calls slower than it are reported with the
+timings. The row adds the takes rewritten, unchanged and refused (with the
+guard's reasons), ``content_deleted_by_rewrite`` (content words that the
+``profiles`` text had right and the rewrite lost; target 0),
+``content_fixed_by_rewrite`` and the clean WER of the long takes before and
+after. The rewrite is the final text only when quill.example.toml turns it
+on (``summary["rewrite"]["product_default"]``).
 
 ``--compare-cleanup RUN`` needs no GPU: it reads the streamed outputs saved by
 an earlier run and compares the rules with the local qwen3:8b cleanup
@@ -98,17 +115,20 @@ from bench.metrics import (
 )
 from bench.normalize import normalize_words
 from bench.settings import RESULTS_DIR, Settings, SettingsError, load_settings
+from quill import autorewrite
+from quill.autorewrite import AutoRewriter, is_long
+from quill.config import AutoRewrite
 from quill.cleanup import Cleanup, CleanupResult, clean_text
 from quill.corrections import ACTIVE, Corrections, Replacement, derive, phrase_key
-from quill.profiles import DEFAULT as DEFAULT_PROFILE, apply_profile
+from quill.profiles import CLAUDE_CODE, DEFAULT as DEFAULT_PROFILE, apply_profile
 from quill.vocabulary import EMPTY as NO_VOCABULARY, LOCAL_VOCABULARY, Matcher, Vocabulary, VocabularyError, hint_list, hints_within_limit, load_vocabulary, whisper_hints
 from quill.whisper import DEFAULT_MODEL
 
 SETS = ("commands", "dictation")
 # Cumulative stages, in order. Only the ones in IMPLEMENTED_STAGES can run.
-STAGE_ORDER = ("raw", "streamed", "cleanup", "vocabulary", "corrections", "profiles")
+STAGE_ORDER = ("raw", "streamed", "cleanup", "vocabulary", "corrections", "profiles", "rewrite")
 IMPLEMENTED_STAGES = STAGE_ORDER
-TARGET_NAMES = ("complete", "latency", "cleanup", "vocabulary", "corrections", "overall", "desktop")
+TARGET_NAMES = ("complete", "latency", "cleanup", "vocabulary", "corrections", "overall", "desktop", "rewrite")
 SUMMARY_SCHEMA = 1
 DEFAULT_SUMMARY = RESULTS_DIR / "pipeline" / "summary.json"
 # The baseline engine of the raw stage; the streamed stage uses the product's.
@@ -130,6 +150,15 @@ MAX_TERM_ERROR = 0.10
 VOCABULARY_GATED_SETS = ("dictation",)
 MAX_FINAL_WER = 0.10
 MIN_INTENT = 0.95
+# Automatic rewrite of long dictations (Phase 3): it becomes the default only
+# with 0 content words deleted, a clean WER no worse than the profiles stage
+# and a warm p95 of at most 3 s (a timing: under bench/results/ only).
+MAX_REWRITE_P95_S = 3.0
+# In these profiles the window title names the open project; the take's
+# project stands in for it.
+EDITOR_PROFILES = (CLAUDE_CODE, "vscode")
+# The measurement's own timeout: the counts must not depend on the machine's load.
+REWRITE_BENCH_TIMEOUT_S = 120.0
 
 # Command mode and the manual desktop self-tests: deterministic counts only.
 COMMAND_MODE_KEYS = (
@@ -412,6 +441,62 @@ def profile_samples(samples: Sequence[Sample], keep: Sequence[str], clock: Calla
     return shaped, {"profile_changes": changed, "profile_takes": dict(sorted(takes.items()))}
 
 
+def rewrite_samples(samples: Sequence[Sample], rewriter: AutoRewriter, keep: Sequence[str], markup: bool,
+                    product_timeout_s: float | None = None) -> tuple[list[Sample], dict]:
+    """The rewrite stage: the product's automatic rewrite on each long ``profiles`` text.
+
+    A take is long by its audio length or its word count, as in the product.
+    Returns the samples and aggregate counts only; ``rewrite_p50_s``,
+    ``rewrite_p95_s`` (the model calls of long takes) and
+    ``rewrite_over_timeout`` (calls slower than ``product_timeout_s``) are
+    wall-clock timings that ``split_timings`` moves out of the summary.
+    """
+    rewritten: list[Sample] = []
+    outcomes: Counter = Counter()
+    refusals: Counter = Counter()
+    seconds: list[float] = []
+    changes = 0
+    long_pairs: list[tuple[str, str, str]] = []  # clean reference, before, after
+    for sample in samples:
+        take = sample.take
+        profile = take.style or DEFAULT_PROFILE
+        project = take.project_names[0] if profile in EDITOR_PROFILES and len(take.project_names) == 1 else ""
+        result = rewriter.rewrite(sample.hypothesis, audio_s=take.duration_s, profile=profile, keep=keep,
+                                  project=project)
+        rewritten.append(Sample(take, result.text, sample.seconds + result.seconds))
+        if result.called:
+            seconds.append(result.seconds)
+        if is_long(sample.hypothesis, take.duration_s, rewriter.settings):
+            outcomes[result.reason] += 1
+            long_pairs.append((take.clean, sample.hypothesis, result.text))
+            changes += result.changes if result.rewritten else 0
+            if result.reason == autorewrite.REFUSED:
+                refusals[result.detail] += 1
+    info = {
+        "long_takes": len(long_pairs),
+        "rewritten": outcomes[autorewrite.REWRITTEN],
+        "unchanged": outcomes[autorewrite.UNCHANGED],
+        "refused": outcomes[autorewrite.REFUSED],
+        "refusal_reasons": dict(sorted(refusals.items())),
+        "failed": outcomes[autorewrite.FAILED],
+        "timeouts": outcomes[autorewrite.TIMEOUT],
+        "word_changes": changes,
+        "content_deleted_by_rewrite": None,
+        "content_fixed_by_rewrite": None,
+        "wer_clean_long_before": _round(corpus_wer([(clean, before) for clean, before, _ in long_pairs])) if long_pairs else None,
+        "wer_clean_long": _round(corpus_wer([(clean, after) for clean, _, after in long_pairs])) if long_pairs else None,
+        "rewrite_p50_s": _round(percentile_nearest_rank(seconds, 50)),
+        "rewrite_p95_s": _round(percentile_nearest_rank(seconds, 95)),
+        "rewrite_over_timeout": None if product_timeout_s is None else sum(s > product_timeout_s for s in seconds),
+    }
+    if markup:
+        info["content_deleted_by_rewrite"] = sum(
+            len(_matched(previous) - _matched(sample)) for sample, previous in zip(rewritten, samples, strict=True))
+        info["content_fixed_by_rewrite"] = sum(
+            len(_matched(sample) - _matched(previous)) for sample, previous in zip(rewritten, samples, strict=True))
+    return rewritten, info
+
+
 def product_hints(vocabulary: Vocabulary, names: Sequence[str], terms: Sequence[str]) -> Hints:
     """The product's hints: personal names, resolved names, generic terms, personal terms, within the cap."""
     return Hints(names=tuple(whisper_hints(vocabulary, sorted(names), terms)))
@@ -575,6 +660,40 @@ def default_judge() -> tuple[Callable | None, str | None]:
     return (None if unavailable else IntentJudge(client).judge), unavailable
 
 
+def rewrite_info(settings: AutoRewrite, model: str) -> dict:
+    """The product's automatic-rewrite settings, as recorded in the summary."""
+    return {"model": model, "min_audio_s": settings.min_audio_s, "min_words": settings.min_words,
+            "timeout_s": settings.timeout_s, "product_default": settings.enabled}
+
+
+def default_rewriter() -> tuple[AutoRewriter, dict]:
+    """The product's automatic rewrite and its settings, warmed up.
+
+    The Ollama URL and model come from quill's config, the thresholds and
+    whether it is on by default from quill.example.toml. It is measured on
+    whatever the default, with ``REWRITE_BENCH_TIMEOUT_S``. The local model
+    is only listed and asked one short warm-up turn (the p95 is of a warm
+    model, as in a working session); nothing is pulled, loaded on purpose or
+    unloaded. Raises SettingsError when it cannot answer.
+    """
+    from dataclasses import replace
+
+    from quill.config import load_config
+    from quill.ollama import OllamaClient, OllamaError
+
+    config = load_config()
+    product = load_config(local=None).autorewrite
+    client = OllamaClient(config.ollama_url, timeout_s=REWRITE_BENCH_TIMEOUT_S)
+    try:
+        if config.ollama_model not in client.installed():
+            raise SettingsError(f"rewrite stage: {config.ollama_model} is not installed in Ollama")
+        client.chat(config.ollama_model, "Reply with ok.", "ok", max_tokens=8)
+    except OllamaError as exc:
+        raise SettingsError(f"rewrite stage: Ollama unavailable: {' '.join(str(exc).split())[:160]}") from None
+    settings = replace(product, enabled=True, timeout_s=REWRITE_BENCH_TIMEOUT_S)
+    return AutoRewriter(client, config.ollama_model, settings), rewrite_info(product, config.ollama_model)
+
+
 def measure(
     sets: dict[str, tuple[Settings, Dataset]],
     stage: str,
@@ -590,13 +709,21 @@ def measure(
     streamer: Streamer | None = None,
     stream_options: dict | None = None,
     vocabulary: Vocabulary = NO_VOCABULARY,
+    rewriter: AutoRewriter | None = None,
+    rewrite_settings: dict | None = None,
 ) -> dict:
-    """Run the stages up to ``stage`` on every set with the engine kept warm; returns the summary."""
+    """Run the stages up to ``stage`` on every set with the engine kept warm; returns the summary.
+
+    The rewrite stage needs ``rewriter`` (enabled, with the measurement's
+    timeout) and ``rewrite_settings`` (``rewrite_info`` of the product's).
+    """
     if stage not in IMPLEMENTED_STAGES:
         raise ValueError(f"stage not implemented yet: {stage}")
     stages = STAGE_ORDER[: STAGE_ORDER.index(stage) + 1]
     if "streamed" in stages and streamer is None:
         raise ValueError("the streamed stage needs a streamer")
+    if "rewrite" in stages and (rewriter is None or rewrite_settings is None or not rewriter.settings.enabled):
+        raise ValueError("the rewrite stage needs an enabled rewriter and the product's rewrite settings")
     names = sorted({name for _, dataset in sets.values() for name in dataset.names})
     hints = build_hints(names, terms)
     personal = product_hints(vocabulary, names, terms)
@@ -624,6 +751,10 @@ def measure(
     if "vocabulary" in stages:
         kept, dropped = hints_within_limit(hint_list(vocabulary, sorted(names), terms))
         summary["vocabulary"] = {**vocabulary.counts(), "hints": kept, "hints_dropped": dropped, "restreamed": restream}
+    if "rewrite" in stages:
+        summary["rewrite"] = dict(rewrite_settings)
+    # The product keeps every vocabulary word through the rewrite, not only the ones within the hint cap.
+    lexicon = hint_list(vocabulary, sorted(names), terms)
     for set_name, (set_settings, dataset) in sets.items():
         block: dict = {"dataset": dataset_block(set_settings, dataset), "stages": {}}
         summary["sets"][set_name] = block
@@ -642,6 +773,9 @@ def measure(
                 samples, corrections_info = correct_samples(samples, clock)
             elif current == "profiles":  # the window profile rules on the corrected text
                 samples, profiles_info = profile_samples(samples, personal.vocabulary(), clock)
+            elif current == "rewrite":  # the automatic rewrite of long takes on the profiles text
+                samples, rewrite_stage = rewrite_samples(samples, rewriter, lexicon, set_settings.markup,
+                                                         rewrite_settings.get("timeout_s"))
             else:  # vocabulary: the cleaned text, streamed again first when the hints change
                 if restream:
                     streamed = streamer(dataset.takes, personal)
@@ -658,11 +792,14 @@ def measure(
                 block["stages"][current].update(corrections_info)
             if current == "profiles":
                 block["stages"][current].update(profiles_info)
+            if current == "rewrite":
+                block["stages"][current].update(rewrite_stage)
             log(f"{set_name} / {current}: n={len(samples)}" + (f" ({note})" if note else ""))
     return summary
 
 
-TIMING_KEYS = ("load_s", "warmup_s", "transcribe_p50_s", "transcribe_p95_s")
+TIMING_KEYS = ("load_s", "warmup_s", "transcribe_p50_s", "transcribe_p95_s", "rewrite_p50_s", "rewrite_p95_s",
+               "rewrite_over_timeout")
 
 
 def split_timings(summary: dict) -> dict:
@@ -757,9 +894,17 @@ def acceptance_block(folder: Path) -> dict:
 # ---------------------------------------------------------------- targets
 
 
-def _final_stage(set_block: dict) -> tuple[str, dict] | tuple[None, None]:
+def _rewrite_default(summary: dict) -> bool:
+    rewrite = summary.get("rewrite")
+    return isinstance(rewrite, dict) and rewrite.get("product_default") is True
+
+
+def _final_stage(set_block: dict, rewrite_default: bool = False) -> tuple[str, dict] | tuple[None, None]:
+    """The last measured stage that the product types; the rewrite only when it is on by default."""
     stages = set_block.get("stages") or {}
     for stage in reversed(STAGE_ORDER):
+        if stage == "rewrite" and not rewrite_default:
+            continue
         if isinstance(stages.get(stage), dict):
             return stage, stages[stage]
     return None, None
@@ -784,7 +929,7 @@ def check_targets(summary: dict, targets: Sequence[str]) -> list[tuple[bool, str
                 add(False, target, f"{set_name} not measured")
                 continue
             data = block.get("dataset", {})
-            stage, row = _final_stage(block)
+            stage, row = _final_stage(block, _rewrite_default(summary))
             if not data.get("complete") or row is None or row.get("n") != data.get("n_valid"):
                 measured = row.get("n") if row else 0
                 add(False, target, f"{set_name} incomplete: n {measured}, valid {data.get('n_valid')}, minimum {data.get('minimum')}")
@@ -839,6 +984,25 @@ def check_targets(summary: dict, targets: Sequence[str]) -> list[tuple[bool, str
                     add(fixed is not None and fixed >= 1.0, target,
                         f"{set_name} learned recurrences fixed {_pct(fixed)} of {recurrences} (target 100 %)")
                 add(new is not None and new == 0, target, f"{set_name} new word errors {new} (target 0)")
+        elif target == "rewrite":
+            # The gate to make the automatic rewrite the default; its p95 is a
+            # timing and is read from the run's timings file, not here.
+            for set_name, stage, row in per_set(target, "rewrite"):
+                row = sets[set_name]["stages"]["rewrite"]
+                before = sets[set_name]["stages"].get("profiles") or {}
+                deleted, long_takes = row.get("content_deleted_by_rewrite"), row.get("long_takes")
+                if deleted is not None:
+                    add(deleted <= MAX_CONTENT_DELETED, target,
+                        f"{set_name} content words deleted by the rewrite {deleted} (target {MAX_CONTENT_DELETED})")
+                wer, previous = row.get("wer_clean"), before.get("wer_clean")
+                add(wer is not None and previous is not None and wer <= previous, target,
+                    f"{set_name} clean WER {_pct(wer)} (profiles {_pct(previous)}; target no worse)")
+                if not long_takes:
+                    results.append((True, f"info {target}: {set_name} has no long take (nothing rewritten)"))
+                    continue
+                wer, previous = row.get("wer_clean_long"), row.get("wer_clean_long_before")
+                add(wer is not None and previous is not None and wer <= previous, target,
+                    f"{set_name} clean WER of the {long_takes} long takes {_pct(wer)} (before {_pct(previous)}; target no worse)")
         elif target == "overall":
             for set_name, stage, row in per_set(target):
                 wer, intent = row.get("wer_clean"), row.get("intent_preserved")
@@ -885,6 +1049,11 @@ COMMAND_HEADER = (
     "Juiz sim", "Corretas", "Segundas tentativas",
 )
 KIND_HEADER = ("Caso", "n", "Verificações passadas", "Corretas")
+REWRITE_HEADER = (
+    "Reescrita automática", "Ditados longos", "Reescritos", "Sem alterações", "Recusados pela guarda",
+    "Falhas ou tempo esgotado", "Palavras de conteúdo apagadas", "Palavras de conteúdo corrigidas",
+    "WER limpo dos longos (antes → depois)", "WER limpo do conjunto (profiles → rewrite)",
+)
 ACCEPTANCE_HEADER = ("Verificação manual no desktop", "Data", "Resultado")
 TRIGGER_HEADER = ("Ação", "Sinal", "Motivo", "n")
 HOLD_HEADER = ("Gatilho", "Duração do toque", "n")
@@ -938,6 +1107,7 @@ def render_block(summary: dict) -> str:
                 f"{row.get('learned_active')} / {row.get('learned_pending')} / {row.get('learned_conflicts')}",
             )
             lines.append("| " + " | ".join(cells) + " |")
+    lines += _rewrite_lines(summary)
     lines += _command_lines(summary.get("command_mode"))
     lines += _acceptance_lines(summary.get("acceptance"))
     latency = summary.get("latency")
@@ -954,6 +1124,41 @@ def _of(count: object, total: object) -> str:
 
 def _table(header: Sequence[str]) -> list[str]:
     return ["", "| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
+
+
+def _count(value: object) -> str:
+    return EMPTY if value is None else str(value)
+
+
+def _rewrite_lines(summary: dict) -> list[str]:
+    """The automatic rewrite of long takes: outcomes, content kept and WER before and after."""
+    settings = summary.get("rewrite")
+    rows = [(name, row) for name in SETS
+            if isinstance(row := (((summary.get("sets") or {}).get(name) or {}).get("stages") or {}).get("rewrite"), dict)]
+    if not isinstance(settings, dict) or not rows:
+        return []
+    lines = _table(REWRITE_HEADER)
+    for set_name, row in rows:
+        profiles = ((summary["sets"][set_name].get("stages") or {}).get("profiles") or {})
+        reasons = row.get("refusal_reasons") or {}
+        refused = _count(row.get("refused"))
+        if reasons:
+            refused += " (" + ", ".join(f"{reason} {count}" for reason, count in reasons.items()) + ")"
+        cells = (
+            SET_LABELS[set_name], _count(row.get("long_takes")), _count(row.get("rewritten")),
+            _count(row.get("unchanged")), refused, _count((row.get("failed") or 0) + (row.get("timeouts") or 0)),
+            _count(row.get("content_deleted_by_rewrite")), _count(row.get("content_fixed_by_rewrite")),
+            f"{_pt_percent(row.get('wer_clean_long_before'))} → {_pt_percent(row.get('wer_clean_long'))}",
+            f"{_pt_percent(profiles.get('wer_clean'))} → {_pt_percent(row.get('wer_clean'))}",
+        )
+        lines.append("| " + " | ".join(cells) + " |")
+    lines.append("")
+    lines.append(
+        f"Reescrita automática ligada por omissão: {'sim' if settings.get('product_default') is True else 'não'} "
+        f"(modelo {settings.get('model')}; longo = mais de {settings.get('min_audio_s'):g} s de áudio ou mais de "
+        f"{settings.get('min_words')} palavras; limite do produto {settings.get('timeout_s'):g} s)"
+    )
+    return lines
 
 
 def _command_lines(block: object) -> list[str]:
@@ -1097,6 +1302,7 @@ def main(
     judge_factory: Callable[[], tuple[Callable | None, str | None]] = default_judge,
     streamer_factory: Callable[[Engine], tuple[Streamer, dict]] = default_streamer,
     cleaners_factory: Callable[[Sequence[str]], tuple[dict, str | None]] = default_cleaners,
+    rewriter_factory: Callable[[], tuple[AutoRewriter, dict]] = default_rewriter,
     results_dir: Path = RESULTS_DIR,
     out: Callable[[str], None] = print,
 ) -> int:
@@ -1147,20 +1353,29 @@ def main(
             # Every stage from vocabulary on uses the personal vocabulary.
             later = STAGE_ORDER.index(args.stage) >= STAGE_ORDER.index("vocabulary")
             vocabulary = load_vocabulary(args.vocabulary) if later else NO_VOCABULARY
+            rewriter, rewrite_settings = rewriter_factory() if args.stage == "rewrite" else (None, None)
             engine = engine_factory()
             judge, unavailable = judge_factory()
             run_dir = Path(results_dir) / "pipeline" / time.strftime("%Y%m%d-%H%M%S")
             streamer, stream_options = streamer_factory(engine) if args.stage != "raw" else (None, None)
             try:
                 summary = measure(sets, args.stage, engine, judge, unavailable, load_terms(), run_dir, results_dir=results_dir,
-                                  log=out, streamer=streamer, stream_options=stream_options, vocabulary=vocabulary)
+                                  log=out, streamer=streamer, stream_options=stream_options, vocabulary=vocabulary,
+                                  rewriter=rewriter, rewrite_settings=rewrite_settings)
             finally:
                 engine.close()
                 close = getattr(streamer, "close", None)
                 if close is not None:
                     close()
             run_dir.mkdir(parents=True, exist_ok=True)
-            (run_dir / "timings.json").write_text(json.dumps(split_timings(summary), indent=2), encoding="utf-8")
+            timings = split_timings(summary)
+            (run_dir / "timings.json").write_text(json.dumps(timings, indent=2), encoding="utf-8")
+            for set_name, stages in timings["sets"].items():
+                rewrite = stages.get("rewrite") or {}
+                if rewrite.get("rewrite_p95_s") is not None:
+                    out(f"{set_name} / rewrite model calls: p50 {rewrite['rewrite_p50_s']:.2f} s, "
+                        f"p95 {rewrite['rewrite_p95_s']:.2f} s (target <= {MAX_REWRITE_P95_S:.0f} s), "
+                        f"slower than the product timeout {rewrite['rewrite_over_timeout']}")
             texts = [text for _, dataset in sets.values() for text in dataset.reference_texts()]
             spoken_names = [name for _, dataset in sets.values() for name in dataset.names]
             spoken_names += [entry.text for entry in vocabulary.names]

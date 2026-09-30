@@ -262,7 +262,7 @@ class MeasureTest(unittest.TestCase):
 
         summary = pipeline.measure(sets, "profiles", engine, judge_yes, None, TERMS, self.results / "pipeline" / "run",
                                    results_dir=self.results, log=lambda line: None, streamer=streamer)
-        self.assertEqual(summary["stages"], list(pipeline.STAGE_ORDER))
+        self.assertEqual(summary["stages"], list(pipeline.STAGE_ORDER[:-1]))
         dictation = summary["sets"]["dictation"]["stages"]
         row = dictation["profiles"]
         self.assertEqual(row["profile_takes"], {"claude-code": 1, "email": 1, "whatsapp": 1})
@@ -577,6 +577,186 @@ def rewrite_summary():
             "checks_passed_rate": 0.8, "judged": 16, "judge_yes": 16, "correct": 16, "correct_rate": 0.8,
             "by_kind": {"encurtar": {"takes": 3, "checks_passed": 1, "correct": 1}},
             "latency": {"total_p95_s": 1.011}, "dataset": {"recorded": 20}}
+
+
+class RewriteModel:
+    """A fake local model: the reply to each dictated text, or that text unchanged; ``fail`` texts raise."""
+
+    def __init__(self, replies=None, fail=()):
+        self.replies = dict(replies or {})
+        self.fail = tuple(fail)
+        self.calls = []
+
+    def chat(self, model, system, user, max_tokens=None, history=(), timeout_s=None):
+        text = user.split("<dictation>\n", 1)[1].split("\n</dictation>", 1)[0]
+        self.calls.append(SimpleNamespace(system=system, user=user, text=text, timeout_s=timeout_s))
+        if text in self.fail:
+            raise OllamaError("connection refused")
+        return SimpleNamespace(content=self.replies.get(text, text))
+
+
+# Long by words for the invented takes: dt-01 (11 words) and dt-03 (9 words); dt-02 and every command are short.
+REWRITE_ON = pipeline.AutoRewrite(enabled=True, min_audio_s=5.0, min_words=8, timeout_s=4.0)
+DT01 = "Abre o painel do zeta-board e corre os testes de deploy."
+DT01_MISHEARD = "Abre o painel do zeta-board e corre os textos de deploy."
+DT03 = "O commit do omega está pronto para review, obrigado."
+
+
+class RewriteStageTest(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.fx = Sets(self.root)
+        self.results = self.root / "results"
+        self.model = RewriteModel(
+            {DT01_MISHEARD: DT01,  # the misheard word is fixed
+             DT03: "O commit do omega está para review, obrigado."})  # a dropped word: refused by the guard
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def rewriter(self, model=None):
+        return pipeline.AutoRewriter(model or self.model, "fake-llm", REWRITE_ON)
+
+    @staticmethod
+    def streamer(takes, hints):
+        return [(take.clean.replace("testes", "textos"), 0.1) for take in takes]
+
+    def measure(self, product_default=False, model=None, **kwargs):
+        sets = self.fx.loaded()
+        engine = engine_for(sets, lambda take: take.reference)
+        settings = pipeline.rewrite_info(dataclasses.replace(REWRITE_ON, enabled=product_default), "fake-llm")
+        return pipeline.measure(sets, "rewrite", engine, judge_yes, None, TERMS, self.results / "pipeline" / "run",
+                                results_dir=self.results, log=lambda line: None, streamer=self.streamer,
+                                rewriter=self.rewriter(model), rewrite_settings=settings, **kwargs)
+
+    def test_long_takes_are_rewritten_or_refused_and_short_ones_never_reach_the_model(self):
+        summary = self.measure()
+        self.assertEqual(summary["stages"], list(pipeline.STAGE_ORDER))
+        self.assertEqual(summary["rewrite"], {"model": "fake-llm", "min_audio_s": 5.0, "min_words": 8, "timeout_s": 4.0,
+                                              "product_default": False})
+        self.assertEqual([call.text for call in self.model.calls], [DT01_MISHEARD, DT03])
+        first, second = self.model.calls
+        self.assertIn("Active project: zeta-board", first.user)  # an editor profile: the take's project
+        self.assertIn("coding assistant", first.system)  # claude-code layout
+        self.assertNotIn("Active project", second.user)  # email: no project from the window
+        self.assertIn("deploy", first.user)  # the words to keep
+        self.assertEqual(first.timeout_s, 4.0)
+        row = summary["sets"]["dictation"]["stages"]["rewrite"]
+        self.assertEqual((row["long_takes"], row["rewritten"], row["unchanged"], row["refused"], row["failed"],
+                          row["timeouts"]), (2, 1, 0, 1, 0, 0))
+        self.assertEqual(row["refusal_reasons"], {"dropped": 1})
+        self.assertEqual((row["content_deleted_by_rewrite"], row["content_fixed_by_rewrite"], row["word_changes"]), (0, 1, 1))
+        self.assertEqual(row["wer_clean_long"], 0.0)
+        self.assertGreater(row["wer_clean_long_before"], 0.0)
+        self.assertLess(row["wer_clean"], summary["sets"]["dictation"]["stages"]["profiles"]["wer_clean"])
+        commands = summary["sets"]["commands"]["stages"]["rewrite"]
+        self.assertEqual((commands["long_takes"], commands["rewritten"], commands["refused"]), (0, 0, 0))
+        self.assertIsNone(commands["content_deleted_by_rewrite"])  # no markup
+        self.assertIsNone(commands["wer_clean_long"])
+        rows = json.loads((self.results / "pipeline" / "run" / "dictation" / "rewrite.json").read_text(encoding="utf-8"))
+        self.assertEqual([row["hypothesis"] for row in rows][0], DT01)
+        self.assertEqual(rows[2]["hypothesis"], DT03)  # refused: the profiles text is kept
+        timings = pipeline.split_timings(summary)
+        self.assertEqual(set(timings["sets"]["dictation"]["rewrite"]) >= {"rewrite_p50_s", "rewrite_p95_s", "rewrite_over_timeout"}, True)
+        self.assertEqual(timings["sets"]["dictation"]["rewrite"]["rewrite_over_timeout"], 0)
+        self.assertNotIn("rewrite_p95_s", row)
+        self.assertIsNone(timings["sets"]["commands"]["rewrite"]["rewrite_p95_s"])  # no call
+
+    def test_the_rewrite_is_the_final_text_only_when_it_is_the_default(self):
+        off = self.measure()
+        self.assertEqual(pipeline._final_stage(off["sets"]["dictation"])[0], "profiles")
+        overall = " ".join(line for _, line in pipeline.check_targets(off, ["overall"]))
+        self.assertIn("(profiles; target", overall)
+        on = self.measure(product_default=True)
+        self.assertEqual(pipeline._final_stage(on["sets"]["dictation"], True)[0], "rewrite")
+        overall = " ".join(line for _, line in pipeline.check_targets(on, ["overall"]))
+        self.assertIn("(rewrite; target", overall)
+
+    def test_rewrite_target_and_block(self):
+        summary = self.measure()
+        pipeline.split_timings(summary)
+        results = pipeline.check_targets(summary, ["rewrite"])
+        self.assertTrue(all(met for met, _ in results), results)
+        lines = [line for _, line in results]
+        self.assertIn("ok   rewrite: dictation content words deleted by the rewrite 0 (target 0)", lines)
+        self.assertIn("info rewrite: commands has no long take (nothing rewritten)", lines)
+        block = pipeline.render_block(summary)
+        self.assertIn("| ditado | rewrite | 3 |", block)
+        self.assertIn("| ditado | 2 | 1 | 0 | 1 (dropped 1) | 0 | 0 | 1 |", block)
+        self.assertIn("| comandos | 0 | 0 | 0 | 0 | 0 | — | — | — → — |", block)
+        self.assertIn("Reescrita automática ligada por omissão: não (modelo fake-llm; longo = mais de 5 s de áudio "
+                      "ou mais de 8 palavras; limite do produto 4 s)", block)
+        self.assertNotIn("p95", block)
+        # A rewrite that deletes content fails the gate.
+        summary["sets"]["dictation"]["stages"]["rewrite"]["content_deleted_by_rewrite"] = 1
+        summary["sets"]["dictation"]["stages"]["rewrite"]["wer_clean_long"] = 0.5
+        failed = [line for met, line in pipeline.check_targets(summary, ["rewrite"]) if not met]
+        self.assertEqual(len(failed), 2)
+        self.assertTrue(failed[0].startswith("FAIL rewrite: dictation content words deleted by the rewrite 1"))
+        self.assertIn("long takes 50.0 %", failed[1])
+        del summary["sets"]["dictation"]["stages"]["rewrite"]
+        self.assertIn("FAIL rewrite: dictation: rewrite stage not measured (final stage profiles)",
+                      [line for _, line in pipeline.check_targets(summary, ["rewrite"])])
+
+    def test_ollama_failure_keeps_the_text_and_is_counted(self):
+        model = RewriteModel(fail=(DT01_MISHEARD,))
+        summary = self.measure(model=model)
+        row = summary["sets"]["dictation"]["stages"]["rewrite"]
+        self.assertEqual((row["rewritten"], row["unchanged"], row["failed"], row["content_deleted_by_rewrite"]), (0, 1, 1, 0))
+        self.assertEqual(row["wer_clean"], summary["sets"]["dictation"]["stages"]["profiles"]["wer_clean"])
+
+    def test_the_stage_needs_an_enabled_rewriter_and_its_settings(self):
+        sets = self.fx.loaded()
+        engine = engine_for(sets, lambda take: take.reference)
+        for rewriter, settings in ((None, {}), (self.rewriter(), None),
+                                   (pipeline.AutoRewriter(self.model, "m", pipeline.AutoRewrite()), {})):
+            with self.assertRaises(ValueError):
+                pipeline.measure(sets, "rewrite", engine, judge_yes, None, TERMS, self.results / "pipeline" / "run",
+                                 results_dir=self.results, log=lambda line: None, streamer=self.streamer,
+                                 rewriter=rewriter, rewrite_settings=settings)
+
+    def test_cli_rewrite_stage(self):
+        lines = []
+        summary_path = self.root / "out" / "summary.json"
+        factories = []
+
+        def rewriter_factory():
+            factories.append(1)
+            return self.rewriter(), pipeline.rewrite_info(dataclasses.replace(REWRITE_ON, enabled=False), "fake-llm")
+
+        def streamer_factory(engine):
+            return self.streamer, {"step_s": 0.5}
+
+        def run(*argv):
+            lines.clear()
+            with mock.patch.object(pipeline, "load_settings", return_value=self.fx.settings):
+                return pipeline.main(list(argv), engine_factory=lambda: engine_for(self.fx.loaded(), lambda t: t.reference),
+                                     judge_factory=lambda: (judge_yes, None), streamer_factory=streamer_factory,
+                                     rewriter_factory=rewriter_factory, results_dir=self.results, out=lines.append)
+
+        self.assertEqual(run("--stage", "profiles", "--summary", str(summary_path), "--vocabulary", str(self.root / "none.toml")), 0)
+        self.assertEqual(factories, [])  # only the rewrite stage asks for the model
+        self.assertEqual(run("--stage", "rewrite", "--summary", str(summary_path), "--vocabulary", str(self.root / "none.toml")), 0)
+        self.assertEqual(factories, [1])
+        saved = json.loads(summary_path.read_text(encoding="utf-8"))
+        self.assertEqual(saved["rewrite"]["product_default"], False)
+        self.assertNotIn("rewrite_p95_s", saved["sets"]["dictation"]["stages"]["rewrite"])
+        self.assertTrue(any(line.startswith("dictation / rewrite model calls: p50 ") and "(target <= 3 s)" in line
+                            for line in lines), lines)
+        self.assertFalse(any(DT01 in line or "textos" in line for line in lines))
+        runs = sorted((self.results / "pipeline").iterdir())
+        timings = json.loads((runs[-1] / "timings.json").read_text(encoding="utf-8"))
+        self.assertIn("rewrite_p95_s", timings["sets"]["dictation"]["rewrite"])
+        self.assertEqual(run("--summary", str(summary_path), "--require", "rewrite"), 0)
+
+        def unavailable():
+            raise pipeline.SettingsError("rewrite stage: Ollama unavailable: refused")
+
+        with mock.patch.object(pipeline, "load_settings", return_value=self.fx.settings):
+            code = pipeline.main(["--stage", "rewrite", "--summary", str(summary_path)], rewriter_factory=unavailable,
+                                 out=lines.append)
+        self.assertEqual((code, lines[-1]), (2, "error: rewrite stage: Ollama unavailable: refused"))
 
 
 class AcceptanceTest(unittest.TestCase):

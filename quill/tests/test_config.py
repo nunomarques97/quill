@@ -61,6 +61,11 @@ class ExampleTest(ConfigCase):
         for path in (settings.vocabulary_path, settings.corrections_path, settings.style_dir):
             self.assertTrue(path.is_relative_to(local))
 
+    def test_autorewrite_defaults(self) -> None:
+        rewrite = load_config(None).autorewrite
+        self.assertEqual((rewrite.enabled, rewrite.min_audio_s, rewrite.min_words, rewrite.timeout_s),
+                         (True, 15.0, 40, 4.0))
+
     def test_action_for_maps_inputs_to_actions(self) -> None:
         settings = load_config(None)
         self.assertEqual(settings.action_for("button", 0x05), "dictation")
@@ -186,6 +191,28 @@ class RejectTest(ConfigCase):
         self.rejected("[[profiles.slack]]\nprocesses = [\"x.exe\"]\n", "profiles.slack")
         self.rejected("input = 3\n", "input")
         self.rejected("[input.min_hold_ms]\nx = 1\n", "input.min_hold_ms")
+
+    def test_autorewrite_values(self) -> None:
+        rewrite = self.load("[autorewrite]\nenabled = true\nmin_audio_s = 12.5\nmin_words = 30\ntimeout_s = 2\n").autorewrite
+        self.assertEqual((rewrite.enabled, rewrite.min_audio_s, rewrite.min_words, rewrite.timeout_s),
+                         (True, 12.5, 30, 2.0))
+        for text, field in (
+            ("enabled = 1", "autorewrite.enabled"),
+            ('enabled = "yes"', "autorewrite.enabled"),
+            ("min_audio_s = 2", "autorewrite.min_audio_s"),
+            ("min_audio_s = 500", "autorewrite.min_audio_s"),
+            ('min_audio_s = "15"', "autorewrite.min_audio_s"),
+            ("min_audio_s = true", "autorewrite.min_audio_s"),
+            ("min_words = 5", "autorewrite.min_words"),
+            ("min_words = 40.5", "autorewrite.min_words"),
+            ("min_words = false", "autorewrite.min_words"),
+            ("timeout_s = 0", "autorewrite.timeout_s"),
+            ("timeout_s = 60", "autorewrite.timeout_s"),
+            ("undo = 1", "autorewrite.undo"),
+        ):
+            with self.subTest(text=text):
+                message = self.rejected(f"[autorewrite]\n{text}\n", field)
+                self.assertTrue(message.isascii())
 
     def test_microphone_value_never_appears_in_errors(self) -> None:
         self.rejected("[audio]\nmicrophone = \"Invented Mic\\u0007Name\"\n", "audio.microphone", "Invented")

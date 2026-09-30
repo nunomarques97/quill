@@ -1,6 +1,6 @@
 # Quill: medições da Fase 2 com a voz real
 
-**Estado: baseline medida a 2026-09-28** (tarefa T2); **transcrição por blocos medida a 2026-09-29** (tarefa T3, etapa `streamed`); **juiz de intenção revisto e limpeza do texto medida a 2026-09-29** (tarefa T4, etapa `cleanup`); **vocabulário pessoal medido a 2026-09-29** (tarefa T5, etapa `vocabulary`); **aprendizagem de correções medida a 2026-09-29** (tarefa T6, etapa `corrections`); **perfis da janela ativa medidos a 2026-09-29** (tarefa T7, etapa `profiles`); **modo comando e verificações manuais no desktop medidos a 2026-09-29** (tarefa T11); **modo comando da Fase 3 medido a 2026-09-29** (18 de 20 pedidos pelo Sponsor, medidos 20 de 20). Motor decidido pelo Sponsor: Whisper local (faster-whisper, float16, CUDA, RTX 5060 Ti) com vocabulário (`initial_prompt` e `hotwords`), 0 EUR/mês; o áudio não sai do PC. A baseline (`raw`) é do large-v3. Desde a decisão do Sponsor de 2026-09-29, o modelo por omissão da aplicação é o large-v3-turbo, porque só ele cumpre a meta de latência; o large-v3 fica como modo preciso (ver [Transcrição por blocos](#transcrição-por-blocos-etapa-streamed)). A etapa `profiles` é o texto final da aplicação.
+**Estado: baseline medida a 2026-09-28** (tarefa T2); **transcrição por blocos medida a 2026-09-29** (tarefa T3, etapa `streamed`); **juiz de intenção revisto e limpeza do texto medida a 2026-09-29** (tarefa T4, etapa `cleanup`); **vocabulário pessoal medido a 2026-09-29** (tarefa T5, etapa `vocabulary`); **aprendizagem de correções medida a 2026-09-29** (tarefa T6, etapa `corrections`); **perfis da janela ativa medidos a 2026-09-29** (tarefa T7, etapa `profiles`); **modo comando e verificações manuais no desktop medidos a 2026-09-29** (tarefa T11); **modo comando da Fase 3 medido a 2026-09-29** (18 de 20 pedidos pelo Sponsor, medidos 20 de 20); **reescrita automática de ditados longos medida a 2026-09-30** (Fase 3, etapa `rewrite`). Motor decidido pelo Sponsor: Whisper local (faster-whisper, float16, CUDA, RTX 5060 Ti) com vocabulário (`initial_prompt` e `hotwords`), 0 EUR/mês; o áudio não sai do PC. A baseline (`raw`) é do large-v3. Desde a decisão do Sponsor de 2026-09-29, o modelo por omissão da aplicação é o large-v3-turbo, porque só ele cumpre a meta de latência; o large-v3 fica como modo preciso (ver [Transcrição por blocos](#transcrição-por-blocos-etapa-streamed)). A etapa `profiles` é o texto final da aplicação.
 
 Este documento contém só números agregados: nenhum texto falado, nenhum nome de projeto real e nenhum caminho da máquina. Os resultados por frase ficam apenas em `bench/results/`, que o Git ignora. Os números vêm de [phase2-summary.json](phase2-summary.json); o harness está em [bench/](../../bench/README.md#pipeline-evaluation).
 
@@ -19,6 +19,7 @@ Este documento contém só números agregados: nenhum texto falado, nenhum nome 
 - **Digitação, gatilhos e indicador no desktop real (T11):** o Sponsor correu os self-tests manuais. A digitação escreveu 4190 de 4190 caracteres em 5 janelas, sem nenhum perdido, a mais ou trocado (meta 0), e o clipboard ficou igual; o indicador nunca ficou em primeiro plano (0 de 1026 amostras). Ver [Modo comando e verificações manuais](#modo-comando-e-verificações-manuais-t11).
 - **Modo comando (T11), nas 20 instruções faladas pelo Sponsor:** 16 de 20 reescritas corretas (80,0 %); WER da instrução 20,8 %. **Decisão do Sponsor (2026-09-29):** a meta do modo comando é ≥ 90 % de reescritas corretas nestas 20 instruções; os 80,0 % ficam registados como valor medido e a distância (2 reescritas) fica aberta para a próxima execução, como a do WER e da intenção. Ver [Modo comando e verificações manuais](#modo-comando-e-verificações-manuais-t11).
 - **Modo comando na Fase 3: 20 de 20 reescritas corretas (100,0 %), meta ≥ 90 % cumprida.** Um prompt mais claro (instrução mal ouvida, encurtar, lista, termos técnicos iguais ao traduzir) e no máximo uma segunda tentativa quando a resposta vem igual, é recusada ou falha o que a instrução pede. A verificação dos termos a preservar não foi aliviada. Medido duas vezes com as mesmas contagens; 2 das 20 reescritas usaram a segunda tentativa. Ver [Modo comando na Fase 3](#modo-comando-na-fase-3).
+- **Reescrita automática de ditados longos (Fase 3, etapa `rewrite`): ligada por omissão.** Nos 7 ditados longos (mais de 15 s ou 40 palavras), o `qwen3:8b` local corrige palavras mal ouvidas e uma guarda determinística recusa qualquer resposta que perca ou acrescente conteúdo. 0 palavras de conteúdo apagadas (meta 0), WER limpo do ditado de 10,5 % para 10,3 % (longos de 12,2 % para 11,6 %), termos ingleses de 2,3 % para 0,0 %, p95 do modelo cerca de 1,2 s (meta ≤ 3 s). Ver [Reescrita automática de ditados longos](#reescrita-automática-de-ditados-longos-etapa-rewrite).
 - **Latência do largar do gatilho ao texto final (T3):** cumpre a meta de p95 ≤ 0,5 s com o large-v3-turbo, o novo motor por omissão; com o large-v3 nenhuma afinação a cumpria. Em troca, os comandos ficam piores com o turbo (termos ingleses 47,1 % e nomes 18,4 %), o que a T5 tem de recuperar (ver [Transcrição por blocos](#transcrição-por-blocos-etapa-streamed)).
 
 ## Conjuntos
@@ -55,17 +56,26 @@ Tabela gerada a partir de [phase2-summary.json](phase2-summary.json) por `py -3.
 | comandos | vocabulary | 44 | 29,7 % | 29,7 % | 47,1 % | 15,8 % | 36,4 % | — | — | — |
 | comandos | corrections | 44 | 24,7 % | 24,7 % | 47,1 % | 15,8 % | 36,4 % | — | — | — |
 | comandos | profiles | 44 | 24,7 % | 24,7 % | 47,1 % | 15,8 % | 36,4 % | — | — | — |
+| comandos | rewrite | 44 | 24,7 % | 24,7 % | 47,1 % | 15,8 % | 36,4 % | — | — | — |
 | ditado | raw | 36 | 16,9 % | 13,5 % | 2,3 % | 0,0 % | 47,2 % | 64,3 % | 19 | — |
 | ditado | streamed | 36 | 16,5 % | 13,0 % | 2,3 % | 11,1 % | 52,8 % | 64,3 % | 19 | — |
 | ditado | cleanup | 36 | 17,8 % | 11,0 % | 2,3 % | 11,1 % | 55,6 % | 96,4 % | 20 | 0 |
 | ditado | vocabulary | 36 | 17,4 % | 10,6 % | 2,3 % | 0,0 % | 58,3 % | 96,4 % | 19 | — |
 | ditado | corrections | 36 | 17,3 % | 10,5 % | 2,3 % | 0,0 % | 58,3 % | 96,4 % | 19 | — |
 | ditado | profiles | 36 | 17,3 % | 10,5 % | 2,3 % | 0,0 % | 58,3 % | 96,4 % | 19 | — |
+| ditado | rewrite | 36 | 17,1 % | 10,3 % | 0,0 % | 0,0 % | 58,3 % | 96,4 % | 19 | — |
 
 | Conjunto | Erros já aprendidos que se repetem | Corrigidos | Taxa corrigida | Repetições antes de ativar | Erros novos | Substituições aplicadas | Ativas / pendentes / em conflito no fim |
 |---|---|---|---|---|---|---|---|
 | comandos | 18 | 18 | 100,0 % | 4 | 0 | 18 | 3 / 31 / 4 |
 | ditado | 1 | 1 | 100,0 % | 2 | 0 | 1 | 1 / 49 / 0 |
+
+| Reescrita automática | Ditados longos | Reescritos | Sem alterações | Recusados pela guarda | Falhas ou tempo esgotado | Palavras de conteúdo apagadas | Palavras de conteúdo corrigidas | WER limpo dos longos (antes → depois) | WER limpo do conjunto (profiles → rewrite) |
+|---|---|---|---|---|---|---|---|---|---|
+| comandos | 0 | 0 | 0 | 0 | 0 | — | — | — → — | 24,7 % → 24,7 % |
+| ditado | 7 | 3 | 3 | 1 (added 1) | 0 | 0 | 2 | 12,2 % → 11,6 % | 10,5 % → 10,3 % |
+
+Reescrita automática ligada por omissão: sim (modelo qwen3:8b; longo = mais de 15 s de áudio ou mais de 40 palavras; limite do produto 4 s)
 
 | Modo comando | n | WER da instrução | Instruções sem erros | Aceites pelo produto | Verificações passadas | Juiz sim | Corretas | Segundas tentativas |
 |---|---|---|---|---|---|---|---|---|
@@ -227,6 +237,9 @@ Valores da etapa `profiles`, o texto final da aplicação (large-v3-turbo, limpe
 | 0 caracteres perdidos ou duplicados na digitação | não se aplica | não se aplica | cumprida: 0 perdidos, 0 a mais e 0 trocados em 4190 caracteres, em 5 janelas (self-test manual do Sponsor) | T11 |
 | Correções aprendidas: 100 % das repetições corrigidas, 0 erros novos | 18 de 18, 0 novos | 1 de 1, 0 novos | cumprida | T6 |
 | Modo comando: reescritas corretas ≥ 90 % nas 20 instruções faladas (meta do Sponsor, 2026-09-29) | não se aplica | não se aplica | cumprida na Fase 3: 100,0 % (20 de 20; a meta pede 18 de 20); na T11 eram 80,0 % (16 de 20) | Fase 3, modo comando |
+| Reescrita automática de ditados longos: 0 palavras de conteúdo apagadas, WER limpo não pior do que a etapa `profiles`, p95 do modelo ≤ 3 s (condições para ficar ligada por omissão) | não se aplica (nenhum comando é longo) | 0 apagadas; 10,3 % contra 10,5 %; p95 cerca de 1,2 s | cumprida; ligada por omissão | Fase 3, reescrita automática |
+
+Com a reescrita automática ligada, o texto final do ditado passa a ser o da etapa `rewrite`: WER limpo 10,3 % (99 erros em 960 palavras; a meta de 10 % pede no máximo 96, faltam 3), termos ingleses 0,0 %, nomes 0,0 % e intenção 58,3 % (sem mudança). A distância do WER e da intenção continua aberta, como o Sponsor decidiu.
 
 A meta de intenção é a mais distante nos dois conjuntos. O juiz foi revisto à mão na T4 e era brando, não exigente: com o juiz revisto a distância aumentou, e a revisão manual dá valores ainda mais baixos (25,0 % nos comandos e 47,2 % no ditado, na etapa `streamed`). A distância vem sobretudo de erros de reconhecimento (palavras e nomes trocados), que a limpeza não corrige. No fim das camadas de adaptação (T7), o WER final e a intenção continuam fora das metas nos dois conjuntos; o resultado foi ao Sponsor como decisão, sem baixar as metas, e o Sponsor escolheu voltar a medir depois do uso real (ver a secção seguinte).
 
@@ -325,3 +338,30 @@ O self-test guarda agora (versão 2), por gatilho, a duração de cada toque fí
 **Latência** (só neste documento, porque muda de execução para execução): o p95 do modelo foi cerca de 0,6 s (0,59 e 0,61 s) e o p95 do largar do gatilho até à reescrita pronta cerca de 0,8 s (0,78 e 0,81 s), contra 0,8 s e 1,0 s na T11. A segunda tentativa só acrescenta tempo às reescritas que a usam: mais uma chamada ao modelo, e nessas duas o modelo demorou no total cerca de 0,5 s e 1,3 s.
 
 **Risco.** As melhorias foram medidas nas mesmas 20 instruções que revelaram as falhas. Para limitar o sobreajuste, as regras são genéricas, os testes usam instruções e textos inventados, e a mesma contagem saiu em duas medições. A confirmação final é o uso real do Sponsor.
+
+## Reescrita automática de ditados longos (etapa `rewrite`)
+
+**O que faz.** Um ditado com mais de 15 s de áudio ou mais de 40 palavras (limites em `[autorewrite]`) passa, depois da limpeza, do vocabulário, das correções e do perfil, pelo `qwen3:8b` local com um prompt estrito (`quill/autorewrite.py`): corrigir só palavras mal ouvidas, a partir do contexto (perfil da janela, projeto lido do título da janela, vocabulário pessoal e termos genéricos), e manter toda a informação; no perfil Claude Code, o texto sai como um prompt claro, com um item por linha quando o ditado enumera passos. Os ditados curtos nunca chamam o modelo. Só o Ollama local (loopback), sem descarregar, apagar nem manter modelos carregados; os textos, os títulos e os prompts nunca vão para o log.
+
+**Guarda de conteúdo.** Cada resposta é comparada palavra a palavra com o texto de entrada, sem modelo. É recusada, e fica o texto original, quando: vem vazia, com markdown ou com uma lista fora do perfil Claude Code; perde um termo do vocabulário ou um número, ou acrescenta um número; apaga ou acrescenta uma palavra de conteúdo (preâmbulo, explicação ou informação nova); troca um nome; troca palavras por outras que não se parecem (a correção de uma palavra mal ouvida mantém a maior parte das letras, e cada palavra de conteúdo da troca mantém pelo menos metade das suas letras do outro lado), ou uma palavra de conteúdo por palavras gramaticais, ou o contrário; junta uma palavra de conteúdo à vizinha ou separa-a em duas, a não ser que as letras fiquem quase iguais (como «de ploi» para «deploy»); faz mais trocas do que 10 % das palavras; ou sai do intervalo de tamanho (80 % a 125 % das letras). Só palavras gramaticais (artigos, preposições, pronomes, conjunções) e hesitações podem entrar ou sair, e contam como trocas; as palavras de negação, condição, alternativa e contraste («sem», «nem», «ou», «se», «mas») contam como palavras de conteúdo, porque mudam o sentido. As regras do perfil voltam a ser aplicadas ao resultado. Uma falha do Ollama ou um tempo acima do limite do produto (4 s) também deixam o texto original.
+
+**Como se mediu.** `bench.pipeline --stage rewrite` aplica o módulo do produto ao texto da etapa `profiles` de cada gravação, com o perfil da coluna `estilo` do guião, o vocabulário pessoal e o nome do projeto do guião como pista (nos perfis Claude Code e VS Code, quando a frase tem um só). No ditado, 7 das 36 gravações são longas; nenhum comando é longo, por isso os comandos não mudam. Na medição, o limite de tempo é largo (120 s) e há uma chamada de aquecimento, para que as contagens não dependam da carga da GPU; os tempos são medidos à parte e comparados com o limite do produto. **Palavras de conteúdo apagadas pela reescrita:** palavras que a etapa `profiles` tinha certas e que o texto reescrito já não tem.
+
+**Resultado** (tabela gerada acima):
+
+- **0 palavras de conteúdo apagadas pela reescrita** (meta 0) e 2 corrigidas. Dos 7 ditados longos, 3 foram reescritos, 3 vieram iguais e 1 foi recusado pela guarda (`added`: uma palavra de conteúdo no lugar de palavras gramaticais) e ficou como estava.
+- **WER limpo:** nos ditados longos, de 12,2 % para 11,6 %; no conjunto de ditado, de 10,5 % para 10,3 %. Erro em termos ingleses de 2,3 % para 0,0 % (um termo corrigido); nomes 0,0 %; intenção 58,3 %, sem mudança.
+- **Tempo do modelo nos ditados longos** (só neste documento, porque muda de execução para execução): p95 cerca de 1,2 s em todas as execuções com a guarda final, com o modelo já carregado; o detalhe fica só em `bench/results/`; nenhuma chamada passou do limite de 4 s. Cabe nos 1 a 3 s que o Sponsor aceita.
+- **Ligada por omissão.** As três condições estão cumpridas (0 palavras de conteúdo apagadas, WER limpo não pior do que a etapa `profiles` e p95 ≤ 3 s), por isso `quill.example.toml` passa a ter `enabled = true`. A ligação à aplicação (estado do indicador e tecla de desfazer) é a tarefa seguinte.
+
+**Reprodutibilidade.** Depois da revisão, a guarda passou a exigir que cada palavra de conteúdo de uma troca mantenha a maior parte das suas letras e a recusar juntar uma palavra de conteúdo à vizinha (por exemplo «final amanhã» para «finalmente»), e «sem», «nem», «ou», «se» e «mas» deixaram de ser palavras gramaticais. Esta guarda foi medida duas vezes, com as mesmas entradas (o texto `profiles` foi igual) e temperatura 0: as duas execuções deram exatamente as mesmas contagens da reescrita, que são as da tabela. As reescritas que a guarda anterior aceitou continuam todas aceites pela nova.
+
+Nas quatro execuções com a guarda anterior, e com as mesmas entradas, as respostas do modelo variaram em dois ditados longos: uma execução deu o resultado da tabela; duas deram um ditado longo corrigido em vez de igual e outro com outra pontuação (4 reescritos, 2 sem alterações, 3 palavras corrigidas, WER 10,2 % no conjunto e 11,3 % nos longos); a quarta deu as palavras destas duas, sem a mudança de pontuação, e a recusa teve outro motivo (`changed`). Em todas as execuções: 0 palavras de conteúdo apagadas, 1 recusa, nenhuma falha e nenhum tempo esgotado. Nos comandos, o juiz local de intenção muda às vezes o veredicto de uma instrução entre execuções, com o mesmo texto (por exemplo 34,1 % ou 36,4 % na etapa `profiles`); as etapas dos comandos do resumo ficam as da medição anterior, porque a reescrita não os altera.
+
+Com o Ollama sozinho, uma chamada de teste com um ditado longo deu 5 vezes a mesma resposta, também depois de uma chamada com outro prompt, e o Ollama carregou sempre o modelo da mesma forma (todo na GPU). Durante as execuções, porém, outro projeto usa a mesma GPU e o mesmo Ollama com um modelo maior, que tirou o `qwen3:8b` da memória a meio de cada execução, e o Whisper está carregado ao mesmo tempo. A partilha da GPU é a causa provável das diferenças, mas não está provada.
+
+**Riscos.**
+
+- **Primeiro ditado longo depois de o modelo sair da memória.** Com o modelo por carregar, a primeira chamada demorou cerca de 6 s numa exploração; na aplicação, passa do limite de 4 s e fica o texto original, com o aviso. Os ditados seguintes voltam a ser reescritos.
+- **Ollama partilhado.** Carregar o `qwen3:8b` pode fazer o Ollama tirar da GPU o modelo de outro projeto (o Quill nunca o descarrega diretamente), e o contrário também acontece.
+- **Poucos ditados longos.** São 7 gravações: cada palavra corrigida ou apagada pesa muito. A confirmação é o uso real do Sponsor; a tecla de desfazer da tarefa seguinte repõe o original quando a reescrita errar.

@@ -71,6 +71,21 @@ mode = "rules"
 key = "f16"
 edit_window_s = 30
 
+# Automatic rewrite of long dictations. A dictation with more than min_audio_s
+# seconds of audio or more than min_words words is checked by the local
+# [ollama] model before it is typed: misheard words are fixed from the context
+# (window profile, project, personal vocabulary) and, in Claude Code, the text
+# is laid out as a clear prompt. A deterministic guard refuses any reply that
+# drops or adds information; a refusal, an Ollama failure or a reply slower
+# than timeout_s types the original text. Shorter dictations never call the
+# model. On by default since its measurement on the real dictation set (no
+# content word lost, clean WER not worse): see docs/research/FASE2.md.
+[autorewrite]
+enabled = true
+min_audio_s = 15
+min_words = 40
+timeout_s = 4
+
 # Personal data. Paths are relative to the repository and must stay inside
 # the ignored local/ folder. style is a folder of writing samples:
 # <profile>.txt (for example whatsapp.txt), or default.txt for every profile

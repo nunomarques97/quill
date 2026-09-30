@@ -78,11 +78,12 @@ class OllamaClient:
         return [m["name"] for m in models or [] if isinstance(m, dict) and isinstance(m.get("name"), str)]
 
     def chat(self, model: str, system: str, user: str, max_tokens: int | None = None,
-             history: Sequence[tuple[str, str]] = ()) -> ChatReply:
+             history: Sequence[tuple[str, str]] = (), timeout_s: float | None = None) -> ChatReply:
         """One deterministic chat turn with thinking disabled; ``max_tokens`` caps the reply.
 
         ``history`` holds earlier (user message, assistant reply) turns of the
-        same conversation, sent before ``user``.
+        same conversation, sent before ``user``. ``timeout_s`` replaces the
+        client's timeout for this call only.
         """
         options: dict = {"temperature": 0, "seed": 0}
         if max_tokens is not None:
@@ -97,7 +98,7 @@ class OllamaClient:
             "think": False,
             "options": options,
         }
-        data = self._call("POST", "/api/chat", payload)
+        data = self._call("POST", "/api/chat", payload, timeout_s=timeout_s)
         message = data.get("message")
         content = message.get("content") if isinstance(message, dict) else None
         if not isinstance(content, str):

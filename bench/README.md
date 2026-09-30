@@ -43,6 +43,7 @@ py -3.12 -m quill.vocabulary --check                # validate local/vocabulary.
 py -3.12 -m quill.review --list                     # learned corrections (local/corrections.json)
 .venv\Scripts\python -m bench.pipeline --set all --stage profiles --summary docs/research/phase2-summary.json
 py -3.12 -m quill.profiles --check                  # style samples per profile (local/style/); counts only
+.venv\Scripts\python -m bench.pipeline --set all --stage rewrite --summary docs/research/phase2-summary.json
 py -3.12 -m bench.intent --run bench/results/pipeline/<run> --reviews bench/results/intent-review/<file>.json [--rejudge]
 .venv\Scripts\python -m bench.streaming --set all --mode deterministic   # streamed text quality
 .venv\Scripts\python -m bench.streaming --set all --mode realtime        # release-to-final latency
@@ -157,7 +158,10 @@ simulates learning from corrections on the vocabulary text; see
 [Learning from corrections](#learning-from-corrections). `--stage profiles`
 runs all five and then applies the active-window profile rules to the
 corrected text; see [Window profiles](#window-profiles). It is the final text
-of the application. Per set and stage the summary holds:
+of the application while the automatic rewrite is off. `--stage rewrite` runs
+all six and then applies the automatic rewrite of long dictations to the
+profiles text; see [Automatic rewrite](#automatic-rewrite). Per set and stage
+the summary holds:
 
 - `wer_verbatim` and `wer_clean`: corpus WER against the verbatim and the
   clean reference (equal for the commands set, which has no markup);
@@ -178,8 +182,15 @@ of the application. Per set and stage the summary holds:
   `learned_active`/`learned_pending`/`learned_conflicts` counts (see below);
 - `profiles` stage only: `profile_changes` (takes whose text the rules
   changed) and `profile_takes` (takes per profile);
-- `p50_s`/`p95_s` of the transcription time (moved to the ignored
-  `timings.json` of the run, never into the committed summary).
+- `rewrite` stage only: `long_takes`, `rewritten`, `unchanged`, `refused`
+  (with `refusal_reasons`, the guard's codes), `failed`, `timeouts`,
+  `word_changes`, `content_deleted_by_rewrite` and `content_fixed_by_rewrite`
+  (dictation only), and `wer_clean_long_before`/`wer_clean_long` (the long
+  takes before and after the rewrite);
+- `p50_s`/`p95_s` of the transcription time, and in the `rewrite` stage
+  `rewrite_p50_s`, `rewrite_p95_s` and `rewrite_over_timeout` of the model
+  calls (moved to the ignored `timings.json` of the run, never into the
+  committed summary).
 
 Per-take text goes only to `bench/results/pipeline/<run>/<set>/<stage>.json`.
 `--summary PATH` (default `bench/results/pipeline/summary.json`) is
@@ -195,9 +206,13 @@ Sponsor target; see [Streaming replay](#streaming-replay)), `cleanup`
 and term error <= 10 % on the dictation set; the commands set is printed as an
 `info` indicator and never fails, Sponsor decision 2026-09-29), `corrections` (100 % of learned recurrences
 fixed, 0 new errors, on both sets; a set with no learned recurrence has nothing
-left unfixed and prints so), `overall` (final-text WER <= 10 %, intent >= 95 %) and `desktop` (the Sponsor's
+left unfixed and prints so), `overall` (final-text WER <= 10 %, intent >= 95 %), `desktop` (the Sponsor's
 manual self-tests: 0 characters lost, extra or changed while typing, the clipboard unchanged, no trigger
-error and the indicator never in the foreground).
+error and the indicator never in the foreground) and `rewrite` (the deterministic part of the gate that
+makes the automatic rewrite the default: 0 `content_deleted_by_rewrite` and a clean WER no worse than the
+`profiles` stage on the whole set and on the long takes; the p95 <= 3 s is printed by the `--stage rewrite`
+run and kept in its `timings.json`). The final stage of `overall` is `rewrite` only when the summary records
+it as the product default, otherwise `profiles`.
 `--add-command-mode RUN_SUMMARY` (a `bench.rewrite` summary) and `--add-selftests DIR` (the newest
 `typing`, `triggers` and `indicator` results in `local/selftest/`) merge whitelisted counts into
 `--summary`, without timings. They are one-off manual steps, never a check; a later `--stage` run writes a
@@ -265,6 +280,42 @@ The WER, term, name, removal and deletion metrics ignore punctuation and case,
 so they equal the `corrections` row; only the intent judge sees the change.
 Style samples (`local/style/`) feed the local LLM cleanup only, which is off
 by default, so the stage measures the rules alone.
+
+### Automatic rewrite
+
+The product can send a long dictation (more than `[autorewrite] min_audio_s`
+seconds of audio or `min_words` words) to the local Ollama model before it is
+typed (`quill/autorewrite.py`): a strict prompt asks it to fix misheard words
+only, from the window profile, the project and the personal vocabulary, keep
+every piece of information and, in `claude-code`, lay the text out as a clear
+prompt. A deterministic guard compares the reply with its input word by word
+and refuses it (the input is typed) when it drops or adds a content word, a
+number, a name or a vocabulary term, adds a preamble or an explanation, has
+markup, replaces words by words that do not look alike, merges a content
+word into a neighbour (only a near-identical split or merge such as
+"de ploi" to "deploy" is a fix, and each content word of a fix keeps at least
+half of its letters on the other side), changes too much or is out of the
+length bounds. Negation, condition, alternative and contrast words ("sem",
+"nem", "ou", "se", "mas") count as content words. The profile rules are
+applied again to an accepted reply.
+
+The `rewrite` stage applies that module to the `profiles` text of every take,
+with the thresholds of `quill.example.toml`, the Ollama URL and model of
+quill's config, the take's `estilo` profile, the product's words to keep
+(personal vocabulary, resolved names and generic terms) and, in the editor
+profiles (`claude-code`, `vscode`), the take's project standing in for the
+project read from the window title. Short takes never reach the model, so the
+commands set is unchanged. The model gets one short warm-up turn first (the
+latency is of a warm model) and the stage's own 120 s timeout, so the counts
+never depend on the machine's load; the calls slower than the product's
+`timeout_s` are counted with the timings. `content_deleted_by_rewrite` counts
+the content words the `profiles` text had right and the rewrite lost (target
+0); `content_fixed_by_rewrite` the ones it now has right.
+`summary["rewrite"]` records the model, the thresholds, the product timeout
+and `product_default` (whether quill.example.toml turns it on). The rewrite
+becomes the default only with 0 content words deleted, a clean WER no worse
+than `profiles` and a p95 of the model calls <= 3 s; run the stage twice and
+compare the counts before changing the default.
 
 ### Personal vocabulary
 

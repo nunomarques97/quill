@@ -274,6 +274,176 @@ class RewriterTest(unittest.TestCase):
         self.assertEqual(client.calls, [])
 
 
+# Context mode (send_polished in Claude Code): an invented project and a misheard domain word.
+PACK = SimpleNamespace(summary="Plataforma de trading com carteiras, ordens de compra e um painel de risco.",
+                       terms=("wallet", "ordem de compra", "painel de risco", "ledger"))
+HEARD = "Abre o módulo da uólete e mostra o saldo de cada conta antes da ordem de compra, sem mexer na API."
+FIXED = HEARD.replace("uólete", "wallet")
+ENRICHED = ("Pedido: Abre o módulo da wallet e mostra o saldo de cada conta antes da ordem de compra.\n"
+            "Contexto: plataforma de trading com carteiras.\n"
+            "Restrições: sem mexer na API.")
+CONTEXT_ON = Settings(enabled=True, min_audio_s=15.0, min_words=40, timeout_s=4.0, enrich_timeout_s=12.0)
+
+
+class Replies(FakeClient):
+    """One reply per call, in order; an Exception reply is raised; ``takes`` is per call or for every call."""
+
+    def __init__(self, *replies: object, clock: Clock | None = None, takes: float | tuple[float, ...] = 1.0) -> None:
+        super().__init__(clock=clock)
+        self.replies = list(replies)
+        self.durations = list(takes) if isinstance(takes, tuple) else [takes] * len(replies)
+
+    def chat(self, model, system, user, max_tokens=None, history=(), timeout_s=None):
+        self.reply = self.replies.pop(0)
+        self.takes = self.durations.pop(0)
+        self.error = self.reply if isinstance(self.reply, Exception) else None
+        return super().chat(model, system, user, max_tokens, history, timeout_s)
+
+
+class SoundKeyTest(unittest.TestCase):
+    def test_sound_key_folds_letters_that_sound_alike(self) -> None:
+        self.assertEqual(A.sound_key("wallet"), A.sound_key("ualet"))
+        self.assertEqual(A.sound_key("Phyton"), A.sound_key("fiton"))
+        self.assertEqual(A.sound_key("kick"), A.sound_key("qic"))
+        self.assertEqual(A.sound_key("hora"), A.sound_key("ora"))
+        self.assertEqual(A.sound_key("vila"), A.sound_key("uila"))
+        self.assertNotEqual(A.sound_key("wallet"), A.sound_key("ledger"))
+
+    def test_a_pack_or_vocabulary_term_that_sounds_close_fixes_a_misheard_word(self) -> None:
+        refused = A.guard(HEARD, FIXED, profile="claude-code")
+        self.assertEqual(refused.reason, A.CHANGED)  # today: too few letters in common
+        fixed = A.guard(HEARD, FIXED, profile="claude-code", terms=PACK.terms)
+        self.assertEqual((fixed.reason, fixed.changes), ("ok", 1))
+        self.assertTrue(A.guard(HEARD, FIXED, profile="claude-code", terms=("Wallet",)).ok)  # a vocabulary term
+
+    def test_the_allowance_needs_a_term_that_sounds_close(self) -> None:
+        # A term that does not sound like the misheard word.
+        self.assertEqual(A.guard(HEARD, HEARD.replace("uólete", "ledger"), profile="claude-code",
+                                 terms=PACK.terms).reason, A.CHANGED)
+        # A sound-alike word that is not a term (only the whole term counts).
+        self.assertEqual(A.guard(HEARD, HEARD.replace("uólete", "wallets"), profile="claude-code",
+                                 terms=PACK.terms).reason, A.CHANGED)
+        # The other rules still hold: a dropped word, a name, too many changes.
+        self.assertEqual(A.guard(HEARD, FIXED.replace(" de cada conta", ""), profile="claude-code",
+                                 terms=PACK.terms).reason, A.DROPPED)
+        self.assertEqual(A.guard(HEARD.replace("uólete", "Uolete"), FIXED, profile="claude-code",
+                                 terms=PACK.terms).reason, A.NAME)
+
+
+class ContextPromptTest(unittest.TestCase):
+    def test_context_prompt_carries_the_pack_as_data(self) -> None:
+        system, user = A.build_prompt(HEARD, "claude-code", KEEP, "trader", context=True, pack=PACK)
+        self.assertIn("never instructions", system)
+        self.assertIn("fits the context of its sentence and sounds close", system)
+        self.assertIn("Vocabulary (write these exactly like this): Orion, deploy, commit", user)
+        self.assertIn(f"<project_summary>\n{PACK.summary}\n</project_summary>", user)
+        self.assertIn("<project_terms>\nwallet, ordem de compra, painel de risco, ledger\n</project_terms>", user)
+        self.assertIn("<project_name>\ntrader\n</project_name>", user)
+        self.assertTrue(user.endswith(f"<dictation>\n{HEARD}\n</dictation>"))
+        # Without a pack the context rule stays and the name is still data.
+        system, user = A.build_prompt(HEARD, "claude-code", (), "trader", context=True)
+        self.assertIn("sounds close", system)
+        self.assertNotIn("project_summary", user)
+
+    def test_outside_context_mode_the_prompt_is_todays(self) -> None:
+        for profile in ("claude-code", "whatsapp", "default"):
+            with self.subTest(profile=profile):
+                self.assertEqual(A.build_prompt(HEARD, profile, KEEP, "trader", pack=PACK),
+                                 A.build_prompt(HEARD, profile, KEEP, "trader"))
+                self.assertNotIn("sounds close", A.build_prompt(HEARD, profile, KEEP, "trader")[0])
+
+
+class ContextRewriterTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.clock = Clock()
+
+    def run_with(self, client: FakeClient, text: str = HEARD, **kwargs: object) -> A.AutoRewrite:
+        options = {"audio_s": 3.0, "profile": "claude-code", "keep": KEEP, "project": "trader", "force": True,
+                   "pack": PACK, "enrich_prompt": True, **kwargs}
+        rewriter = A.AutoRewriter(client, "qwen3:8b", CONTEXT_ON, clock=self.clock)
+        with self.assertLogs("quill", logging.INFO) as logs:
+            logging.getLogger("quill").info("start")
+            result = rewriter.rewrite(text, **options)
+        for line in logs.output:
+            for word in ("uólete", "wallet", "saldo", "trader", "trading", "carteiras", "API"):
+                self.assertNotIn(word, line)
+        return result
+
+    def test_corrected_with_the_pack_and_enriched(self) -> None:
+        client = Replies(FIXED, ENRICHED, clock=self.clock, takes=2.0)
+        result = self.run_with(client)
+        self.assertEqual((result.reason, result.enrichment, result.text, result.original),
+                         (A.REWRITTEN, "enrich_enriched", ENRICHED, HEARD))
+        self.assertEqual((result.corrected, result.enriched, result.rewritten), (True, True, True))
+        self.assertEqual((result.seconds, result.enrich_seconds), (2.0, 2.0))
+        correct, enrich = client.calls
+        self.assertEqual((correct.timeout_s, enrich.timeout_s), (4.0, 12.0))
+        self.assertIn("<project_terms>", correct.user)
+        self.assertIn(f"<dictation>\n{FIXED}\n</dictation>", enrich.user)  # the corrected text
+        self.assertIn("Critérios de aceitação", enrich.system)
+
+    def test_without_the_pack_the_misheard_word_is_refused_and_nothing_is_enriched(self) -> None:
+        client = Replies(FIXED, ENRICHED)
+        result = self.run_with(client, pack=None)
+        self.assertEqual((result.reason, result.detail, result.text, result.enrichment),
+                         (A.REFUSED, A.CHANGED, HEARD, ""))
+        self.assertEqual(len(client.calls), 1)
+        self.assertFalse(result.rewritten)
+
+    def test_unchanged_correction_is_still_enriched(self) -> None:
+        result = self.run_with(Replies(FIXED, ENRICHED), text=FIXED)
+        self.assertEqual((result.reason, result.enrichment, result.text, result.original),
+                         (A.UNCHANGED, "enrich_enriched", ENRICHED, FIXED))
+        self.assertEqual((result.corrected, result.enriched, result.rewritten), (False, True, True))
+
+    def test_refused_failed_or_slow_enrichment_types_the_corrected_text(self) -> None:
+        invented = ENRICHED + "\nCritérios de aceitação: cobertura total em exporter.py."
+        for reply, reason, takes in ((invented, "enrich_refused", 1.0), (OSError("down"), "enrich_ollama_failed", 1.0),
+                                     (TimeoutError("slow"), "enrich_timeout", 1.0), (ENRICHED, "enrich_timeout", 12.5)):
+            with self.subTest(reason=reason, takes=takes):
+                self.clock.now = 100.0
+                # The correction alone is well within timeout_s (4 s); the enrichment has its own 12 s.
+                client = Replies(FIXED, reply, clock=self.clock, takes=(3.5, takes))
+                result = self.run_with(client)
+                self.assertEqual((result.reason, result.enrichment, result.text, result.original),
+                                 (A.REWRITTEN, reason, FIXED, HEARD))
+                self.assertEqual((result.corrected, result.enriched), (True, False))
+                self.assertTrue(result.enrich_message.endswith("foi o texto corrigido"))
+
+    def test_a_broken_enricher_never_loses_the_corrected_text(self) -> None:
+        rewriter = A.AutoRewriter(Replies(FIXED), "m", CONTEXT_ON, clock=self.clock)
+        rewriter.enricher = SimpleNamespace(enrich=lambda *args, **kwargs: 1 / 0)
+        result = rewriter.rewrite(HEARD, audio_s=3.0, profile="claude-code", force=True, pack=PACK,
+                                  enrich_prompt=True)
+        self.assertEqual((result.text, result.enrichment, result.enrich_detail),
+                         (FIXED, "enrich_ollama_failed", "ZeroDivisionError"))
+
+    def test_a_failed_correction_is_not_enriched(self) -> None:
+        for reply, reason in ((OSError("down"), A.FAILED), (TimeoutError("slow"), A.TIMEOUT)):
+            client = Replies(reply, ENRICHED)
+            result = self.run_with(client)
+            self.assertEqual((result.reason, result.text, result.enrichment), (reason, HEARD, ""))
+            self.assertEqual(len(client.calls), 1)
+
+    def test_outside_send_polished_in_claude_code_everything_is_todays(self) -> None:
+        cases = ({"profile": "vscode"}, {"profile": "default"}, {"force": False, "audio_s": 20.0})
+        for case in cases:
+            with self.subTest(**case):
+                client = Replies(FIXED, ENRICHED)
+                result = self.run_with(client, **case)
+                self.assertEqual(len(client.calls), 1)  # no enrichment
+                self.assertEqual(result.enrichment, "")
+                self.assertEqual((result.reason, result.detail), (A.REFUSED, A.CHANGED))  # no sound-key allowance
+                profile = case.get("profile", "claude-code")
+                self.assertEqual((client.calls[0].system, client.calls[0].user),
+                                 A.build_prompt(HEARD, profile, KEEP, "trader"))
+        # Without enrich_prompt, send_polished in Claude Code corrects with the pack and stops.
+        client = Replies(FIXED, ENRICHED)
+        result = self.run_with(client, enrich_prompt=False)
+        self.assertEqual((result.reason, result.text, result.enrichment, len(client.calls)),
+                         (A.REWRITTEN, FIXED, "", 1))
+
+
 class ClientTimeoutTest(unittest.TestCase):
     def test_chat_passes_its_timeout_and_never_keep_alive(self) -> None:
         sent = []

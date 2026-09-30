@@ -126,6 +126,14 @@ edit_window_s = 30
 # Code panel of VS Code a rewrite may use several lines (typed as Shift+Enter);
 # in a terminal it stays one paragraph, because a terminal may take Shift+Enter
 # as Enter.
+# In Claude Code, mouse 5 (send_polished) then asks the model a second time
+# to turn the corrected text into a structured prompt (Objetivo, Contexto,
+# Pedido, Restrições, Critérios de aceitação), in the dictation's language. A
+# second guard refuses any reply that loses a dictated word or number, adds a
+# number, or adds a word that is neither dictated, from the project's context
+# pack nor a part label; project context may appear only in the Contexto part.
+# A refusal, an Ollama failure or a reply slower than enrich_timeout_s seconds
+# (1-60) types the corrected text.
 # undo_key puts the original text back in place of the last rewrite, for
 # undo_window_s seconds, only in the same window, before Enter, and while the
 # rewritten text is untouched with the cursor at its end (it needs the manual
@@ -137,6 +145,7 @@ enabled = true
 min_audio_s = 15
 min_words = 40
 timeout_s = 4
+enrich_timeout_s = 15
 undo_key = "f17"
 undo_window_s = 30
 

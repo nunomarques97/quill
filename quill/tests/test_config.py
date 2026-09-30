@@ -68,6 +68,7 @@ class ExampleTest(ConfigCase):
         rewrite = load_config(None).autorewrite
         self.assertEqual((rewrite.enabled, rewrite.min_audio_s, rewrite.min_words, rewrite.timeout_s),
                          (True, 15.0, 40, 4.0))
+        self.assertEqual(rewrite.enrich_timeout_s, 15.0)
         self.assertEqual((rewrite.undo_key.name, rewrite.undo_key.vk, rewrite.undo_window_s), ("f17", 0x80, 30))
 
     def test_claude_alert_defaults(self) -> None:
@@ -244,6 +245,8 @@ class RejectTest(ConfigCase):
         rewrite = self.load("[autorewrite]\nenabled = true\nmin_audio_s = 12.5\nmin_words = 30\ntimeout_s = 2\n").autorewrite
         self.assertEqual((rewrite.enabled, rewrite.min_audio_s, rewrite.min_words, rewrite.timeout_s),
                          (True, 12.5, 30, 2.0))
+        enrich = self.load("[autorewrite]\nenrich_timeout_s = 25\n").autorewrite
+        self.assertEqual((enrich.enrich_timeout_s, enrich.timeout_s), (25.0, 4.0))
         for text, field in (
             ("enabled = 1", "autorewrite.enabled"),
             ('enabled = "yes"', "autorewrite.enabled"),
@@ -256,6 +259,10 @@ class RejectTest(ConfigCase):
             ("min_words = false", "autorewrite.min_words"),
             ("timeout_s = 0", "autorewrite.timeout_s"),
             ("timeout_s = 60", "autorewrite.timeout_s"),
+            ("enrich_timeout_s = 0.5", "autorewrite.enrich_timeout_s"),
+            ("enrich_timeout_s = 90", "autorewrite.enrich_timeout_s"),
+            ('enrich_timeout_s = "15"', "autorewrite.enrich_timeout_s"),
+            ("enrich_timeout_s = true", "autorewrite.enrich_timeout_s"),
             ("undo = 1", "autorewrite.undo"),
             ('undo_key = "f25"', "autorewrite.undo_key"),
             ('undo_key = "F17"', "autorewrite.undo_key"),

@@ -55,6 +55,7 @@ EDIT_WINDOW_RANGE = (5, 600)
 REWRITE_AUDIO_RANGE = (5.0, 120.0)
 REWRITE_WORDS_RANGE = (10, 1000)
 REWRITE_TIMEOUT_RANGE = (0.5, 30.0)
+ENRICH_TIMEOUT_RANGE = (1.0, 60.0)
 UNDO_WINDOW_RANGE = (5, 600)
 
 # Virtual-key codes of the inputs a trigger may use.
@@ -95,8 +96,8 @@ SCHEMA: dict[str, object] = {
     "ollama": {"url": None, "model": None},
     "cleanup": {"mode": None},
     "corrections": {"key": None, "edit_window_s": None},
-    "autorewrite": {"enabled": None, "min_audio_s": None, "min_words": None, "timeout_s": None, "undo_key": None,
-                    "undo_window_s": None},
+    "autorewrite": {"enabled": None, "min_audio_s": None, "min_words": None, "timeout_s": None, "enrich_timeout_s": None,
+                    "undo_key": None, "undo_window_s": None},
     "claude_alert": {"enabled": None, "sound": None, "filter": None, "speak_project": None, "speech_volume": None,
                      "speech_rate": None},
     "voice_commands": {"shortcut_dirs": None, "model": None},
@@ -143,13 +144,16 @@ class ProfileMatcher:
 class AutoRewrite:
     """``[autorewrite]``: a dictation longer than ``min_audio_s`` seconds of audio or
     ``min_words`` words is checked by the local model, which may take ``timeout_s``.
-    ``undo_key`` (None when disabled) puts the original text back for
+    In Claude Code the send_polished trigger then turns the corrected text into a
+    structured prompt (``quill.enrich``), a second model call that may take
+    ``enrich_timeout_s``. ``undo_key`` (None when disabled) puts the original text back for
     ``undo_window_s`` seconds after an automatic rewrite."""
 
     enabled: bool = False
     min_audio_s: float = 15.0
     min_words: int = 40
     timeout_s: float = 4.0
+    enrich_timeout_s: float = 15.0
     undo_key: Input | None = None
     undo_window_s: int = 30
 
@@ -407,6 +411,8 @@ def _autorewrite(data: dict[str, object], triggers: tuple[Trigger, ...], correct
         min_audio_s=_number(_get(data, "autorewrite.min_audio_s"), "autorewrite.min_audio_s", REWRITE_AUDIO_RANGE),
         min_words=words,
         timeout_s=_number(_get(data, "autorewrite.timeout_s"), "autorewrite.timeout_s", REWRITE_TIMEOUT_RANGE),
+        enrich_timeout_s=_number(_get(data, "autorewrite.enrich_timeout_s"), "autorewrite.enrich_timeout_s",
+                                 ENRICH_TIMEOUT_RANGE),
         undo_key=_undo_key(_get(data, "autorewrite.undo_key"), triggers, correction),
         undo_window_s=_integer(_get(data, "autorewrite.undo_window_s"), "autorewrite.undo_window_s",
                                UNDO_WINDOW_RANGE),

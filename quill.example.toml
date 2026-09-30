@@ -9,7 +9,12 @@
 # Mouse buttons: "xbutton1" (back), "xbutton2" (forward), "middle".
 # Keys: "f1" to "f24", "right_ctrl", "right_alt", "right_shift", "pause",
 # "scroll_lock", "insert", "apps". F13 to F24 suit a Stream Deck style
-# button. An input can belong to one trigger only.
+# button. An input can belong to one trigger only. An input bound in
+# local/quill.toml is taken off the triggers of this example, so a local
+# binding always wins; two triggers of local/quill.toml bound to one input are
+# an error.
+#
+# Mouse 4 (xbutton1) dictates: the text is typed and nothing is sent.
 [triggers.dictation]
 buttons = ["xbutton1"]
 keys = ["f13", "right_ctrl"]
@@ -23,10 +28,35 @@ keys = ["f13", "right_ctrl"]
 buttons = []
 keys = ["f14"]
 
-# Dictate and then press Enter, only when the target is Claude Code.
-[triggers.send_claude]
+# Send to Claude Code. Both triggers click where the pointer is, like a
+# dictation, type the whole text and then press one plain Enter, but only when
+# the target is Claude Code: the claude-code profile below (the Windows
+# Terminal Claude Code title, or VS Code ending with the " [Claude Code]"
+# marker). Anywhere else (a file in VS Code, its integrated terminal, a
+# browser, WhatsApp, ...) the text is typed without Enter and the indicator
+# says "Não é o Claude Code: escrito sem Enter".
+#
+# Mouse 5 (xbutton2): every dictation goes through the local [ollama] model
+# first, whatever its length and whatever [autorewrite] enabled, min_audio_s
+# and min_words say, with the same content guard; a refusal, an Ollama failure
+# or a timeout types the original text with a short notice. The indicator
+# shows "A rever o texto" while the model works.
+[triggers.send_polished]
 buttons = ["xbutton2"]
 keys = ["f15"]
+
+# Middle click: the dictation is sent as it was recognized, never rewritten
+# by the model, however long.
+[triggers.send_raw]
+buttons = ["middle"]
+keys = []
+
+# Older send trigger, kept so existing local files still load: Enter only in
+# Claude Code, and the model rewrites only a long dictation (as [autorewrite]
+# says). Empty here: use send_polished or send_raw instead.
+[triggers.send_claude]
+buttons = []
+keys = []
 
 [input]
 # A shorter hold is a tap: it is ignored and nothing is clicked or typed.
@@ -132,7 +162,9 @@ style = "local/style"
 # window that matches none uses the default profile. Profile names:
 # "claude-code", "vscode", "whatsapp", "email". Within a profile every listed
 # field must match; a field matches when any entry does. processes and
-# classes compare whole names, titles compare substrings (both ignore case).
+# classes compare whole names, titles compare substrings (both ignore case);
+# a title entry in square brackets, such as "[Claude Code]", matches only at
+# the end of the title.
 # A profile written [[profiles.<name>]] (repeated) has alternatives: the
 # window gets the profile when any alternative matches.
 # A profile in local/quill.toml replaces the profile of the same name here,
@@ -145,14 +177,16 @@ style = "local/style"
 #   email: full sentences, a comma after an opening greeting ("Bom dia, ...");
 #   any other window (default): a final period, as the cleanup gives.
 #
-# claude-code is also what the send_claude trigger checks before pressing
-# Enter, so it comes first and matches only a window that is Claude Code:
+# claude-code is also what the send triggers check before pressing Enter, so
+# it comes first and matches only a window that is Claude Code:
 # - Windows Terminal with "Claude Code" in the title;
-# - VS Code with the marker "[Claude Code]" in the title. VS Code shows it only
-#   when its window.title setting ends with " [${focusedView}]" and the
-#   Claude Code view in the sidebar has the focus. A Claude Code editor tab,
-#   the integrated terminal, a file or any other view gets the vscode profile:
-#   the text is typed without Enter.
+# - VS Code with the marker "[Claude Code]" at the end of the title. A title
+#   entry written in square brackets matches only at the end of the title,
+#   after a space, so a file named "[Claude Code].md" does not count. VS Code
+#   shows the marker only when its window.title setting ends with
+#   " [${focusedView}]" and the Claude Code view in the sidebar has the focus.
+#   A Claude Code editor tab, the integrated terminal, a file or any other
+#   view gets the vscode profile: the text is typed without Enter.
 [[profiles.claude-code]]
 processes = ["WindowsTerminal.exe"]
 titles = ["Claude Code"]

@@ -1,9 +1,9 @@
 """Click-to-focus: when a dictation hold counts, click where the pointer is.
 
 On the trigger's ``confirm`` signal (the hold passed ``min_hold_ms``, so a
-short tap never clicks) the dictation and send-to-Claude triggers send exactly
-one primary-button down/up at the current pointer position: two mouse INPUT
-records, tagged with Quill's marker, with no MOUSEEVENTF_MOVE or
+short tap never clicks) the dictation and send triggers (``send_polished``,
+``send_raw`` and the older ``send_claude``) send exactly one primary-button
+down/up at the current pointer position: two mouse INPUT records, tagged with Quill's marker, with no MOUSEEVENTF_MOVE or
 MOUSEEVENTF_ABSOLUTE, so the pointer never moves. Then the target window is
 captured, once the window under the pointer has become the foreground window.
 
@@ -34,7 +34,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from quill.config import KEYS
+from quill.config import BUTTONS, KEYS
 from quill.inject import Target
 from quill.triggers import PASS_THROUGH_KEYS
 from quill.win32 import (
@@ -58,13 +58,14 @@ from quill.win32 import (
 
 log = logging.getLogger("quill.focus")
 
-CLICK_ACTIONS = ("dictation", "send_claude")
+CLICK_ACTIONS = ("dictation", "send_claude", "send_polished", "send_raw")
 # Side-specific codes: a trigger on right Ctrl must not count as a held Ctrl.
 HELD_MODIFIERS = (VK_LSHIFT, VK_RSHIFT, VK_LCONTROL, VK_RCONTROL, VK_LMENU, VK_RMENU, VK_LWIN, VK_RWIN)
 # Trigger input names that pass through to Windows as modifiers.
 MODIFIER_TRIGGERS = frozenset(name for name, vk in KEYS.items() if vk in PASS_THROUGH_KEYS)
-# The bound trigger button itself is down (and suppressed) while this runs, so
-# only the buttons a click would conflict with are checked.
+# The buttons a click would conflict with. The bound trigger button itself is
+# down (and suppressed) while this runs, so a middle-button trigger is not
+# counted as a held button.
 HELD_BUTTONS = (VK_LBUTTON, VK_RBUTTON, VK_MBUTTON)
 
 # Reason codes.
@@ -131,7 +132,8 @@ class ClickToFocus:
             return self._done(None, False, OWN_WINDOW)
         if any(self.api.key_down(vk) for vk in HELD_MODIFIERS):
             return self._done(None, False, MODIFIER_HELD)
-        if any(self.api.key_down(vk) for vk in HELD_BUTTONS):
+        own = BUTTONS.get(trigger)
+        if any(self.api.key_down(vk) for vk in HELD_BUTTONS if vk != own):
             return self._done(None, False, BUTTON_HELD)
         events = click_events(self.api.buttons_swapped())
         sent = self.api.send_mouse(events)

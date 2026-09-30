@@ -305,7 +305,7 @@ class Injector:
         return InjectResult(OK, erased, count)
 
     def press_enter(self, target: Target | None) -> InjectResult:
-        """Press one plain Enter in ``target`` (send-to-Claude trigger only).
+        """Press one plain Enter in ``target`` (the send-to-Claude triggers only).
 
         Refused, without waiting, when the target is gone, reused, hung,
         elevated or no longer the foreground window, or when Shift, Ctrl, Alt

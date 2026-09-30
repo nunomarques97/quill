@@ -6,7 +6,10 @@ window class, title). ``Profiles.select`` checks the configured matchers
 order; the first match wins and a window that matches none gets ``default``.
 Within a matcher every non-empty field must match; a field matches when any
 entry does. Processes and classes compare whole names, titles compare
-substrings, all ignoring case. A process that cannot be read (an elevated or
+substrings, all ignoring case. A title entry in square brackets (a marker
+such as "[Claude Code]") matches only at the end of the title, after a space
+(or as the whole title): VS Code's " [${focusedView}]" marker, never the same
+text inside a file or folder name. A process that cannot be read (an elevated or
 protected process, or a window that is gone) never matches a process list:
 the profile is not guessed from the title alone.
 
@@ -15,9 +18,9 @@ when any of them matches.
 
 Claude Code is the ``claude-code`` profile: a terminal or editor process plus
 a title (by default Windows Terminal with "Claude Code" in the title, or VS
-Code with the "[Claude Code]" marker that its ``${focusedView}`` title
-variable shows while the Claude Code sidebar view has the focus).
-``Profiles.is_claude_code`` is what the send trigger asks before it presses
+Code ending with the " [Claude Code]" marker that its ``${focusedView}``
+title variable shows while the Claude Code sidebar view has the focus).
+``Profiles.is_claude_code`` is what the send triggers ask before they press
 Enter.
 
 Profile rules (``apply_profile``) run last, on the cleaned, matched and
@@ -148,7 +151,14 @@ def matches(matcher: ProfileMatcher, info: WindowInfo) -> bool:
     if matcher.classes and _fold(info.window_class) not in {_fold(c) for c in matcher.classes}:
         return False
     title = _fold(info.title)
-    return not matcher.titles or any(_fold(t) in title for t in matcher.titles)
+    return not matcher.titles or any(_title_matches(_fold(t), title) for t in matcher.titles)
+
+
+def _title_matches(entry: str, title: str) -> bool:
+    """A substring, or for a bracketed marker the end of the title after a space."""
+    if len(entry) > 2 and entry.startswith("[") and entry.endswith("]"):
+        return title == entry or title.endswith(" " + entry)
+    return entry in title
 
 
 class Profiles:

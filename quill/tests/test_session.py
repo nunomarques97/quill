@@ -113,6 +113,7 @@ class FakeInjector:
         self.enter_reason = inject.OK
         self.enter_error = None
         self.options = []  # the InjectOptions of each inject call
+        self.typed_before_enter = []  # how many texts were typed when each Enter was pressed
 
     def inject(self, text, target, options=None):
         self.options.append(options)
@@ -125,6 +126,7 @@ class FakeInjector:
 
     def press_enter(self, target):
         self.enters.append(target)
+        self.typed_before_enter.append(len(self.typed))
         if self.enter_error is not None:
             raise self.enter_error
         return InjectResult(self.enter_reason, 0, 1)
@@ -154,6 +156,7 @@ class FakeRewriter:
         self.min_audio_s = min_audio_s
         self.asked = []  # (text, audio_s) of each wants call
         self.calls = []  # keyword arguments of each rewrite call
+        self.forced = []  # the force flag of each rewrite call
         self.reason = R.REWRITTEN
         self.reply = None  # the rewritten text; None: the input in upper case
         self.error = None
@@ -164,8 +167,9 @@ class FakeRewriter:
         self.asked.append((text, audio_s))
         return len(text.split()) >= self.min_words or audio_s >= self.min_audio_s
 
-    def rewrite(self, text, *, audio_s, profile="default", keep=(), project=""):
+    def rewrite(self, text, *, audio_s, profile="default", keep=(), project="", force=False):
         self.calls.append({"text": text, "audio_s": audio_s, "profile": profile, "keep": keep, "project": project})
+        self.forced.append(force)
         self.started.set()
         if self.gate is not None:
             self.gate.wait(5)
@@ -821,6 +825,107 @@ class RewriteClaudeTest(SessionCase):
         self.dictate(LONG, action="send_claude")
         self.assertEqual(self.wait_outcomes(1)[0].reason, inject.TARGET_GONE)
         self.assertEqual(self.injector.enters, [])
+
+class SendPolishedRawTest(SessionCase):
+    """Mouse 5 (send_polished: always rewritten) and middle click (send_raw: never), Enter in Claude Code only."""
+
+    def setUp(self):
+        super().setUp()
+        self.ready()
+        self.focus.targets = [CLAUDE]
+
+    def make_rewriter(self):
+        return FakeRewriter()
+
+    def test_send_polished_rewrites_a_short_dictation_then_presses_one_enter(self):
+        self.rewriter.gate = threading.Event()
+        self.press("send_polished")
+        self.captures.made[-1].push(PCM)
+        self.transcriber.sessions[-1].partial("frase")
+        self.release("send_polished")
+        self.transcriber.sessions[-1].handle.resolve("frase curta")
+        self.assertTrue(self.rewriter.started.wait(5))
+        self.assertEqual(self.indicator.last, ("show", REVIEWING, "frase"))
+        self.assertEqual((self.injector.typed, self.injector.enters), ([], []))
+        self.rewriter.gate.set()
+        outcome = self.wait_outcomes(1)[0]
+        self.assertEqual((outcome.action, outcome.reason, outcome.rewrite), ("send_polished", S.SENT_ENTER,
+                                                                             R.REWRITTEN))
+        self.assertEqual(self.rewriter.asked, [])  # never asked whether it is long: always rewritten
+        self.assertEqual(self.rewriter.forced, [True])
+        self.assertEqual(self.rewriter.calls[0]["text"], "Frase curta.")
+        self.assertEqual(self.injector.typed, [("FRASE CURTA.", CLAUDE)])
+        self.assertEqual(self.injector.enters, [CLAUDE])
+        self.assertEqual(self.injector.typed_before_enter, [1])  # after the whole text
+        self.assertEqual(self.undoable, [(None, inject.NEWLINE_SHIFT_ENTER)])  # followed by Enter: never undone
+        self.assertEqual(self.indicator.last, ("show", SENT, ""))
+        self.assertEqual(self.focus.calls, [("send_polished", "xbutton1")])  # clicked to focus like send_claude
+        self.assert_released()
+
+    def test_send_polished_types_the_original_with_the_notice_on_refusal_failure_or_timeout(self):
+        cases = ((R.REFUSED, None), (R.FAILED, None), (R.TIMEOUT, None), (R.FAILED, RuntimeError("fake")))
+        for number, (reason, error) in enumerate(cases, start=1):
+            with self.subTest(reason=reason, error=error):
+                self.rewriter.reason, self.rewriter.error = reason, error
+                self.dictate("frase curta", action="send_polished")
+                outcome = self.wait_outcomes(number)[-1]
+                self.assertEqual((outcome.reason, outcome.rewrite, outcome.notice), (S.SENT_ENTER, reason, reason))
+                self.assertEqual(self.injector.typed[-1], ("Frase curta.", CLAUDE))
+                self.assertEqual(len(self.injector.enters), number)
+                self.assertEqual(self.undoable[-1], (None, inject.NEWLINE_SHIFT_ENTER))
+                self.assertEqual(self.indicator.last, ("show", SENT, R.MESSAGES[reason]))
+        self.assertIn(REVIEWING, self.indicator.states)
+        self.assertEqual(self.injector.typed_before_enter, [1, 2, 3, 4])
+
+    def test_send_polished_outside_claude_code_types_the_rewrite_without_enter(self):
+        self.focus.targets = [TARGET]
+        self.dictate("frase curta", action="send_polished")
+        outcome = self.wait_outcomes(1)[0]
+        self.assertEqual((outcome.reason, outcome.rewrite), (S.NOT_CLAUDE, R.REWRITTEN))
+        self.assertEqual(self.injector.typed, [("FRASE CURTA.", TARGET)])
+        self.assertEqual(self.injector.enters, [])
+        self.assertEqual(self.indicator.last, ("show", ERROR, S.MESSAGES[S.NOT_CLAUDE]))
+
+    def test_send_raw_never_calls_the_rewriter_even_when_long(self):
+        self.press("send_raw")
+        for _ in range(160):  # 16 s of audio: over min_audio_s, and LONG is over min_words
+            self.captures.made[-1].push(PCM)
+        self.release("send_raw")
+        self.transcriber.sessions[-1].handle.resolve(LONG)
+        outcome = self.wait_outcomes(1)[0]
+        self.assertEqual((outcome.action, outcome.reason, outcome.rewrite), ("send_raw", S.SENT_ENTER, None))
+        self.assertEqual((self.rewriter.asked, self.rewriter.calls), ([], []))
+        self.assertNotIn(REVIEWING, self.indicator.states)
+        self.assertEqual(self.injector.typed, [(LONG_TYPED, CLAUDE)])
+        self.assertEqual(self.injector.enters, [CLAUDE])
+        self.assertEqual(self.injector.typed_before_enter, [1])
+        self.assertEqual(self.focus.calls, [("send_raw", "xbutton1")])
+
+    def test_send_raw_outside_claude_code_types_without_enter_and_says_so(self):
+        self.focus.targets = [TARGET]
+        self.dictate(LONG, action="send_raw")
+        outcome = self.wait_outcomes(1)[0]
+        self.assertEqual(outcome.reason, S.NOT_CLAUDE)
+        self.assertEqual(self.injector.typed, [(LONG_TYPED, TARGET)])
+        self.assertEqual((self.injector.enters, self.rewriter.calls), ([], []))
+        self.assertEqual(self.indicator.last, ("show", ERROR, S.MESSAGES[S.NOT_CLAUDE]))
+
+    def test_dictation_is_unchanged_no_enter_and_only_long_texts_are_rewritten(self):
+        self.dictate("frase curta")
+        self.dictate(LONG)
+        outcomes = self.wait_outcomes(2)
+        self.assertEqual([(o.reason, o.rewrite) for o in outcomes], [(S.TYPED, None), (S.TYPED, R.REWRITTEN)])
+        self.assertEqual(self.rewriter.forced, [False])
+        self.assertEqual(self.injector.enters, [])
+        self.assertEqual(self.undoable[-1], (LONG_TYPED, inject.NEWLINE_SHIFT_ENTER))  # no Enter: may be undone
+
+    def test_no_enter_when_the_text_is_not_typed(self):
+        self.injector.results = [inject.FOREGROUND_CHANGED, inject.FOREGROUND_CHANGED]
+        for action in ("send_polished", "send_raw"):
+            self.dictate("frase curta", action=action)
+        self.assertEqual([o.reason for o in self.wait_outcomes(2)], [inject.FOREGROUND_CHANGED] * 2)
+        self.assertEqual(self.injector.enters, [])
+
 
 class AlertTest(SessionCase):
     """Claude Code alerts: shown and rung only when no session needs the screen or the microphone."""

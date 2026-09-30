@@ -8,7 +8,9 @@ window profile, a project hint read from the window title, the personal
 vocabulary and generic terms), keep every piece of information, and in the
 ``claude-code`` profile lay the text out as a clear prompt (short sentences,
 one ``- `` item per line when it lists steps). Shorter dictations never call
-the model.
+the model, except from the ``send_polished`` trigger (``rewrite(...,
+force=True)``), which sends every dictation whatever ``enabled`` and the
+thresholds say.
 
 The reply then goes through a deterministic content guard (``guard``) that
 compares it word by word with its input and refuses it when it
@@ -444,7 +446,8 @@ class AutoRewriter:
         return self.settings.enabled and is_long(text, audio_s, self.settings)
 
     def rewrite(self, text: str, *, audio_s: float | None, profile: str = DEFAULT, keep: Iterable[str] = (),
-                project: str = "") -> AutoRewrite:
+                project: str = "", force: bool = False) -> AutoRewrite:
+        """``force`` (the send_polished trigger) asks the model whatever ``enabled`` and the thresholds say."""
         keep = tuple(keep)
         words = word_count(text)
 
@@ -455,9 +458,9 @@ class AutoRewriter:
                          seconds)
             return AutoRewrite(text if result is None else result, text, reason, detail, seconds, changes)
 
-        if not self.settings.enabled:
+        if not force and not self.settings.enabled:
             return done(DISABLED)
-        if not is_long(text, audio_s, self.settings):
+        if not force and not is_long(text, audio_s, self.settings):
             return done(SHORT)
         if len(text) > MAX_TEXT_CHARS:
             return done(REFUSED, detail=TOO_LONG)

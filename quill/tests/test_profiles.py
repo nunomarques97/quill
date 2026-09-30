@@ -94,6 +94,22 @@ class MatcherTest(unittest.TestCase):
             info = window("Code.exe", "Chrome_WidgetWin_1", title)
             self.assertEqual(EXAMPLE.select(info), "vscode", title)
             self.assertFalse(EXAMPLE.is_claude_code(info), title)
+        # "[Claude Code]" or "Claude Code" inside a file or folder name is not the trailing focused-view marker.
+        for title in (
+            "[Claude Code].md - invented - Visual Studio Code",
+            "[Claude Code].md - invented - Visual Studio Code [Text Editor]",
+            "notes [Claude Code] draft.md - invented - Visual Studio Code [Explorer]",
+            "invented [Claude Code] - Visual Studio Code",
+            "invented - Visual Studio Code [Claude Code]x",
+            "invented - Visual Studio Code[Claude Code]",  # no space before the marker
+        ):
+            info = window("Code.exe", "Chrome_WidgetWin_1", title)
+            self.assertEqual(EXAMPLE.select(info), "vscode", title)
+            self.assertFalse(EXAMPLE.is_claude_code(info), title)
+        self.assertTrue(EXAMPLE.is_claude_code(window("Code.exe", title="[Claude Code].md - x - Visual Studio Code "
+                                                                        "[Claude Code]")))
+        # A plain title entry still matches anywhere in the title.
+        self.assertTrue(profiles.matches(ProfileMatcher("vscode", titles=("[x",)), window("a.exe", title="a [x] b")))
         # The marker counts only in VS Code; Windows Terminal keeps its plain title rule.
         self.assertFalse(EXAMPLE.is_claude_code(window("chrome.exe", title="Page [Claude Code]")))
         self.assertTrue(EXAMPLE.is_claude_code(window(TERMINAL, title="Claude Code")))

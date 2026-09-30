@@ -2,7 +2,8 @@
 
 The hook layer turns every keyboard event and mouse-button event into an
 ``InputEvent`` and the worker feeds it here. The machine emits ``Signal``s per
-action (``dictation``, ``command``, ``send_claude``):
+action (``dictation``, ``command``, ``send_polished``, ``send_raw``,
+``send_claude``):
 
 - ``start`` when a bound input goes down (audio capture can begin at once);
 - ``confirm`` when the hold passes ``min_hold_ms`` (click-to-focus happens here);

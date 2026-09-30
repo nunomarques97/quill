@@ -369,8 +369,9 @@ class SuppressionTest(unittest.TestCase):
             "f13": ("dictation", True),
             "right_ctrl": ("dictation", False),
             "f14": ("command", True),
-            "xbutton2": ("send_claude", True),
-            "f15": ("send_claude", True),
+            "xbutton2": ("send_polished", True),
+            "f15": ("send_polished", True),
+            "middle": ("send_raw", True),
         })
 
 

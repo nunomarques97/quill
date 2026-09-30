@@ -23,6 +23,7 @@ from quill.win32 import (
     VK_LMENU,
     VK_LSHIFT,
     VK_LWIN,
+    VK_MBUTTON,
     VK_MENU,
     VK_RBUTTON,
     VK_RCONTROL,
@@ -55,8 +56,8 @@ class Case(unittest.TestCase):
 
 
 class ClickTest(Case):
-    def test_dictation_and_send_claude_click_once_then_capture_the_target(self) -> None:
-        for action in ("dictation", "send_claude"):
+    def test_dictation_and_send_triggers_click_once_then_capture_the_target(self) -> None:
+        for action in ("dictation", "send_claude", "send_polished", "send_raw"):
             with self.subTest(action=action):
                 self.setUp()
                 result = self.focus().on_confirm(action)
@@ -151,6 +152,19 @@ class SkipTest(Case):
                 self.api.keys_down = {vk}
                 self.assert_no_click(self.focus().on_confirm("dictation"), focus.BUTTON_HELD)
 
+    def test_a_middle_button_trigger_is_not_a_held_button(self) -> None:
+        # send_raw on the middle click: its own button is down while it is confirmed.
+        self.api.keys_down = {VK_MBUTTON}
+        result = self.focus().on_confirm("send_raw", "middle")
+        self.assertEqual(result, FocusResult(TARGET, True, focus.CLICKED))
+        self.assertEqual(self.api.mouse_calls, LEFT_CLICK)
+        # Another trigger with the middle button held still refuses, and so does a held left button.
+        for trigger, keys in (("xbutton2", {VK_MBUTTON}), ("middle", {VK_MBUTTON, VK_LBUTTON})):
+            with self.subTest(trigger=trigger):
+                self.setUp()
+                self.api.keys_down = keys
+                self.assert_no_click(self.focus().on_confirm("send_polished", trigger), focus.BUTTON_HELD)
+
 
 class ModifierTriggerTest(Case):
     """Right Ctrl, Shift and Alt pass through to Windows, so they are down at the confirm."""
@@ -160,7 +174,7 @@ class ModifierTriggerTest(Case):
 
     def test_own_modifier_sends_no_click_and_keeps_the_foreground(self) -> None:
         for trigger, keys in self.HELD.items():
-            for action in ("dictation", "send_claude"):
+            for action in ("dictation", "send_claude", "send_polished", "send_raw"):
                 with self.subTest(trigger=trigger, action=action):
                     self.setUp()
                     self.api.keys_down = set(keys)

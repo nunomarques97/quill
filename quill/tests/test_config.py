@@ -43,7 +43,10 @@ class ExampleTest(ConfigCase):
         dictation = settings.trigger("dictation")
         self.assertEqual([(item.kind, item.name) for item in dictation.inputs],
                          [("button", "xbutton1"), ("key", "f13"), ("key", "right_ctrl")])
-        self.assertEqual([item.name for item in settings.trigger("send_claude").inputs], ["xbutton2", "f15"])
+        # Mouse 5 sends with the rewrite, the middle click sends as recognized; the older send_claude is empty.
+        self.assertEqual([item.name for item in settings.trigger("send_polished").inputs], ["xbutton2", "f15"])
+        self.assertEqual([item.name for item in settings.trigger("send_raw").inputs], ["middle"])
+        self.assertFalse(settings.trigger("send_claude").enabled)
         self.assertEqual([item.name for item in settings.trigger("command").inputs], ["f14"])
         self.assertEqual(settings.min_hold_ms, 250)
         self.assertTrue(settings.click_to_focus)
@@ -74,7 +77,9 @@ class ExampleTest(ConfigCase):
     def test_action_for_maps_inputs_to_actions(self) -> None:
         settings = load_config(None)
         self.assertEqual(settings.action_for("button", 0x05), "dictation")
-        self.assertEqual(settings.action_for("button", 0x06), "send_claude")
+        self.assertEqual(settings.action_for("button", 0x06), "send_polished")
+        self.assertEqual(settings.action_for("button", 0x04), "send_raw")
+        self.assertEqual(settings.action_for("key", 0x7E), "send_polished")  # F15
         self.assertEqual(settings.action_for("key", 0x7C), "dictation")  # F13
         self.assertEqual(settings.action_for("key", 0xA3), "dictation")  # Right Ctrl
         self.assertIsNone(settings.action_for("key", 0xA2))  # Left Ctrl is never a trigger
@@ -122,10 +127,40 @@ class MergeTest(ConfigCase):
     def test_precise_engine_model_is_selectable(self) -> None:
         self.assertEqual(self.load("[engine]\nmodel = \"large-v3\"\n").engine_model, "large-v3")
 
+    def test_example_bindings_give_way_to_local_bindings(self) -> None:
+        # The previous layout: mouse 5, middle click and F15 all on the older send_claude.
+        settings = self.load("[triggers.send_claude]\nbuttons = [\"xbutton2\", \"middle\"]\nkeys = [\"f15\"]\n")
+        self.assertEqual([item.name for item in settings.trigger("send_claude").inputs], ["xbutton2", "middle", "f15"])
+        self.assertFalse(settings.trigger("send_polished").enabled)
+        self.assertFalse(settings.trigger("send_raw").enabled)
+        self.assertEqual([item.name for item in settings.trigger("dictation").inputs],
+                         ["xbutton1", "f13", "right_ctrl"])
+        self.assertEqual(settings.action_for("button", 0x06), "send_claude")
+        # Only the input taken is freed: the example's other inputs of that trigger stay.
+        settings = self.load("[triggers.command]\nkeys = [\"f13\"]\n[triggers.send_raw]\nbuttons = [\"xbutton2\"]\n")
+        self.assertEqual([item.name for item in settings.trigger("dictation").inputs], ["xbutton1", "right_ctrl"])
+        self.assertEqual([item.name for item in settings.trigger("send_polished").inputs], ["f15"])
+        self.assertEqual([item.name for item in settings.trigger("send_raw").inputs], ["xbutton2"])
+        self.assertIsNone(settings.action_for("button", 0x04))  # the local send_raw replaced the middle click
+
+    def test_the_new_layout_in_a_local_file(self) -> None:
+        settings = self.load("[triggers.send_polished]\nbuttons = [\"xbutton2\"]\nkeys = [\"f15\"]\n"
+                             "[triggers.send_raw]\nbuttons = [\"middle\"]\n")
+        self.assertEqual([(t.action, [i.name for i in t.inputs]) for t in settings.triggers if t.enabled],
+                         [("dictation", ["xbutton1", "f13", "right_ctrl"]), ("command", ["f14"]),
+                          ("send_polished", ["xbutton2", "f15"]), ("send_raw", ["middle"])])
+
+    def test_a_local_trigger_on_the_example_correction_key_frees_it(self) -> None:
+        # A local trigger on the example's correction key: the example key gives way, as before.
+        settings = self.load("[triggers.send_raw]\nkeys = [\"f16\"]\n")
+        self.assertIsNone(settings.correction_key)
+        self.assertEqual([item.name for item in settings.trigger("send_raw").inputs], ["middle", "f16"])
+
     def test_command_and_send_triggers_can_be_disabled(self) -> None:
-        settings = self.load("[triggers.command]\nkeys = []\n[triggers.send_claude]\nbuttons = []\nkeys = []\n")
-        self.assertFalse(settings.trigger("command").enabled)
-        self.assertFalse(settings.trigger("send_claude").enabled)
+        settings = self.load("[triggers.command]\nkeys = []\n[triggers.send_polished]\nbuttons = []\nkeys = []\n"
+                             "[triggers.send_raw]\nbuttons = []\n")
+        for action in ("command", "send_claude", "send_polished", "send_raw"):
+            self.assertFalse(settings.trigger(action).enabled, action)
 
 
 class RejectTest(ConfigCase):
@@ -145,10 +180,16 @@ class RejectTest(ConfigCase):
         self.rejected("[triggers.command]\nbuttons = [5]\n", "triggers.command.buttons[0]")
         self.rejected("[triggers.command]\nkeys = \"f14\"\n", "triggers.command.keys")
 
-    def test_one_input_bound_to_two_actions_is_rejected(self) -> None:
-        message = self.rejected("[triggers.command]\nkeys = [\"f13\"]\n", "triggers.command.keys[0]", "f13")
-        self.assertIn("triggers.dictation.keys[0]", message)
-        self.rejected("[triggers.command]\nbuttons = [\"xbutton2\"]\nkeys = []\n", "triggers.send_claude.buttons[0]")
+    def test_one_input_bound_to_two_actions_in_the_local_file_is_rejected(self) -> None:
+        message = self.rejected("[triggers.command]\nkeys = [\"f20\"]\n[triggers.send_raw]\nkeys = [\"f20\"]\n",
+                                "triggers.send_raw.keys[0]", "f20")
+        self.assertIn("triggers.command.keys[0]", message)
+        self.rejected("[triggers.command]\nbuttons = [\"xbutton2\"]\nkeys = []\n"
+                      "[triggers.send_polished]\nbuttons = [\"xbutton2\"]\n", "triggers.send_polished.buttons[0]",
+                      "xbutton2")
+        # The previous layout with mouse 5 also on a new send action in the same file.
+        self.rejected("[triggers.send_claude]\nbuttons = [\"xbutton2\", \"middle\"]\nkeys = [\"f15\"]\n"
+                      "[triggers.send_raw]\nbuttons = [\"middle\"]\n", "triggers.send_raw.buttons[0]", "middle")
         self.rejected("[triggers.dictation]\nkeys = [\"f16\", \"f16\"]\n", "triggers.dictation.keys[1]")
 
     def test_dictation_needs_an_input(self) -> None:

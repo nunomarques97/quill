@@ -48,23 +48,48 @@ from quill.tests.test_streaming import FakeModel, speech
 from quill.win32 import (
     INTEGRITY_MEDIUM,
     LLKHF_INJECTED,
+    VK_MBUTTON,
     VK_RCONTROL,
+    VK_RETURN,
+    VK_SHIFT,
     VK_XBUTTON1,
     VK_XBUTTON2,
     WM_KEYDOWN,
     WM_KEYUP,
+    WM_MBUTTONDOWN,
+    WM_MBUTTONUP,
     WM_XBUTTONDOWN,
     WM_XBUTTONUP,
     XBUTTON1,
     XBUTTON2,
 )
 
+MIDDLE = "middle"  # the middle button, for ``AppCase.button``
 CLAUDE_HWND = 500
 CLAUDE_PID = 50
 F13 = 0x7C
 F16 = 0x7F
 KEY_C = 0x43
 WAIT_S = 10.0
+
+
+def sent_segments(api):
+    """The text typed before each plain Enter, then the text after the last one (Shift+Enter is a newline)."""
+    segments, units, shift = [], [], False
+    for event in api.events:
+        if event.is_unicode:
+            if not event.is_keyup:
+                units.append(event.scan)
+        elif event.vk == VK_SHIFT:
+            shift = not event.is_keyup
+        elif event.vk == VK_RETURN and not event.is_keyup:
+            if shift:
+                units.append(0x0A)
+            else:
+                segments.append(b"".join(unit.to_bytes(2, "little") for unit in units).decode("utf-16-le"))
+                units = []
+    segments.append(b"".join(unit.to_bytes(2, "little") for unit in units).decode("utf-16-le"))
+    return segments
 
 
 def wait_for(condition, what):
@@ -157,11 +182,13 @@ class AppCase(unittest.TestCase):
 
     # Trigger helpers: the fake hook callbacks return 1 when the event is swallowed.
     def button(self, down, which=XBUTTON1):
-        vk = VK_XBUTTON1 if which == XBUTTON1 else VK_XBUTTON2
+        vk = VK_MBUTTON if which == MIDDLE else VK_XBUTTON1 if which == XBUTTON1 else VK_XBUTTON2
         if down:
             self.api.keys_down.add(vk)
         else:
             self.api.keys_down.discard(vk)
+        if which == MIDDLE:
+            return self.hooks.mouse(WM_MBUTTONDOWN if down else WM_MBUTTONUP)
         return self.hooks.mouse(WM_XBUTTONDOWN if down else WM_XBUTTONUP, which << 16)
 
     def key(self, down, vk):
@@ -371,6 +398,49 @@ class SendClaudeTest(AppCase):
             self.assertEqual(self.app.sessions.outcomes[-1].reason, S.NOT_CLAUDE)
             self.assertEqual(self.app.sessions.outcomes[-1].typed, len("w1."))
         self.assertEqual(self.api.enter_presses(), [False])
+
+    def test_claude_code_in_a_vscode_file_name_is_not_the_marker(self):
+        self.api.images[CLAUDE_PID] = "C:\\Invented\\Code.exe"
+        self.start()
+        self.api.under_pointer = CLAUDE_HWND
+        self.api.foreground = CLAUDE_HWND
+        titles = ("[Claude Code].md - invented - Visual Studio Code [Text Editor]",
+                  "Claude Code notes.md - invented - Visual Studio Code",
+                  "invented [Claude Code] - Visual Studio Code")
+        for number, title in enumerate(titles, start=1):
+            self.api.titles[CLAUDE_HWND] = title
+            for which in (XBUTTON2, MIDDLE):
+                self.hold((number,), which=which)
+                self.assertEqual(self.app.sessions.outcomes[-1].reason, S.NOT_CLAUDE, title)
+                self.assertEqual(self.indicator.last, ("show", ERROR, S.MESSAGES[S.NOT_CLAUDE]))
+        self.assertEqual(self.api.enter_presses(), [])
+
+    def test_middle_click_sends_with_one_plain_enter_in_claude_code_only(self):
+        self.start()
+        self.api.under_pointer = CLAUDE_HWND
+        self.api.foreground = CLAUDE_HWND
+        self.hold((1,), which=MIDDLE)
+        outcome = self.app.sessions.outcomes[-1]
+        self.assertEqual((outcome.action, outcome.reason), ("send_raw", S.SENT_ENTER))
+        self.assertEqual(self.api.enter_presses(), [False])  # one plain Enter
+        self.api.under_pointer = self.api.foreground = TARGET.hwnd
+        self.hold((2,), which=MIDDLE)
+        self.assertEqual(self.app.sessions.outcomes[-1].reason, S.NOT_CLAUDE)
+        self.assertEqual(sent_segments(self.api), ["w1.", "w2."])  # Enter after the whole first text only
+        self.assertEqual(self.api.enter_presses(), [False])
+
+    def test_the_previous_send_claude_layout_keeps_working(self):
+        local = self.folder / "quill.toml"
+        local.write_text('[triggers.send_claude]\nbuttons = ["xbutton2", "middle"]\nkeys = ["f15"]\n', "utf-8")
+        quill = self.make_app(self.make_config(triggers=load_config(local, EXAMPLE_CONFIG).triggers))
+        self.start(quill)
+        self.api.under_pointer = CLAUDE_HWND
+        self.api.foreground = CLAUDE_HWND
+        for which in (XBUTTON2, MIDDLE):
+            self.hold((1,), which=which, quill=quill)
+            outcome = quill.sessions.outcomes[-1]
+            self.assertEqual((outcome.action, outcome.reason), ("send_claude", S.SENT_ENTER))
+        self.assertEqual(self.api.enter_presses(), [False, False])
 
 
 class LifecycleTest(AppCase):
@@ -652,7 +722,7 @@ class RewriteCase(AppCase):
         self.app = self.rewriting_app()
 
     def rewriting_app(self, **changes):
-        rewrite = dataclasses.replace(self.config.autorewrite, min_words=10, **changes)
+        rewrite = dataclasses.replace(self.config.autorewrite, **{"min_words": 10, **changes})
         return self.make_app(self.make_config(autorewrite=rewrite), rewrite_client=self.ollama, layout=FakeLayout())
 
     def press_undo(self, quill=None):
@@ -857,12 +927,84 @@ class UndoWithoutTrackingTest(RewriteCase):
 
 class RewriteOffTest(RewriteCase):
     def test_disabled_rewrite_never_calls_ollama(self):
-        quill = self.rewriting_app(enabled=False)
+        # Without send_polished bound, nothing is rewritten at all.
+        triggers = tuple(dataclasses.replace(t, inputs=()) if t.action == "send_polished" else t
+                         for t in self.config.triggers)
+        rewrite = dataclasses.replace(self.config.autorewrite, enabled=False, min_words=10)
+        quill = self.make_app(self.make_config(autorewrite=rewrite, triggers=triggers), rewrite_client=self.ollama,
+                              layout=FakeLayout())
         self.assertIsNone(quill.rewriter)
+        self.assertFalse(A.wants_rewriter(quill.config))
         self.start(quill)
         self.hold(WORDS, quill=quill)
         self.assertEqual(self.ollama.calls, [])
         self.assertEqual(self.api.received_text(), SPOKEN)
+
+    def test_disabled_rewrite_still_polishes_mouse_5_only(self):
+        quill = self.rewriting_app(enabled=False)
+        self.assertIsNotNone(quill.rewriter)  # send_polished is bound in the example
+        self.start(quill)
+        self.hold(WORDS, quill=quill)  # mouse 4, long: [autorewrite] is off
+        self.assertEqual(self.ollama.calls, [])
+        self.assertEqual(self.api.received_text(), SPOKEN)
+
+
+class SendPolishedAppTest(RewriteCase):
+    """Mouse 5 always goes through the local model; the middle click never does."""
+
+    def into_claude(self):
+        self.api.under_pointer = CLAUDE_HWND
+        self.api.foreground = CLAUDE_HWND
+
+    def test_mouse_5_rewrites_a_short_dictation_then_presses_one_enter(self):
+        for quill in (self.app, self.rewriting_app(enabled=False, min_words=1000, min_audio_s=120)):
+            with self.subTest(enabled=quill.config.autorewrite.enabled):
+                self.ollama.calls.clear()
+                self.start(quill)
+                self.addCleanup(quill.stop)
+                self.into_claude()
+                self.ollama.reply = "W1 w2 w3."
+                self.hold((1, 2, 3), which=XBUTTON2, quill=quill)
+                quill.stop()  # one Quill at a time
+                outcome = quill.sessions.outcomes[-1]
+                self.assertEqual((outcome.action, outcome.reason, outcome.rewrite),
+                                 ("send_polished", S.SENT_ENTER, R.REWRITTEN))
+                self.assertEqual(len(self.ollama.calls), 1)
+                self.assertIn("<dictation>\nw1 w2 w3.\n</dictation>", self.ollama.calls[0][1])
+                self.assertIn(REVIEWING, self.indicator.states)
+        self.assertEqual(sent_segments(self.api), ["W1 w2 w3.", "W1 w2 w3.", ""])  # Enter after each whole text
+        self.assertEqual(self.api.enter_presses(), [False, False])  # one plain Enter each time
+
+    def test_mouse_5_types_the_original_with_the_notice_when_ollama_fails(self):
+        self.start()
+        self.into_claude()
+        self.ollama.error = OllamaError("Ollama unreachable: URLError")
+        self.hold((1, 2, 3), which=XBUTTON2)
+        outcome = self.app.sessions.outcomes[-1]
+        self.assertEqual((outcome.reason, outcome.rewrite, outcome.notice), (S.SENT_ENTER, R.FAILED, R.FAILED))
+        self.assertEqual(sent_segments(self.api), ["w1 w2 w3.", ""])  # the original, then Enter
+        self.assertEqual(self.api.enter_presses(), [False])
+        self.assertEqual(self.indicator.last, ("show", SENT, R.MESSAGES[R.FAILED]))
+
+    def test_mouse_5_rewrite_followed_by_enter_is_never_offered_to_the_undo_key(self):
+        self.start()
+        self.into_claude()
+        self.hold(WORDS, which=XBUTTON2)
+        outcome = self.app.sessions.outcomes[-1]
+        self.assertEqual((outcome.reason, outcome.rewrite), (S.SENT_ENTER, R.REWRITTEN))
+        self.assertEqual(self.api.enter_presses(), [False])
+        self.assertEqual(self.press_undo(), self.refused(UNDO_NOTHING))
+
+    def test_middle_click_never_calls_ollama_even_when_long(self):
+        self.start()
+        self.into_claude()
+        self.hold(WORDS, which=MIDDLE)
+        outcome = self.app.sessions.outcomes[-1]
+        self.assertEqual((outcome.action, outcome.reason, outcome.rewrite), ("send_raw", S.SENT_ENTER, None))
+        self.assertEqual(self.ollama.calls, [])
+        self.assertNotIn(REVIEWING, self.indicator.states)
+        self.assertEqual(sent_segments(self.api), [SPOKEN, ""])
+        self.assertEqual(self.api.enter_presses(), [False])
 
 
 class WarmModelTest(unittest.TestCase):

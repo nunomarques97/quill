@@ -45,8 +45,12 @@ Um toque rápido no botão não faz nada. Se carregar noutra tecla enquanto segu
 
 ## Enviar para o Claude Code
 
-10. No Claude Code, mantenha premido o botão 5 do rato (o botão lateral da frente), fale e largue. O texto é escrito e o Quill carrega em Enter para o enviar. Aparece "Enviado para o Claude Code".
-11. Se usar o botão 5 noutra janela, o texto é escrito sem Enter e o indicador avisa "Não é o Claude Code: escrito sem Enter".
+10. No Claude Code, mantenha premido o botão 5 do rato (o botão lateral da frente), fale e largue. O indicador mostra "A rever o texto" enquanto o modelo local (Ollama) revê o texto, mesmo que seja curto. Depois o texto revisto é escrito e o Quill carrega em Enter para o enviar. Aparece "Enviado para o Claude Code". Se o Ollama falhar, demorar demais ou recusar a revisão, é enviado o texto tal como o disse, com um aviso curto.
+11. Para enviar o texto tal como o disse, sem a revisão, use o botão do meio (carregar na roda do rato) em vez do botão 5: mantenha a roda premida, fale e largue. O texto é escrito e o Quill carrega em Enter.
+
+O Enter só é carregado no Claude Code (a caixa do Claude Code na barra lateral do VS Code, ou o Claude Code no Terminal do Windows) e só depois de o texto todo estar escrito. Em qualquer outra janela (um ficheiro ou o terminal integrado do VS Code, o browser, o WhatsApp), o botão 5 e o botão do meio escrevem o texto sem Enter e o indicador avisa "Não é o Claude Code: escrito sem Enter". O botão 4 nunca carrega em Enter.
+
+Enquanto o Quill está ligado, o botão do meio deixa de fazer o que fazia nos outros programas (por exemplo, abrir uma ligação num separador novo ou fechar um separador no browser).
 
 No VS Code, o Quill só reconhece o Claude Code quando ele está aberto na barra lateral e tem o foco. Prepare o VS Code uma vez:
 
@@ -91,11 +95,11 @@ A F14 fica para um botão do Streamlabs. Enquanto o Quill está ligado, a F8 dei
 
 ## Ditados longos: revisão automática e tecla de desfazer
 
-Quando fala mais de 15 segundos (ou diz mais de 40 palavras), o Quill pede ao modelo local (Ollama) que reveja o texto antes de o escrever. Ele corrige palavras mal ouvidas a partir do contexto (o tipo de janela, o projeto aberto no VS Code e o seu vocabulário) e não tira nenhuma informação. Demora mais 1 a 3 segundos. Os ditados curtos são escritos como sempre, sem esta revisão.
+Quando fala mais de 15 segundos (ou diz mais de 40 palavras), o Quill pede ao modelo local (Ollama) que reveja o texto antes de o escrever. Ele corrige palavras mal ouvidas a partir do contexto (o tipo de janela, o projeto aberto no VS Code e o seu vocabulário) e não tira nenhuma informação. Demora mais 1 a 3 segundos. Os ditados curtos são escritos como sempre, sem esta revisão. O botão 5 revê sempre, seja qual for o tamanho, e o botão do meio nunca revê.
 
 17. Dite um texto longo como de costume. Depois de largar, o indicador mostra "A rever o texto" e a seguir o texto revisto é escrito.
 18. No Claude Code na barra lateral do VS Code, um pedido com vários passos pode ficar em várias linhas (entre linhas o Quill usa Shift+Enter, nunca Enter). Com o botão 5, o Enter que envia só é carregado depois de o texto todo estar escrito. No terminal, o texto fica num só parágrafo.
-19. Se preferir o texto tal como o disse, carregue em F17 logo a seguir. O Quill apaga o texto revisto e escreve o original no mesmo sítio. Só funciona nos 30 segundos seguintes, na mesma janela, antes de carregar em Enter e se não tiver mexido no texto (o cursor tem de estar no fim dele). Caso contrário, nada muda e o indicador diz porquê, por exemplo "O texto foi editado; a reescrita ficou".
+19. Se preferir o texto tal como o disse, carregue em F17 logo a seguir. O Quill apaga o texto revisto e escreve o original no mesmo sítio. Só funciona nos 30 segundos seguintes, na mesma janela, antes de carregar em Enter (por isso não serve depois de enviar com o botão 5 no Claude Code) e se não tiver mexido no texto (o cursor tem de estar no fim dele). Caso contrário, nada muda e o indicador diz porquê, por exemplo "O texto foi editado; a reescrita ficou".
 
 A F17 não existe na maioria dos teclados: atribua-a a um botão do Streamlabs, como a F13 e a F14. Para usar outra tecla, escreva em `local\quill.toml` (não pode ser uma tecla de ditado, envio ou comando, nem a F16 da correção):
 
@@ -217,7 +221,7 @@ O indicador mostra "Erro" com a causa e o ditado seguinte funciona normalmente:
 - "A janela ativa mudou; o texto não foi escrito": não mude de janela até o texto aparecer.
 - "Janela de administrador: não é possível escrever": o Quill não escreve em janelas abertas como administrador.
 - "Ollama indisponível: texto limpo pelas regras": o texto foi escrito na mesma, limpo pelas regras.
-- "Ollama indisponível; ficou o texto original", "A reescrita demorou demais; ficou o texto original" ou "Reescrita recusada; ficou o texto original": o ditado longo foi escrito sem a revisão automática, tal como o disse.
+- "Ollama indisponível; ficou o texto original", "A reescrita demorou demais; ficou o texto original" ou "Reescrita recusada; ficou o texto original": o ditado foi escrito sem a revisão automática, tal como o disse.
 - "Não há reescrita para desfazer", "Outra janela ativa; a reescrita ficou", "Já carregou em Enter; a reescrita ficou" e parecidos: a F17 não mudou nada, pelo motivo indicado.
 - "A reposição foi interrompida; verifique o texto": a F17 parou a meio (por exemplo, mudou de janela); confirme o texto no campo.
 - "Selecione o texto antes de dar a instrução": o modo comando precisa de texto selecionado.

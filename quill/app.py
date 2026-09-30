@@ -21,8 +21,9 @@ invalid file keeps the previous vocabulary. Sessions are run by
 ``quill.session.SessionManager``. Command mode (``quill.command``) rewrites
 the selection with the local Ollama model when the command trigger is bound.
 A long dictation is rewritten by the local model (``quill.autorewrite``)
-when ``[autorewrite]`` is on, and the undo key (``quill.edits.RewriteUndo``)
-puts the original back while the rewrite is provably untouched.
+when ``[autorewrite]`` is on, every dictation of the ``send_polished``
+trigger is (whatever ``[autorewrite]`` says), and the undo key
+(``quill.edits.RewriteUndo``) puts the original back while the rewrite is provably untouched.
 When ``[claude_alert]`` is on, ``quill.notify.AlertListener`` waits for the
 named events set by the Claude Code hooks and the sessions show the alert
 and play its sound (``quill.sound``) once no dictation is recording.
@@ -401,7 +402,7 @@ class QuillApp:
             self.command = CommandMode(api, self.injector, rewriter, lambda target: window_info(api, target.hwnd),
                                        **parts.command_options)
         self.rewriter: AutoRewriter | None = None
-        if config.autorewrite.enabled and parts.rewrite_client is not None:
+        if wants_rewriter(config) and parts.rewrite_client is not None:
             self.rewriter = AutoRewriter(parts.rewrite_client, config.ollama_model, config.autorewrite)
         self.correction_key = CorrectionKey(self.learner, self._read_selection, api.foreground_window)
         self.edits: ManualEdits | None = None
@@ -463,7 +464,8 @@ class QuillApp:
             raise
         log.info("Quill started (engine %s, cleanup %s, indicator %s, command mode %s, automatic rewrite %s, "
                  "claude alert %s)", self.config.engine_model, self.config.cleanup_mode,
-                 self.config.indicator_position, "on" if self.command else "off", "on" if self.rewriter else "off",
+                 self.config.indicator_position, "on" if self.command else "off",
+                 ("on" if self.config.autorewrite.enabled else "send_polished only") if self.rewriter else "off",
                  "on" if self.alerts is not None and self.alerts.running else "off")
 
     def _start_alerts(self) -> None:
@@ -658,6 +660,11 @@ class QuillApp:
         return result.text
 
 
+def wants_rewriter(config: Config) -> bool:
+    """The automatic rewrite is on, or the send_polished trigger (always rewritten) is bound."""
+    return config.autorewrite.enabled or config.trigger("send_polished").enabled
+
+
 def load_personal(config: Config) -> tuple[VocabularyFile, list[str]]:
     source = VocabularyFile(config.vocabulary_path)
     source.load()
@@ -686,7 +693,7 @@ def real_parts(config: Config) -> Parts:
         command_client=(OllamaClient(config.ollama_url, timeout_s=COMMAND_TIMEOUT_S)
                         if config.trigger("command").enabled else None),
         rewrite_client=(OllamaClient(config.ollama_url, timeout_s=config.autorewrite.timeout_s)
-                        if config.autorewrite.enabled else None),
+                        if wants_rewriter(config) else None),
         vocabulary=source.vocabulary,
         generic_terms=terms,
         vocabulary_file=source,
@@ -771,7 +778,8 @@ def check_readiness(config: Config, *, models_dir: Path | None = None, venv: Pat
     except OSError as exc:
         found, detail = False, f"Ollama not reachable ({type(exc).__name__})"
     uses = [use for use, on in (("used by the llm cleanup", needed),
-                                 ("used by command mode", config.trigger("command").enabled)) if on]
+                                 ("used by command mode", config.trigger("command").enabled),
+                                 ("used by the rewrite", wants_rewriter(config))) if on]
     usage = " and ".join(uses) if uses else "not used (rules cleanup, no command trigger)"
     lines.append(CheckLine("ollama", found, f"{detail}; {usage}", required=needed))
 

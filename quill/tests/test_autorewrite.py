@@ -217,6 +217,20 @@ class RewriterTest(unittest.TestCase):
         self.assertTrue(A.AutoRewriter(client, "m", ON).wants("curto", 16.0))
         self.assertFalse(A.AutoRewriter(client, "m", Settings()).wants(LONG, 30.0))
 
+    def test_forced_rewrite_ignores_enabled_and_the_thresholds_but_keeps_the_guard(self) -> None:
+        # The send_polished trigger: a short dictation with [autorewrite] off still asks the model.
+        short = "Abre o ficheiro e corre os testes."
+        for settings in (ON, Settings()):
+            client = FakeClient(short)
+            result = self.run_with(client, short.replace("ficheiro", "fixeiro"), audio_s=1.0, settings=settings,
+                                   force=True)
+            self.assertEqual(len(client.calls), 1)
+            self.assertEqual((result.reason, result.called), (A.REWRITTEN, True))
+        refused = self.run_with(FakeClient("Abre o ficheiro."), short, audio_s=1.0, settings=Settings(), force=True)
+        self.assertEqual((refused.reason, refused.text), (A.REFUSED, short))  # a dropped word: the original
+        failed = self.run_with(FakeClient(error=OSError("down")), short, audio_s=1.0, settings=Settings(), force=True)
+        self.assertEqual((failed.reason, failed.text), (A.FAILED, short))
+
     def test_accepted_rewrite(self) -> None:
         client = FakeClient(LONG, clock=self.clock, takes=1.5)
         source = LONG.replace("deploy", "de ploi")

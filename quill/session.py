@@ -8,7 +8,7 @@ hook worker thread and runs each hold as a session:
   with the live words and the voice level. While the model is still loading
   a press only shows the ``loading`` state: nothing is recorded, and its
   release does nothing.
-- ``confirm``: the dictation and send-to-Claude triggers click at the pointer
+- ``confirm``: the dictation and send triggers click at the pointer
   (``quill.focus``) and capture the target window; the command trigger never
   clicks and captures the foreground window, where the selection is.
 - ``stop``: the capture stops, the final transcription is requested and the
@@ -20,8 +20,10 @@ hook worker thread and runs each hold as a session:
 One finalizer thread takes the released sessions strictly in release order:
 it waits for the final text, runs the text pipeline (cleanup, vocabulary,
 learned corrections, the target's profile), types the text once into the
-session's own target and, for the send trigger, presses Enter only after a
-successful injection into a Claude Code window. A command session hands
+session's own target and, for a send trigger (``send_polished``,
+``send_raw``, the older ``send_claude``), presses one plain Enter only after
+a successful injection into a Claude Code window; anywhere else the text
+stays typed without Enter, with the ``not_claude`` notice. A command session hands
 the final text, the spoken instruction, to ``quill.command.CommandMode``,
 which copies the selection, rewrites it with the local model and types the
 rewrite over it; the indicator shows ``command`` while it listens.
@@ -29,10 +31,12 @@ rewrite over it; the indicator shows ``command`` while it listens.
 A long dictation (over the ``[autorewrite]`` audio or word threshold) goes,
 after the text pipeline, to the ``rewriter`` (``quill.autorewrite``) while
 the indicator shows ``reviewing`` ("A rever o texto"); a short one never
-calls it, so its path is unchanged. A failure, a timeout or a refusal by the
+calls it, so its path is unchanged. The ``send_polished`` trigger sends
+every dictation to the rewriter whatever its length (``force``) and
+``send_raw`` never does. A failure, a timeout or a refusal by the
 content guard types the original text at once and shows a short notice. The
 text is typed with the target's newline policy (Shift+Enter in the Claude
-Code panel, a space elsewhere), and the send trigger presses Enter only
+Code panel, a space elsewhere), and a send trigger presses Enter only
 after all of it is typed. A rewrite typed without Enter is reported to
 ``on_typed`` with its original, for the undo key. ``submit`` runs other
 work (the undo key) on the finalizer thread, in order with the sessions.
@@ -90,7 +94,11 @@ log = logging.getLogger("quill.session")
 DICTATION = "dictation"
 COMMAND_ACTION = "command"
 SEND_CLAUDE = "send_claude"
-CLICK_ACTIONS = (DICTATION, SEND_CLAUDE)
+SEND_POLISHED = "send_polished"
+SEND_RAW = "send_raw"
+# Enter follows the text, in Claude Code only.
+SEND_ACTIONS = (SEND_CLAUDE, SEND_POLISHED, SEND_RAW)
+CLICK_ACTIONS = (DICTATION, *SEND_ACTIONS)
 
 # Outcomes (reason codes of a finished session).
 TYPED = "typed"
@@ -621,8 +629,9 @@ class SessionManager:
                 return
             text, original, rewrite = processed.text, None, None
             pipeline_at = self.clock()
-            if self.rewriter is not None and self._wants_rewrite(hold, processed):
-                rewrite = self._rewrite(hold, processed)
+            force = hold.action == SEND_POLISHED
+            if self.rewriter is not None and (force or self._wants_rewrite(hold, processed)):
+                rewrite = self._rewrite(hold, processed, force)
                 if rewrite.rewritten:
                     text, original = rewrite.text, processed.text
             text_at = self.clock()
@@ -638,7 +647,7 @@ class SessionManager:
                      (engine_at - hold.released_at) * 1000, (pipeline_at - engine_at) * 1000,
                      f"rewrite {(text_at - pipeline_at) * 1000:.0f} ms, " if rewrite is not None else "",
                      (typed_at - text_at) * 1000)
-            enter = hold.action == SEND_CLAUDE and processed.claude_code
+            enter = hold.action in SEND_ACTIONS and processed.claude_code
             if self.on_typed is not None:
                 # A rewrite can be undone only when no Enter follows it.
                 undo = normalize_text(original, processed.newline) if original is not None and not enter else None
@@ -648,7 +657,7 @@ class SessionManager:
                     log.error("typed hook failed (%s)", type(exc).__name__)
             notice = rewrite.reason if rewrite is not None and rewrite.message else processed.notice
             reason = TYPED
-            if hold.action == SEND_CLAUDE:
+            if hold.action in SEND_ACTIONS:
                 if not processed.claude_code:
                     reason = NOT_CLAUDE
                 elif self._press_enter(hold):
@@ -664,14 +673,16 @@ class SessionManager:
             self._fail(hold, INTERNAL_ERROR)
 
     def _wants_rewrite(self, hold: _Hold, processed: Processed) -> bool:
+        if hold.action not in (DICTATION, SEND_CLAUDE):
+            return False  # send_raw is never rewritten; send_polished always is (``force``)
         try:
             return bool(self.rewriter.wants(processed.text, hold.audio_bytes / AUDIO_BYTES_PER_S))
         except Exception as exc:  # noqa: BLE001 - a broken rewriter never holds up a dictation
             log.error("session %d: rewrite check failed (%s)", hold.number, type(exc).__name__)
             return False
 
-    def _rewrite(self, hold: _Hold, processed: Processed) -> autorewrite.AutoRewrite:
-        """The automatic rewrite of a long dictation; the original text on every failure."""
+    def _rewrite(self, hold: _Hold, processed: Processed, force: bool = False) -> autorewrite.AutoRewrite:
+        """The rewrite of a long dictation (any dictation with ``force``); the original text on every failure."""
         with self._lock:
             hold.reviewing = True
             if self._visible(hold):
@@ -679,7 +690,7 @@ class SessionManager:
         try:
             result = self.rewriter.rewrite(processed.text, audio_s=hold.audio_bytes / AUDIO_BYTES_PER_S,
                                            profile=processed.rewrite_profile or processed.profile,
-                                           keep=processed.keep, project=processed.project)
+                                           keep=processed.keep, project=processed.project, force=force)
             if not isinstance(result.text, str) or not result.text.strip():
                 raise ValueError("empty rewrite result")
             return result

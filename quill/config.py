@@ -3,8 +3,11 @@
 ``load_config`` starts from ``quill.example.toml`` and merges
 ``local/quill.toml`` over it table by table (a profile is replaced whole, with all
 its alternatives).
+An input the local file binds to a trigger is taken off the example's
+triggers first, so a local binding always wins over an example one (an older
+local file that binds mouse 5 to ``send_claude`` keeps loading).
 The merged result is validated strictly: unknown field names, unsupported key
-or button names, an input bound twice, a non-loopback Ollama address or a
+or button names, an input bound twice within the same file, a non-loopback Ollama address or a
 personal-data path outside ``local/`` raise ``ConfigError``. Error messages
 name the field only, never its value, because values can be personal (for
 example the microphone name).
@@ -31,7 +34,10 @@ EXAMPLE_CONFIG = REPO_ROOT / "quill.example.toml"
 LOCAL_DIR = REPO_ROOT / "local"
 LOCAL_CONFIG = LOCAL_DIR / "quill.toml"
 
-ACTIONS = ("dictation", "command", "send_claude")
+# send_polished (always rewritten by the local model) and send_raw (never
+# rewritten) press Enter in Claude Code; send_claude is the older send action
+# (rewritten only when long, like a dictation), kept for existing local files.
+ACTIONS = ("dictation", "command", "send_claude", "send_polished", "send_raw")
 PROFILE_NAMES = ("claude-code", "vscode", "whatsapp", "email")
 INDICATOR_POSITIONS = ("pointer", "bottom-center")
 CLEANUP_MODES = ("rules", "llm")
@@ -449,12 +455,41 @@ def load_config(local: Path | None = LOCAL_CONFIG, example: Path = EXAMPLE_CONFI
     if local is not None and local.exists() and local.resolve() != example.resolve():
         override = read_toml(local)
         _check_fields(override, SCHEMA, "")
-        data = merge(data, override)
+        data = merge(_free_example_inputs(data, override), override)
         if "key" not in override.get("corrections", {}):
             data = _free_default_key(data, "corrections", "key")
         if "undo_key" not in override.get("autorewrite", {}):
             data = _free_default_key(data, "autorewrite", "undo_key", also=("corrections.key",))
     return validate(data)
+
+
+def _free_example_inputs(example: dict[str, object], override: dict[str, object]) -> dict[str, object]:
+    """The example's trigger lists without the inputs the local file binds to a trigger.
+
+    Only lists the local file leaves to the example lose an input: two
+    triggers of the local file bound to one input still raise ``ConfigError``.
+    Names that are not strings or not supported are left for ``validate``.
+    """
+    local = override.get("triggers", {})
+    taken: set[tuple[str, int]] = set()
+    for table in local.values():
+        for field_name, kind, names in (("buttons", "button", BUTTONS), ("keys", "key", KEYS)):
+            values = table.get(field_name, []) if isinstance(table, dict) else []
+            if isinstance(values, list):
+                taken |= {(kind, names[name]) for name in values if isinstance(name, str) and name in names}
+    if not taken:
+        return example
+    triggers: dict[str, object] = {}
+    for action, table in example.get("triggers", {}).items():
+        freed = dict(table)
+        for field_name, kind, names in (("buttons", "button", BUTTONS), ("keys", "key", KEYS)):
+            values = table.get(field_name)
+            if field_name in local.get(action, {}) or not isinstance(values, list):
+                continue
+            freed[field_name] = [name for name in values
+                                 if not (isinstance(name, str) and name in names and (kind, names[name]) in taken)]
+        triggers[action] = freed
+    return {**example, "triggers": triggers}
 
 
 def _free_default_key(data: dict[str, object], table: str, name: str, also: tuple[str, ...] = ()) -> dict[str, object]:

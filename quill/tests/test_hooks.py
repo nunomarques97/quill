@@ -528,13 +528,13 @@ class SelftestTest(unittest.TestCase):
             ("dictation", "start", ""): 2,
             ("dictation", "cancel", "short_hold"): 1,
             ("dictation", "cancel", "combo"): 1,
-            ("send_claude", "start", ""): 1,
-            ("send_claude", "confirm", ""): 1,
-            ("send_claude", "stop", "release"): 1,
+            ("send_polished", "start", ""): 1,
+            ("send_polished", "confirm", ""): 1,
+            ("send_polished", "stop", "release"): 1,
             ("command", "start", ""): 1,
             ("command", "cancel", "stopped"): 1,
         })
-        self.assertEqual(data["clicks"], [{"action": "send_claude", "reason": "clicked", "count": 1}])
+        self.assertEqual(data["clicks"], [{"action": "send_polished", "reason": "clicked", "count": 1}])
         self.assertEqual(len(api.mouse_calls), 1)
         self.assertEqual(api.calls, [])  # nothing typed
         ignored = {(row["trigger"], row["reason"]) for row in data["ignored"]}
@@ -546,7 +546,7 @@ class SelftestTest(unittest.TestCase):
         output = "\n".join(lines) + text
         for private in ("0x43", '"67"', " 67", "KEY_C", "640", "360"):
             self.assertNotIn(private, output)
-        self.assertTrue(any("send_claude xbutton2" in line and "click-to-focus: clicked" in line for line in lines))
+        self.assertTrue(any("send_polished xbutton2" in line and "click-to-focus: clicked" in line for line in lines))
         self.assertEqual(data["version"], 2)
         self.assertEqual(data["min_hold_ms"], CONFIG.min_hold_ms)
         holds = {(row["trigger"], row["bucket"]): row["count"] for row in data["holds"]}
@@ -587,7 +587,7 @@ class SelftestTest(unittest.TestCase):
         signals = {(row["action"], row["signal"], row["reason"]): row["count"] for row in data["signals"]}
         self.assertEqual(signals[("dictation", "cancel", "short_hold")], 1)
         self.assertEqual(signals[("dictation", "stop", "release")], 1)
-        self.assertEqual(signals[("send_claude", "stop", "release")], 1)
+        self.assertEqual(signals[("send_polished", "stop", "release")], 1)
         self.assertEqual(data["holds"], [
             {"trigger": "xbutton1", "bucket": "100_249ms", "count": 1},
             {"trigger": "xbutton1", "bucket": "500_999ms", "count": 1},

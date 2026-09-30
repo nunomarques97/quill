@@ -24,11 +24,12 @@ from quill import session as S
 from quill import sound
 from quill import startup
 from quill import vocabulary as V
-from quill.config import EXAMPLE_CONFIG, ClaudeAlert, load_config
+from quill.config import EXAMPLE_CONFIG, ClaudeAlert, VoiceSettings, load_config
 from quill.corrections import CorrectionStore
 from quill.edits import UNDO_EDITED, UNDO_ENTERED, UNDO_EXPIRED, UNDO_MESSAGES, UNDO_NOTHING, UNDO_OTHER_WINDOW, \
     UNDO_UNSURE
-from quill.indicator.render import CLAUDE_DONE, CLAUDE_PERMISSION, ERROR, LISTENING, LOADING, REVIEWING, SENT
+from quill.indicator.render import (CLAUDE_DONE, CLAUDE_PERMISSION, ERROR, LISTENING, LOADING, REVIEWING, SENT, VOICE,
+                                    VOICE_NONE, VOICE_OPEN)
 from quill.ollama import ChatReply, OllamaError
 from quill.tests.fakes import (
     OTHER_HWND,
@@ -44,7 +45,10 @@ from quill.tests.fakes import (
     FakeWin32,
 )
 from quill.tests.test_edits import FakeLayout
+from quill.tests.test_shortcuts import CODE as SHORTCUT_CODE
+from quill.tests.test_shortcuts import FakeLauncher, write_link
 from quill.tests.test_streaming import FakeModel, speech
+from quill.whisper import Transcript, Word
 from quill.win32 import (
     INTEGRITY_MEDIUM,
     LLKHF_INJECTED,
@@ -70,6 +74,7 @@ CLAUDE_PID = 50
 F13 = 0x7C
 F16 = 0x7F
 KEY_C = 0x43
+VK_F9 = 0x78
 WAIT_S = 10.0
 
 
@@ -577,6 +582,96 @@ class ClaudeAlertTest(AppCase):
         self.assertFalse(quill.alerts.running)
         self.hold((1,), quill=quill)
         self.assertEqual(self.api.received_text(), "w1.")
+
+
+class SpokenModel(GatedModel):
+    """A fake model whose burst words read as the invented words of ``SPOKEN_WORDS``."""
+
+    def transcribe(self, pcm, options):
+        result = super().transcribe(pcm, options)
+        say = lambda text: " ".join(SPOKEN_WORDS.get(word, word) for word in text.split())  # noqa: E731
+        return Transcript(say(result.text), tuple(Word(w.start, w.end, say(w.text)) for w in result.words))
+
+
+SPOKEN_WORDS = {"w1": "abre", "w2": "vs", "w3": "code", "w4": "no", "w5": "orla", "w6": "public", "w7": "quasar"}
+
+
+class VoiceCommandTest(AppCase):
+    """F9 held: the spoken command opens an invented hub shortcut through a fake launcher."""
+
+    def voice_app(self, launcher, vocabulary_names=None):
+        hub = self.folder / "hub"
+        hub.mkdir(exist_ok=True)
+        for name in ("orla", "orla-public", "nimbus-deck"):
+            write_link(hub, name, SHORTCUT_CODE, arguments=f'--new-window "C:\\Work\\{name}.code-workspace"')
+        self.model = SpokenModel()
+        config = self.make_config(voice=VoiceSettings((hub,)), min_hold_ms=1)  # no click to wait for
+        parts = {}
+        if vocabulary_names is not None:
+            path = self.config.vocabulary_path
+            path.write_text(vocabulary_names, "utf-8")
+            source = V.VocabularyFile(path)
+            parts = dict(vocabulary=source.load(), vocabulary_file=source)
+        return self.start(self.make_app(config, launcher=launcher, **parts)), hub
+
+    def speak(self, quill, words):
+        done, clicks = len(quill.sessions.outcomes), len(self.api.mouse_calls)
+        self.assertEqual(self.key(True, VK_F9), 1)  # swallowed: F9 never reaches the focused program
+        wait_for(lambda: len(self.captures.made) > done, "the capture to start")
+        self.captures.made[-1].push(speech(words))
+        time.sleep(0.01)  # longer than the 1 ms minimum hold
+        self.assertEqual(self.key(False, VK_F9), 1)
+        outcome = self.outcomes(done + 1, quill)[-1]
+        self.assertEqual(len(self.api.mouse_calls), clicks)  # never a click
+        return outcome
+
+    def test_f9_opens_the_named_shortcut_and_never_clicks_types_or_enters(self):
+        launcher = FakeLauncher()
+        with self.assertLogs("quill", level="INFO") as logs:
+            quill, hub = self.voice_app(launcher)
+            self.assertIsNotNone(quill.voice)
+            outcome = self.speak(quill, (1, 2, 3, 4, 5))
+        self.assertEqual((outcome.action, outcome.reason), ("voice", "opened"))
+        self.assertEqual(launcher.opened, [hub / "orla.lnk"])
+        self.assertEqual(launcher.started, [])
+        self.assertEqual((self.api.received_text(), self.api.enter_presses()), ("", []))
+        self.assertEqual(self.indicator.last, ("show", VOICE_OPEN, "A abrir orla"))
+        self.assertIn(VOICE, self.indicator.states)
+        # The sibling name opens the sibling.
+        self.speak(quill, (1, 2, 3, 4, 5, 6))
+        self.assertEqual(launcher.opened[-1], hub / "orla-public.lnk")
+        # No project with that name: nothing opens.
+        outcome = self.speak(quill, (1, 2, 3, 4, 7))
+        self.assertEqual(outcome.reason, "no_match")
+        self.assertEqual(len(launcher.opened), 2)
+        self.assertEqual(self.indicator.last[1], VOICE_NONE)
+        text = "\n".join(logs.output)
+        self.assertIn("voice commands on (1 folders)", text)
+        for private in ("orla", "quasar", "abre", str(hub)):
+            self.assertNotIn(private, text)
+
+    def test_unrecognized_speech_does_nothing(self):
+        launcher = FakeLauncher()
+        quill, _ = self.voice_app(launcher)
+        self.assertEqual(self.speak(quill, (5, 6)).reason, "unrecognized")
+        self.assertEqual(self.indicator.last, ("show", VOICE_NONE, "Comando não reconhecido"))
+        self.assertEqual((launcher.opened, self.api.received_text()), ([], ""))
+
+    def test_a_reloaded_vocabulary_is_used_by_the_next_command(self):
+        launcher = FakeLauncher()
+        quill, hub = self.voice_app(launcher, 'names = ["nimbus-deck"]\n')
+        self.assertEqual(self.speak(quill, (1, 2, 3, 4, 7)).reason, "no_match")
+        self.config.vocabulary_path.write_text('names = ["nimbus-deck"]\n[variants]\n"nimbus-deck" = ["quasar"]\n',
+                                               "utf-8")
+        self.assertEqual(self.speak(quill, (1, 2, 3, 4, 7)).reason, "opened")
+        self.assertEqual(launcher.opened, [hub / "nimbus-deck.lnk"])
+
+    def test_without_a_launcher_or_a_voice_key_there_are_no_voice_commands(self):
+        self.assertIsNone(self.make_app(self.make_config(voice=VoiceSettings((self.folder,)))).voice)
+        config = load_config(None, EXAMPLE_CONFIG)
+        off = dataclasses.replace(config, triggers=tuple(
+            dataclasses.replace(t, inputs=()) if t.action == "voice" else t for t in config.triggers))
+        self.assertIsNone(self.make_app(off, launcher=FakeLauncher()).voice)
 
 
 class VocabularyReloadTest(AppCase):

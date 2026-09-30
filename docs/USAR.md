@@ -82,6 +82,40 @@ keys = ["f14", "f8"]
 
 A F14 fica para um botão do Streamlabs. Enquanto o Quill está ligado, a F8 deixa de fazer o que fazia nos outros programas (no VS Code, por exemplo, deixa de saltar para o problema seguinte). Depois de mudar o ficheiro, desligue e volte a ligar o Quill.
 
+## Comandos de voz (F9): abrir um projeto no VS Code
+
+Com a tecla F9 dá ordens ao Quill em vez de ditar. Por agora há um comando: abrir um projeto no VS Code a partir do atalho do Windows desse projeto.
+
+1. Mantenha premida a tecla F9. O indicador mostra "Comando de voz" e as palavras ao vivo.
+2. Diga, por exemplo, «abre VS Code no <nome do projeto>». Também serve «abre o VS Code na <nome>» ou «abrir VS Code em <nome>».
+3. Largue a tecla. Se o Quill tiver a certeza do projeto, mostra "A abrir <nome>" e o VS Code abre esse projeto.
+4. Se não tiver a certeza (nenhum atalho com esse nome, ou dois parecidos), não abre nada e mostra até 3 nomes parecidos, por exemplo "Não sei qual abrir. Parecidos: alfa, alfa-public". Repita com o nome certo.
+5. Se o que disse não for um comando, aparece "Comando não reconhecido" e nada acontece.
+
+A F9 nunca clica, nunca escreve texto e nunca carrega em Enter. O nome dito é só comparado com os nomes dos atalhos; nunca é executado. Um nome exato ganha a um nome mais comprido: «alfa» abre alfa e «alfa public» abre alfa-public. Os nomes e as variantes do seu vocabulário pessoal (`local\vocabulary.toml`) também contam: se o Quill ouvir mal um nome, acrescente a forma que ele ouve como variante desse nome.
+
+O Quill só abre atalhos (ficheiros `.lnk`) que estejam diretamente dentro das pastas indicadas em `local\quill.toml`, uma pasta por linha:
+
+```
+[voice_commands]
+shortcut_dirs = ['D:\Projetos\Atalhos\Principais', 'D:\Projetos\Atalhos\Outros']
+```
+
+O nome do projeto é o nome do atalho sem `.lnk`. Subpastas não contam. Um atalho que abre o VS Code é aberto como num duplo clique; um atalho para uma pasta abre essa pasta no VS Code; qualquer outro atalho é recusado. O seu `local\quill.toml` já tem as pastas de atalhos dos seus projetos (sem as pastas de cópias de segurança). Depois de mudar as pastas, confirme e volte a ligar o Quill:
+
+```
+py -3.12 -m quill.config --check local/quill.toml
+```
+
+Enquanto o Quill está ligado, a F9 deixa de chegar aos outros programas (no VS Code, por exemplo, deixa de pôr ou tirar um ponto de paragem). Se precisar da F9, escolha outra tecla em `local\quill.toml`, por exemplo:
+
+```
+[triggers.voice]
+keys = ["f18"]
+```
+
+Só pode haver uma tecla, e nunca um botão do rato (o botão 4 fica para ditar). Com `keys = []` os comandos de voz ficam desligados.
+
 ## Corrigir erros
 
 15. Se uma palavra sair mal, corrija-a à mão logo a seguir, ou selecione o texto já corrigido e carregue em F16. O Quill aprende a troca. Quando a mesma troca acontecer em dois ditados, passa a ser feita sozinha.

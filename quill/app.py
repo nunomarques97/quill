@@ -24,7 +24,9 @@ A long dictation is rewritten by the local model (``quill.autorewrite``)
 when ``[autorewrite]`` is on, every dictation of the ``send_polished``
 trigger is (whatever ``[autorewrite]`` says), and the undo key
 (``quill.edits.RewriteUndo``) puts the original back while the rewrite is provably untouched.
-When ``[claude_alert]`` is on, ``quill.notify.AlertListener`` waits for the
+When the voice trigger is bound, ``quill.voice`` runs spoken commands ("abre
+VS Code no <projeto>" opens the matching shortcut of ``[voice_commands]``
+through ``Parts.launcher``). When ``[claude_alert]`` is on, ``quill.notify.AlertListener`` waits for the
 named events set by the Claude Code hooks and the sessions show the alert
 and play its sound (``quill.sound``) once no dictation is recording.
 Learning from corrections is wired too:
@@ -68,6 +70,7 @@ from quill.profiles import CLAUDE_CODE, Profiles, StyleError, WindowInfo, apply_
 from quill.session import CLEANUP_FALLBACK, Processed, SessionManager
 from quill.streaming import StreamingTranscriber, options_for
 from quill.triggers import KEY, InputEvent
+from quill.voice import VoiceCommands, default_parser
 from quill.vocabulary import (Matcher, Vocabulary, VocabularyError, VocabularyFile, hint_list, load_generic_terms,
                               load_vocabulary, whisper_hints)
 from quill.whisper import MODELS, Decode, model_present
@@ -370,6 +373,7 @@ class Parts:
     rewrite_client: object | None = None  # local Ollama client of the automatic rewrite; None disables it
     alert_events: object | None = None  # named events of the Claude Code alerts (quill.notify.Events); None: off
     player: object | None = None  # alert sounds (quill.sound.WinsoundPlayer); None: silent alerts
+    launcher: object | None = None  # opens voice-command shortcuts (quill.shortcuts.ShellLauncher); None: off
     vocabulary: Vocabulary = field(default_factory=Vocabulary)
     generic_terms: Sequence[str] = ()
     vocabulary_file: VocabularyFile | None = None  # read again before each dictation; None: never reloaded
@@ -401,6 +405,11 @@ class QuillApp:
                                        terms=lambda: self.pipeline.keep)
             self.command = CommandMode(api, self.injector, rewriter, lambda target: window_info(api, target.hwnd),
                                        **parts.command_options)
+        self.vocabulary = parts.vocabulary  # the current personal vocabulary, for the voice commands
+        self.voice: VoiceCommands | None = None
+        if config.trigger("voice").enabled and parts.launcher is not None:
+            self.voice = VoiceCommands(default_parser(config.voice.shortcut_dirs, lambda: self.vocabulary,
+                                                      parts.launcher), clock=parts.clock)
         self.rewriter: AutoRewriter | None = None
         if wants_rewriter(config) and parts.rewrite_client is not None:
             self.rewriter = AutoRewriter(parts.rewrite_client, config.ollama_model, config.autorewrite)
@@ -421,7 +430,7 @@ class QuillApp:
         self.sessions = SessionManager(
             transcriber=self.transcriber, capture_factory=parts.capture_factory, focus=self.focus,
             injector=self.injector, indicator=parts.indicator, pipeline=self.pipeline, command=self.command,
-            rewriter=self.rewriter, on_session_start=self._session_started, on_typed=self._typed,
+            rewriter=self.rewriter, voice=self.voice, on_session_start=self._session_started, on_typed=self._typed,
             housekeeping=self._housekeeping, player=parts.player if config.claude_alert.sound else None,
             clock=parts.clock,
         )
@@ -462,9 +471,10 @@ class QuillApp:
         except BaseException:
             self.stop()
             raise
-        log.info("Quill started (engine %s, cleanup %s, indicator %s, command mode %s, automatic rewrite %s, "
-                 "claude alert %s)", self.config.engine_model, self.config.cleanup_mode,
+        log.info("Quill started (engine %s, cleanup %s, indicator %s, command mode %s, voice commands %s, "
+                 "automatic rewrite %s, claude alert %s)", self.config.engine_model, self.config.cleanup_mode,
                  self.config.indicator_position, "on" if self.command else "off",
+                 f"on ({len(self.config.voice.shortcut_dirs)} folders)" if self.voice else "off",
                  ("on" if self.config.autorewrite.enabled else "send_polished only") if self.rewriter else "off",
                  "on" if self.alerts is not None and self.alerts.running else "off")
 
@@ -573,6 +583,7 @@ class QuillApp:
             return
         self.transcriber.vocabulary = tuple(whisper_hints(vocabulary, (), self.parts.generic_terms))
         self.pipeline.use_vocabulary(vocabulary)
+        self.vocabulary = vocabulary
         counts = vocabulary.counts()
         log.info("vocabulary reloaded (%d names, %d terms, %d variants)", counts["names"], counts["terms"],
                  counts["variants"])
@@ -677,6 +688,7 @@ def real_parts(config: Config) -> Parts:
     from quill.indicator.window import Indicator
     from quill.notify import Events
     from quill.ollama import OllamaClient
+    from quill.shortcuts import ShellLauncher
     from quill.sound import WinsoundPlayer
     from quill.whisper import Whisper
     from quill.win32 import User32
@@ -699,6 +711,7 @@ def real_parts(config: Config) -> Parts:
         vocabulary_file=source,
         alert_events=Events() if config.claude_alert.enabled else None,
         player=WinsoundPlayer() if config.claude_alert.enabled and config.claude_alert.sound else None,
+        launcher=ShellLauncher() if config.trigger("voice").enabled else None,
     )
 
 
@@ -766,6 +779,8 @@ def check_readiness(config: Config, *, models_dir: Path | None = None, venv: Pat
     except VocabularyError as exc:
         lines.append(CheckLine("vocabulary", False, str(exc)))
 
+    lines.append(voice_line(config))
+
     needed = config.cleanup_mode == "llm"
     if client is None:
         from quill.ollama import OllamaClient
@@ -797,6 +812,20 @@ def check_readiness(config: Config, *, models_dir: Path | None = None, venv: Pat
     lines.append(CheckLine("corrections", True, f"{counts['active']} active, {counts['pending']} pending"
                            + ("; review due: py -3.12 -m quill.review" if note else ""), required=False))
     return lines
+
+
+def voice_line(config: Config) -> CheckLine:
+    """The voice commands: the trigger and how many shortcuts the folders hold (counts only)."""
+    from quill.shortcuts import list_shortcuts
+
+    trigger = config.trigger("voice")
+    if not trigger.enabled:
+        return CheckLine("voice commands", True, "off (no voice trigger)", required=False)
+    folders = config.voice.shortcut_dirs
+    listing = list_shortcuts(folders)
+    detail = (f"{trigger.inputs[0].name.upper()}; {listing.folders_read} of {len(folders)} shortcut folders read, "
+              f"{len(listing.shortcuts)} shortcuts")
+    return CheckLine("voice commands", bool(listing.shortcuts), detail, required=False)
 
 
 def print_check(lines: Sequence[CheckLine], out: Callable[[str], None] = print) -> int:

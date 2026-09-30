@@ -16,7 +16,7 @@ from quill import inject
 from quill import session as S
 from quill.focus import CLICKED, NO_WINDOW, FocusResult
 from quill.indicator.render import (CLAUDE_DONE, CLAUDE_PERMISSION, ERROR, LISTENING, LOADING, REVIEWING, SENT,
-                                    TRANSCRIBING)
+                                    TRANSCRIBING, VOICE, VOICE_NONE, VOICE_OPEN)
 from quill.inject import InjectResult, Target
 from quill.session import Processed, SessionManager
 from quill.tests.fakes import FakeCaptures, FakeClock, FakeIndicator, FakePlayer
@@ -191,12 +191,14 @@ class SessionCase(unittest.TestCase):
         self.pipeline = FakePipeline()
         self.rewriter = self.make_rewriter()
         self.player = self.make_player()
+        self.voice = self.make_voice()
         self.started = 0
         self.typed_hook = []
         self.undoable = []  # (original, newline) of each on_typed call
         self.manager = SessionManager(
             transcriber=self.transcriber, capture_factory=self.captures, focus=self.focus, injector=self.injector,
-            indicator=self.indicator, pipeline=self.pipeline, rewriter=self.rewriter, on_session_start=self._started,
+            indicator=self.indicator, pipeline=self.pipeline, rewriter=self.rewriter, voice=self.voice,
+            on_session_start=self._started,
             on_typed=self._typed, player=self.player, clock=self.clock,
             final_timeout_s=5.0, poll_s=0.05)
         self.manager.start()
@@ -206,6 +208,9 @@ class SessionCase(unittest.TestCase):
         return None
 
     def make_player(self):
+        return None
+
+    def make_voice(self):
         return None
 
     def _started(self):
@@ -1080,6 +1085,104 @@ class HelpersTest(unittest.TestCase):
     def test_every_reason_has_a_portuguese_message(self):
         self.assertEqual(S.message("unknown"), S.MESSAGES[S.INTERNAL_ERROR])
         self.assertTrue(S.message(inject.TARGET_GONE, typed=2).endswith(S.INTERRUPTED))
+
+
+class FakeVoice:
+    """A quill.voice.VoiceCommands stand-in: records the texts and returns a set outcome."""
+
+    def __init__(self):
+        self.texts = []
+        self.outcome = SimpleNamespace(ok=True, reason="opened", state=VOICE_OPEN, text="A abrir orla-inventado")
+        self.error = None
+
+    def run(self, text):
+        self.texts.append(text)
+        if self.error is not None:
+            raise self.error
+        return self.outcome
+
+
+class VoiceSessionTest(SessionCase):
+    def make_voice(self):
+        return FakeVoice()
+
+    def setUp(self):
+        super().setUp()
+        self.ready()
+
+    def speak(self, text="abre vs code no orla inventado"):
+        self.press("voice", "f9")
+        capture = self.captures.made[-1]
+        capture.push(PCM)
+        asr = self.transcriber.sessions[-1]
+        asr.partial("abre vs code")
+        self.release("voice", "f9")
+        asr.handle.resolve(text)
+        return self.wait_outcomes(len(self.manager.outcomes) + 1)[-1]
+
+    def test_a_voice_command_never_clicks_types_or_presses_enter(self):
+        with self.assertLogs("quill.session", level="DEBUG") as logs:
+            outcome = self.speak()
+        self.assertEqual((outcome.action, outcome.reason, outcome.typed), ("voice", "opened", 0))
+        self.assertEqual(self.voice.texts, ["abre vs code no orla inventado"])
+        self.assertEqual(self.focus.calls, [])
+        self.assertEqual((self.injector.typed, self.injector.enters), ([], []))
+        self.assertEqual(self.typed_hook, [])
+        self.assertEqual(self.pipeline.calls, 0)  # no text pipeline: nothing is typed
+        # Listening shows the voice state with the live words, then the command's outcome.
+        self.assertEqual(self.indicator.states, ["hide", VOICE, TRANSCRIBING, VOICE_OPEN])  # hide: model ready
+        self.assertIn(("text", "abre vs code"), self.indicator.calls)
+        self.assertTrue(any(call[0] == "level" for call in self.indicator.calls))
+        self.assertEqual(self.indicator.last, ("show", VOICE_OPEN, "A abrir orla-inventado"))
+        text = "\n".join(logs.output)
+        self.assertIn("voice opened", text)
+        for word in ("orla", "abre", "inventado"):
+            self.assertNotIn(word, text.casefold())
+        self.assert_released()
+
+    def test_no_match_shows_the_options_and_errors_show_the_reason(self):
+        self.voice.outcome = SimpleNamespace(ok=False, reason="no_match", state=VOICE_NONE,
+                                             text="Nenhum projeto com esse nome. Parecidos: orla, orla-public")
+        self.assertEqual(self.speak().reason, "no_match")
+        self.assertEqual(self.indicator.last, ("show", VOICE_NONE,
+                                               "Nenhum projeto com esse nome. Parecidos: orla, orla-public"))
+        self.voice.outcome = SimpleNamespace(ok=False, reason="launch_failed", state=ERROR,
+                                             text="O Windows não abriu o atalho")
+        self.assertEqual(self.speak().reason, "launch_failed")
+        self.assertEqual(self.indicator.last, ("show", ERROR, "O Windows não abriu o atalho"))
+        self.assertEqual((self.focus.calls, self.injector.typed, self.injector.enters), ([], [], []))
+
+    def test_silence_runs_nothing(self):
+        self.assertEqual(self.speak("   ").reason, S.NO_SPEECH)
+        self.assertEqual(self.voice.texts, [])
+        self.assertEqual(self.indicator.last, ("show", ERROR, S.MESSAGES[S.NO_SPEECH]))
+
+    def test_a_raising_voice_command_is_an_internal_error_and_the_next_session_works(self):
+        self.voice.error = RuntimeError("orla inventado")
+        with self.assertLogs("quill.session", level="ERROR") as logs:
+            self.assertEqual(self.speak().reason, S.INTERNAL_ERROR)
+        self.assertNotIn("orla", "\n".join(logs.output))
+        self.voice.error = None
+        self.assertEqual(self.speak().reason, "opened")
+        self.assert_released()
+
+    def test_a_dictation_after_a_voice_command_still_clicks_and_types(self):
+        self.speak()
+        self.dictate()
+        self.assertEqual(self.wait_outcomes(2)[-1].reason, S.TYPED)
+        self.assertEqual(self.focus.calls, [("dictation", "xbutton1")])
+        self.assertEqual(self.injector.typed, [("Texto inventado de teste.", TARGET)])
+
+
+class VoiceUnavailableTest(SessionCase):
+    def test_the_voice_trigger_says_it_is_unavailable_without_recording(self):
+        self.ready()
+        self.press("voice", "f9")
+        self.release("voice", "f9")
+        self.assertEqual(self.captures.made, [])
+        self.assertEqual(self.focus.calls, [])
+        self.assertEqual(self.indicator.last, ("show", ERROR, S.MESSAGES[S.VOICE_UNAVAILABLE]))
+        self.assertEqual(self.wait_outcomes(1)[0].reason, S.VOICE_UNAVAILABLE)
 
 
 if __name__ == "__main__":

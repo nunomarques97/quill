@@ -26,7 +26,12 @@ a successful injection into a Claude Code window; anywhere else the text
 stays typed without Enter, with the ``not_claude`` notice. A command session hands
 the final text, the spoken instruction, to ``quill.command.CommandMode``,
 which copies the selection, rewrites it with the local model and types the
-rewrite over it; the indicator shows ``command`` while it listens.
+rewrite over it; the indicator shows ``command`` while it listens. A voice
+session (the ``voice`` trigger) never clicks, captures no target, types
+nothing and presses no Enter: its final text goes to ``quill.voice``
+(``voice.run``), and the indicator shows ``voice`` with the live words while
+it listens, then the command's outcome ("A abrir <nome>", the closest names
+or the reason).
 
 A long dictation (over the ``[autorewrite]`` audio or word threshold) goes,
 after the text pipeline, to the ``rewriter`` (``quill.autorewrite``) while
@@ -85,7 +90,7 @@ from quill import inject
 from quill import focus as focus_reasons
 from quill import sound
 from quill.indicator.render import (CLAUDE_DONE, CLAUDE_PERMISSION, COMMAND, ERROR, LISTENING, LOADING, REVIEWING,
-                                    SENT, TRANSCRIBING)
+                                    SENT, TRANSCRIBING, VOICE, VOICE_OPEN)
 from quill.inject import NEWLINE_SPACE, InjectOptions, Target, normalize_text
 from quill.triggers import CANCEL, CONFIRM, START, STOP, Signal
 
@@ -96,6 +101,7 @@ COMMAND_ACTION = "command"
 SEND_CLAUDE = "send_claude"
 SEND_POLISHED = "send_polished"
 SEND_RAW = "send_raw"
+VOICE_ACTION = "voice"
 # Enter follows the text, in Claude Code only.
 SEND_ACTIONS = (SEND_CLAUDE, SEND_POLISHED, SEND_RAW)
 CLICK_ACTIONS = (DICTATION, *SEND_ACTIONS)
@@ -112,6 +118,7 @@ ENGINE_ERROR = "engine_error"
 ENGINE_TIMEOUT = "engine_timeout"
 NO_SPEECH = "no_speech"
 COMMAND_UNAVAILABLE = "command_unavailable"
+VOICE_UNAVAILABLE = "voice_unavailable"
 MODEL_UNAVAILABLE = "model_unavailable"
 INTERNAL_ERROR = "internal_error"
 CLEANUP_FALLBACK = "cleanup_fallback"
@@ -124,6 +131,7 @@ MESSAGES = {
     ENGINE_TIMEOUT: "O reconhecimento de voz demorou demasiado",
     NO_SPEECH: "Não ouvi nada",
     COMMAND_UNAVAILABLE: "O modo comando não está disponível",
+    VOICE_UNAVAILABLE: "Os comandos de voz não estão disponíveis",
     MODEL_UNAVAILABLE: "Modelo de voz indisponível",
     INTERNAL_ERROR: "Erro interno; o texto não foi escrito",
     NOT_CLAUDE: "Não é o Claude Code: escrito sem Enter",
@@ -154,6 +162,8 @@ AUDIO_BYTES_PER_S = 32_000
 
 ERROR_SHOW_S = 4.0
 SENT_SHOW_S = 1.5
+VOICE_OPEN_SHOW_S = 2.5
+VOICE_NONE_SHOW_S = 6.0
 ALERT_SHOW_S = 6.0
 ALERT_REPEAT_S = 5.0
 # Claude Code alert kind -> indicator state; the text when a permission request also covers a finished reply.
@@ -269,7 +279,9 @@ class SessionManager:
     ``indicator`` a ``quill.indicator.Indicator``; ``pipeline(raw, target)``
     returns a ``Processed``; ``command`` is a ``quill.command.CommandMode``
     (None: the command trigger only says it is unavailable); ``rewriter`` is a
-    ``quill.autorewrite.AutoRewriter`` (None: no automatic rewrite).
+    ``quill.autorewrite.AutoRewriter`` (None: no automatic rewrite); ``voice``
+    is a ``quill.voice.VoiceCommands`` (None: the voice trigger only says it
+    is unavailable).
     ``on_session_start`` runs when a hold starts recording and
     ``on_typed(target, text, original, newline)`` after a successful
     injection (manual-edit detection, the correction key and the undo key):
@@ -281,7 +293,7 @@ class SessionManager:
 
     def __init__(self, *, transcriber: object, capture_factory: Callable[[Callable[[bytes], None]], object],
                  focus: object, injector: object, indicator: object, pipeline: TextPipeline,
-                 command: object | None = None, rewriter: object | None = None,
+                 command: object | None = None, rewriter: object | None = None, voice: object | None = None,
                  on_session_start: Callable[[], None] | None = None,
                  on_typed: Callable[[Target, str, str | None, str], None] | None = None,
                  housekeeping: Callable[[], None] | None = None,
@@ -296,6 +308,7 @@ class SessionManager:
         self.pipeline = pipeline
         self.command = command
         self.rewriter = rewriter
+        self.voice = voice
         self.on_session_start = on_session_start
         self.on_typed = on_typed
         self.housekeeping = housekeeping
@@ -458,9 +471,11 @@ class SessionManager:
                     self.indicator.show(LOADING)
             elif hold.action == COMMAND_ACTION and self.command is None:
                 hold.error = COMMAND_UNAVAILABLE
+            elif hold.action == VOICE_ACTION and self.voice is None:
+                hold.error = VOICE_UNAVAILABLE
             else:
                 self._live.append(hold)
-                self.indicator.show(COMMAND if hold.action == COMMAND_ACTION else LISTENING)
+                self.indicator.show({COMMAND_ACTION: COMMAND, VOICE_ACTION: VOICE}.get(hold.action, LISTENING))
         if stale is not None:
             self._fail(stale, INTERNAL_ERROR)
         if hold.loading:
@@ -538,7 +553,7 @@ class SessionManager:
             log.warning("session %d: microphone failed while recording (%s)", hold.number, type(exc).__name__)
             self._fail(hold, MIC_ERROR)
             return
-        if hold.target is None:
+        if hold.target is None and hold.action != VOICE_ACTION:  # a voice command needs no target
             if hold.action == COMMAND_ACTION:
                 self._fail(hold, commands.NO_TARGET)
             else:
@@ -619,6 +634,9 @@ class SessionManager:
                 return
             if hold.action == COMMAND_ACTION:
                 self._finalize_command(hold, result.text, engine_at)
+                return
+            if hold.action == VOICE_ACTION:
+                self._finalize_voice(hold, result.text, engine_at)
                 return
             if not result.text.strip():
                 self._fail(hold, NO_SPEECH)
@@ -712,6 +730,18 @@ class SessionManager:
         else:
             self._fail(hold, outcome.reason, typed=outcome.typed)
 
+    def _finalize_voice(self, hold: _Hold, text: str, engine_at: float) -> None:
+        """Run the spoken command; nothing is clicked, typed or entered here."""
+        if not text.strip():
+            self._fail(hold, NO_SPEECH)
+            return
+        outcome = self.voice.run(text)
+        latency = self.clock() - hold.released_at
+        log.info("session %d: voice %s; release to done %.0f ms (engine %.0f ms)", hold.number, outcome.reason,
+                 latency * 1000, (engine_at - hold.released_at) * 1000)
+        seconds = VOICE_OPEN_SHOW_S if outcome.state == VOICE_OPEN else VOICE_NONE_SHOW_S
+        self._end(hold, outcome.reason, latency=latency, shown=(outcome.state, outcome.text, seconds))
+
     def _press_enter(self, hold: _Hold) -> bool:
         try:
             result = self.injector.press_enter(hold.target)
@@ -752,7 +782,9 @@ class SessionManager:
                     hold.error = reason
 
     def _end(self, hold: _Hold, reason: str, typed: int = 0, latency: float | None = None,
-             rewrite: str | None = None, notice: str | None = None) -> None:
+             rewrite: str | None = None, notice: str | None = None,
+             shown: tuple[str, str, float] | None = None) -> None:
+        """``shown`` (state, text, seconds) replaces the outcome the reason would show."""
         with self._lock:
             if hold.ended:
                 return
@@ -761,7 +793,10 @@ class SessionManager:
             if hold in self._live:
                 self._live.remove(hold)
             if self._visible(hold):
-                self._show_outcome(hold, reason, typed, notice)
+                if shown is not None:
+                    self._show_timed(*shown)
+                else:
+                    self._show_outcome(hold, reason, typed, notice)
             self.outcomes.append(Outcome(hold.number, hold.action, reason, typed, latency, rewrite, notice))
             self._deliver_alerts()
 

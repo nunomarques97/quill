@@ -148,7 +148,7 @@ class MergeTest(ConfigCase):
                              "[triggers.send_raw]\nbuttons = [\"middle\"]\n")
         self.assertEqual([(t.action, [i.name for i in t.inputs]) for t in settings.triggers if t.enabled],
                          [("dictation", ["xbutton1", "f13", "right_ctrl"]), ("command", ["f14"]),
-                          ("send_polished", ["xbutton2", "f15"]), ("send_raw", ["middle"])])
+                          ("send_polished", ["xbutton2", "f15"]), ("send_raw", ["middle"]), ("voice", ["f9"])])
 
     def test_a_local_trigger_on_the_example_correction_key_frees_it(self) -> None:
         # A local trigger on the example's correction key: the example key gives way, as before.
@@ -309,6 +309,77 @@ class RejectTest(ConfigCase):
 
     def test_invalid_toml_is_a_config_error(self) -> None:
         self.rejected("[input\nmin_hold_ms = 1\n", "not valid TOML")
+
+
+class VoiceTest(ConfigCase):
+    """[triggers.voice] (F9 by default, one key, never a mouse button) and [voice_commands]."""
+
+    def test_example_binds_f9_and_lists_no_folders(self) -> None:
+        settings = load_config(None)
+        self.assertEqual([(item.kind, item.name) for item in settings.trigger("voice").inputs], [("key", "f9")])
+        self.assertEqual(settings.action_for("key", 0x78), "voice")
+        self.assertEqual(settings.voice.shortcut_dirs, ())
+
+    def test_any_mouse_button_is_rejected_naming_the_field_only(self) -> None:
+        for button in ("xbutton1", "xbutton2", "middle"):
+            message = self.rejected(f'[triggers.voice]\nbuttons = ["{button}"]\n', "triggers.voice.buttons", button)
+            self.assertIn("never a mouse button", message)
+
+    def test_at_most_one_key(self) -> None:
+        self.rejected('[triggers.voice]\nkeys = ["f9", "f18"]\n', "triggers.voice.keys", "f18")
+        settings = self.load('[triggers.voice]\nkeys = ["f18"]\n')
+        self.assertEqual([item.name for item in settings.trigger("voice").inputs], ["f18"])
+        self.assertIsNone(settings.action_for("key", 0x78))  # F9 is free again
+
+    def test_an_empty_list_disables_it(self) -> None:
+        self.assertFalse(self.load("[triggers.voice]\nkeys = []\n").trigger("voice").enabled)
+
+    def test_conflicts_in_the_local_file_are_rejected(self) -> None:
+        self.rejected('[triggers.voice]\nkeys = ["f18"]\n[triggers.command]\nkeys = ["f18"]\n',
+                      "triggers.voice.keys[0]", "f18")
+        self.rejected('[triggers.voice]\nkeys = ["f18"]\n[corrections]\nkey = "f18"\n', "corrections.key", "f18")
+        self.rejected('[triggers.voice]\nkeys = ["f18"]\n[autorewrite]\nundo_key = "f18"\n',
+                      "autorewrite.undo_key", "f18")
+
+    def test_the_example_keys_give_way_to_local_bindings(self) -> None:
+        # A local trigger on F9 takes it from the example's voice trigger.
+        settings = self.load('[triggers.command]\nkeys = ["f9"]\n')
+        self.assertFalse(settings.trigger("voice").enabled)
+        self.assertEqual(settings.action_for("key", 0x78), "command")
+        # An older local file with its correction or undo key on F9 keeps loading.
+        settings = self.load('[corrections]\nkey = "f9"\n')
+        self.assertEqual((settings.correction_key.name, settings.trigger("voice").enabled), ("f9", False))
+        settings = self.load('[autorewrite]\nundo_key = "f9"\n')
+        self.assertEqual((settings.autorewrite.undo_key.name, settings.trigger("voice").enabled), ("f9", False))
+        # A local voice key on the example's correction or undo key frees that key.
+        settings = self.load('[triggers.voice]\nkeys = ["f16"]\n')
+        self.assertEqual(([i.name for i in settings.trigger("voice").inputs], settings.correction_key), (["f16"], None))
+        self.assertIsNone(self.load('[triggers.voice]\nkeys = ["f17"]\n').autorewrite.undo_key)
+        # A local voice key on an example trigger's key frees only that input.
+        settings = self.load('[triggers.voice]\nkeys = ["f13"]\n')
+        self.assertEqual([i.name for i in settings.trigger("dictation").inputs], ["xbutton1", "right_ctrl"])
+
+    def test_shortcut_folders(self) -> None:
+        folders = [str(self.folder / "Hub A"), str(self.folder / "Hub B")]
+        text = "[voice_commands]\nshortcut_dirs = [" + ", ".join(f"'{folder}'" for folder in folders) + "]\n"
+        self.assertEqual(self.load(text).voice.shortcut_dirs, tuple(Path(folder) for folder in folders))
+        # A folder that does not exist is accepted here: listing skips it and logs the reason.
+        absent = str(self.folder / "absent")
+        self.assertEqual(self.load(f"[voice_commands]\nshortcut_dirs = ['{absent}']\n").voice.shortcut_dirs,
+                         (Path(absent),))
+
+    def test_shortcut_folder_values_are_checked_naming_the_field_only(self) -> None:
+        field = "voice_commands.shortcut_dirs"
+        self.rejected(f"[voice_commands]\nshortcut_dirs = '{self.folder}'\n", field, str(self.folder))
+        self.rejected("[voice_commands]\nshortcut_dirs = [3]\n", f"{field}[0]")
+        self.rejected("[voice_commands]\nshortcut_dirs = ['  ']\n", f"{field}[0]")
+        self.rejected('[voice_commands]\nshortcut_dirs = ["C:\\\\Invented\\u0007Hub"]\n', f"{field}[0]", "Invented")
+        self.rejected("[voice_commands]\nshortcut_dirs = ['relative\\Invented']\n", f"{field}[0]", "Invented")
+        long_path = "C:\\" + "a" * config.MAX_PATH_TEXT
+        self.rejected(f"[voice_commands]\nshortcut_dirs = ['{long_path}']\n", f"{field}[0]", "aaaa")
+        many = ", ".join(f"'C:\\Hub{index}'" for index in range(config.MAX_SHORTCUT_DIRS + 1))
+        self.rejected(f"[voice_commands]\nshortcut_dirs = [{many}]\n", field, "Hub1")
+        self.rejected("[voice_commands]\nfolders = []\n", "voice_commands.folders")
 
 
 class CliTest(ConfigCase):

@@ -22,7 +22,8 @@ from unittest import mock
 from quill.indicator import __main__ as cli
 from quill.indicator import render, window
 from quill.indicator.render import (CLAUDE_DONE, CLAUDE_PERMISSION, COMMAND, ERROR, LABELS, LISTENING, LOADING,
-                                    METRICS, REVIEWING, SENT, STATES, TRANSCRIBING, View)
+                                    METRICS, REVIEWING, SENT, STATES, TRANSCRIBING, VOICE, VOICE_NONE, VOICE_OPEN,
+                                    View)
 from quill.indicator.window import (EX_STYLE, HTTRANSPARENT, MA_NOACTIVATE, SW_HIDE, SW_SHOWNOACTIVATE,
                                     WM_DESTROY, WM_MOUSEACTIVATE, WM_NCHITTEST, WM_TIMER, WS_EX_LAYERED,
                                     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
@@ -522,6 +523,7 @@ class StateStyleTest(unittest.TestCase):
             LOADING: "A carregar", LISTENING: "A ouvir", TRANSCRIBING: "A transcrever", COMMAND: "Modo comando",
             REVIEWING: "A rever o texto", SENT: "Enviado para o Claude Code", ERROR: "Erro",
             CLAUDE_DONE: "Claude Code terminou", CLAUDE_PERMISSION: "Claude Code pede permissão",
+            VOICE: "Comando de voz", VOICE_OPEN: "Comando executado", VOICE_NONE: "Nada foi aberto",
         })
 
     def test_states_differ_by_label_colour_and_glyph(self) -> None:

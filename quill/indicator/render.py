@@ -33,7 +33,12 @@ SENT = "sent"
 ERROR = "error"
 CLAUDE_DONE = "claude_done"
 CLAUDE_PERMISSION = "claude_permission"
-STATES = (LOADING, LISTENING, TRANSCRIBING, COMMAND, REVIEWING, SENT, ERROR, CLAUDE_DONE, CLAUDE_PERMISSION)
+# Voice commands (quill.voice): listening to a command, a project opening, nothing opened.
+VOICE = "voice"
+VOICE_OPEN = "voice_open"
+VOICE_NONE = "voice_none"
+STATES = (LOADING, LISTENING, TRANSCRIBING, COMMAND, REVIEWING, SENT, ERROR, CLAUDE_DONE, CLAUDE_PERMISSION,
+          VOICE, VOICE_OPEN, VOICE_NONE)
 
 LABELS = {
     LOADING: "A carregar",
@@ -45,6 +50,9 @@ LABELS = {
     ERROR: "Erro",
     CLAUDE_DONE: "Claude Code terminou",
     CLAUDE_PERMISSION: "Claude Code pede permissão",
+    VOICE: "Comando de voz",
+    VOICE_OPEN: "Comando executado",
+    VOICE_NONE: "Nada foi aberto",
 }
 # Shown in the words line, in the secondary colour, while a state has no text.
 PLACEHOLDERS = {
@@ -57,6 +65,9 @@ PLACEHOLDERS = {
     ERROR: "Não foi possível concluir",
     CLAUDE_DONE: "A resposta está pronta; é a sua vez",
     CLAUDE_PERMISSION: "Aprove ou recuse o pedido no Claude Code",
+    VOICE: "Diga, por exemplo: abre VS Code no projeto…",
+    VOICE_OPEN: "A abrir o projeto…",
+    VOICE_NONE: "Comando não reconhecido",
 }
 # State colours (0xRRGGBB): distinct hues, each >= 4.5:1 on the worst backdrop.
 STATE_COLOURS = {
@@ -69,11 +80,14 @@ STATE_COLOURS = {
     ERROR: 0xFF9494,
     CLAUDE_DONE: 0xBDF26B,
     CLAUDE_PERMISSION: 0xFFA25F,
+    VOICE: 0x8FB0FF,
+    VOICE_OPEN: 0x6FF0D8,
+    VOICE_NONE: 0xFFB0C4,
 }
 # The Claude Code alerts: an orb that calls for attention, not for the voice.
 ALERT_STATES = (CLAUDE_DONE, CLAUDE_PERMISSION)
 # States whose orb follows the voice level.
-LEVEL_STATES = (LISTENING, COMMAND)
+LEVEL_STATES = (LISTENING, COMMAND, VOICE)
 
 HOLO_CYAN = 0x4FE3FF
 HOLO_VIOLET = 0xA46BFF
@@ -386,6 +400,13 @@ def _orb(view: View, lay: Layout) -> list[Op]:
         ops.extend(_voice_rings(cx, cy, s, colour, t, motion_level, still))
         if view.state == COMMAND:
             ops.append(_diamond(cx, cy, 20 * s, 30.0 * t + 45.0, Stroke(1.8 * s, Solid(argb(colour, 0.95)))))
+        elif view.state == VOICE:
+            # Two brackets around the core, like a command line waiting: a spoken command.
+            bracket = Stroke(1.8 * s, Solid(argb(colour, 0.95)))
+            for side in (-1.0, 1.0):
+                x0, x1 = cx + side * 20.5 * s, cx + side * 23.5 * s
+                ops.append(Op("polyline", ([(x0, cy - 7.0 * s), (x1, cy - 7.0 * s), (x1, cy + 7.0 * s),
+                                            (x0, cy + 7.0 * s)], False), {"stroke": bracket}))
         if still:
             ops.extend(_level_bar(cx, cy, s, colour, level))
     elif view.state == LOADING:
@@ -417,7 +438,7 @@ def _orb(view: View, lay: Layout) -> list[Op]:
         ops.append(Op("ellipse", (cx, cy, 18 * s, 18 * s), {"stroke": Stroke(1.6 * s, Solid(argb(colour, 0.7)))}))
     pulse = 0.0 if still or view.state != TRANSCRIBING else 1.5 * math.sin(2 * math.pi * 1.2 * t)
     core = (10.0 + 2.5 * motion_level + pulse) * s
-    if view.state in (SENT, ERROR, REVIEWING, *ALERT_STATES):
+    if view.state in (SENT, ERROR, REVIEWING, VOICE_OPEN, VOICE_NONE, *ALERT_STATES):
         core = 12.0 * s
     ops.append(Op("ellipse", (cx, cy, core, core), {"fill": Radial(cx - core * 0.3, cy - core * 0.35, core * 1.6,
                                                                      core * 1.6, argb(0xFFFFFF, 1.0),
@@ -441,6 +462,23 @@ def _orb(view: View, lay: Layout) -> list[Op]:
         ops.append(Op("arc", (cx, cy - 1.2 * s, 3.2 * s, 180.0, 180.0, shackle)))
         ops.append(Op("round_rect", (cx - 4.6 * s, cy - 1.2 * s, 9.2 * s, 7.0 * s, 1.4 * s),
                       {"fill": Solid(argb(GLYPH_COLOUR, 1.0))}))
+    elif view.state == VOICE:
+        # A prompt chevron on the core.
+        ops.append(Op("polyline", ([(cx - 3.2 * s, cy - 4.2 * s), (cx + 1.8 * s, cy), (cx - 3.2 * s, cy + 4.2 * s)],
+                                   False), {"stroke": Stroke(2.2 * s, Solid(argb(GLYPH_COLOUR, 1.0)))}))
+    elif view.state == VOICE_OPEN:
+        # An arrow leaving a corner: something opens elsewhere.
+        glyph = Stroke(2.0 * s, Solid(argb(GLYPH_COLOUR, 1.0)))
+        ops.append(Op("polyline", ([(cx - 4.4 * s, cy + 4.4 * s), (cx + 4.0 * s, cy - 4.0 * s)], False),
+                      {"stroke": glyph}))
+        ops.append(Op("polyline", ([(cx - 1.2 * s, cy - 4.4 * s), (cx + 4.4 * s, cy - 4.4 * s),
+                                    (cx + 4.4 * s, cy + 1.2 * s)], False), {"stroke": glyph}))
+    elif view.state == VOICE_NONE:
+        # A question mark: nothing was opened, choose a name.
+        glyph = Stroke(2.0 * s, Solid(argb(GLYPH_COLOUR, 1.0)))
+        ops.append(Op("arc", (cx, cy - 2.6 * s, 3.4 * s, 180.0, 270.0, glyph)))
+        ops.append(Op("polyline", ([(cx, cy + 0.8 * s), (cx, cy + 2.4 * s)], False), {"stroke": glyph}))
+        ops.append(Op("ellipse", (cx, cy + 5.4 * s, 1.4 * s, 1.4 * s), {"fill": Solid(argb(GLYPH_COLOUR, 1.0))}))
     elif view.state == ERROR:
         ops.append(Op("polyline", ([(cx, cy - 6.0 * s), (cx, cy + 1.5 * s)], False),
                       {"stroke": Stroke(2.6 * s, Solid(argb(GLYPH_COLOUR, 1.0)))}))

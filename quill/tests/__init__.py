@@ -1,9 +1,10 @@
 """Product tests. They never create windows, install hooks, send input, open the
-microphone, play sound or touch the real clipboard or Claude Code settings:
-importing this package disables the real Win32 layer, the real hook
-installer, the real indicator window layer, the real sound player, the real
-named events of the Claude Code alerts and the default path of the user's
-Claude Code settings, so any test that reaches them fails instead of acting.
+microphone, play sound, open shortcuts or programs or touch the real clipboard or
+Claude Code settings: importing this package disables the real Win32 layer,
+the real hook installer, the real indicator window layer, the real sound
+player, the real named events of the Claude Code alerts, the real launcher of
+the voice commands and the default path of the user's Claude Code settings,
+so any test that reaches them fails instead of acting.
 """
 
 from quill import win32
@@ -22,6 +23,7 @@ _indicator_window.OverlayWin32.__init__ = _forbidden  # type: ignore[method-assi
 
 from quill import claude_hooks as _claude_hooks  # noqa: E402
 from quill import notify as _notify  # noqa: E402
+from quill import shortcuts as _shortcuts  # noqa: E402
 from quill import sound as _sound  # noqa: E402
 
 
@@ -33,12 +35,17 @@ def _no_events(self: object, *args: object, **kwargs: object) -> None:
     raise AssertionError("quill tests must use fake alert events, never the real named events")
 
 
+def _no_launcher(self: object, *args: object, **kwargs: object) -> None:
+    raise AssertionError("quill tests must use a fake launcher, never open a shortcut or start a program")
+
+
 def _no_user_settings(*args: object, **kwargs: object) -> None:
     raise AssertionError("quill tests must use a temporary settings file, never the user's Claude Code settings")
 
 
 _sound.WinsoundPlayer.__init__ = _no_sound  # type: ignore[method-assign]
 _notify.Events.__init__ = _no_events  # type: ignore[method-assign]
+_shortcuts.ShellLauncher.__init__ = _no_launcher  # type: ignore[method-assign]
 # Kept for the tests of the path rule alone (it only computes a path from an environment).
 real_user_settings_path = _claude_hooks.user_settings_path
 _claude_hooks.user_settings_path = _no_user_settings  # type: ignore[assignment]

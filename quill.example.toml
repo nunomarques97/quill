@@ -58,6 +58,18 @@ keys = []
 buttons = []
 keys = []
 
+# Voice commands: hold, say the command, release. Today there is one command:
+# "abre VS Code no <projeto>" (also "abre o VS Code na <projeto>" or "abrir VS
+# Code em <projeto>") opens that project's Windows shortcut from the folders
+# of [voice_commands] below. The voice trigger never clicks, never types and
+# never presses Enter. It takes at most one key and no mouse button (mouse 4
+# stays for dictation); keys = [] disables it. While Quill runs the key is
+# swallowed: F9 no longer reaches other programs (for example VS Code
+# breakpoints), so bind another key in local/quill.toml if you need F9.
+[triggers.voice]
+buttons = []
+keys = ["f9"]
+
 [input]
 # A shorter hold is a tap: it is ignored and nothing is clicked or typed.
 min_hold_ms = 250
@@ -145,6 +157,23 @@ undo_window_s = 30
 enabled = true
 sound = true
 filter = "attended"
+
+# Folders with one Windows shortcut (.lnk) per project, for the voice command
+# "abre VS Code no <projeto>". Empty here: list absolute folder paths only in
+# the ignored local/quill.toml, for example
+#   shortcut_dirs = ['D:\Projects\Hub\Main', 'D:\Projects\Hub\Other']
+# Each folder is read without its subfolders and only .lnk files count; the
+# file name (without .lnk) is the project name. A missing folder is skipped.
+# The spoken name is matched with the personal vocabulary (a name or one of
+# its variants) and a small spelling tolerance, ignoring case, accents, spaces
+# and hyphens. An exact name wins over a longer one ("alfa" opens alfa, "alfa
+# public" opens alfa-public). The indicator then shows "A abrir <nome>". When
+# no single project is clearly meant, nothing opens and the indicator shows up
+# to 3 close names ("Parecidos: ..."). A shortcut that starts VS Code is
+# opened as a double click would; a shortcut to a folder opens that folder in
+# VS Code; any other shortcut is refused.
+[voice_commands]
+shortcut_dirs = []
 
 # Personal data. Paths are relative to the repository and must stay inside
 # the ignored local/ folder. style is a folder of writing samples:

@@ -372,6 +372,8 @@ class SuppressionTest(unittest.TestCase):
             "xbutton2": ("send_polished", True),
             "f15": ("send_polished", True),
             "middle": ("send_raw", True),
+            # The voice trigger's F9 is swallowed: it no longer reaches other programs while Quill runs.
+            "f9": ("voice", True),
         })
 
 

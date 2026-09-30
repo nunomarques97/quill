@@ -8,7 +8,9 @@ triggers first, so a local binding always wins over an example one (an older
 local file that binds mouse 5 to ``send_claude`` keeps loading).
 The merged result is validated strictly: unknown field names, unsupported key
 or button names, an input bound twice within the same file, a non-loopback Ollama address or a
-personal-data path outside ``local/`` raise ``ConfigError``. Error messages
+personal-data path outside ``local/``, a voice trigger with a mouse button or
+more than one key, or a shortcut folder that is not an absolute path raise
+``ConfigError``. Error messages
 name the field only, never its value, because values can be personal (for
 example the microphone name).
 
@@ -37,7 +39,9 @@ LOCAL_CONFIG = LOCAL_DIR / "quill.toml"
 # send_polished (always rewritten by the local model) and send_raw (never
 # rewritten) press Enter in Claude Code; send_claude is the older send action
 # (rewritten only when long, like a dictation), kept for existing local files.
-ACTIONS = ("dictation", "command", "send_claude", "send_polished", "send_raw")
+# voice runs a spoken command (quill.voice): it never clicks, types or presses Enter.
+ACTIONS = ("dictation", "command", "send_claude", "send_polished", "send_raw", "voice")
+VOICE_ACTION = "voice"
 PROFILE_NAMES = ("claude-code", "vscode", "whatsapp", "email")
 INDICATOR_POSITIONS = ("pointer", "bottom-center")
 CLEANUP_MODES = ("rules", "llm")
@@ -65,6 +69,9 @@ KEYS = {
 
 MODEL_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}$")
 MAX_TEXT = 200
+# [voice_commands] shortcut_dirs: how many folders, and how long each path may be.
+MAX_SHORTCUT_DIRS = 20
+MAX_PATH_TEXT = 260
 
 # Allowed fields: a dict is a table, None a value.
 SCHEMA: dict[str, object] = {
@@ -79,6 +86,7 @@ SCHEMA: dict[str, object] = {
     "autorewrite": {"enabled": None, "min_audio_s": None, "min_words": None, "timeout_s": None, "undo_key": None,
                     "undo_window_s": None},
     "claude_alert": {"enabled": None, "sound": None, "filter": None},
+    "voice_commands": {"shortcut_dirs": None},
     "paths": {"vocabulary": None, "corrections": None, "style": None},
     "profiles": {name: {"processes": None, "classes": None, "titles": None} for name in PROFILE_NAMES},
 }
@@ -144,6 +152,14 @@ class ClaudeAlert:
 
 
 @dataclass(frozen=True)
+class VoiceSettings:
+    """``[voice_commands]``: the folders whose Windows shortcuts (.lnk) the voice
+    command "abre VS Code no <projeto>" may open (``quill.shortcuts``)."""
+
+    shortcut_dirs: tuple[Path, ...] = ()
+
+
+@dataclass(frozen=True)
 class Config:
     triggers: tuple[Trigger, ...]
     min_hold_ms: int
@@ -164,6 +180,7 @@ class Config:
     edit_window_s: int = 30
     autorewrite: AutoRewrite = AutoRewrite()
     claude_alert: ClaudeAlert = ClaudeAlert()
+    voice: VoiceSettings = VoiceSettings()
 
     def trigger(self, action: str) -> Trigger:
         for trigger in self.triggers:
@@ -282,6 +299,11 @@ def _triggers(data: dict[str, object]) -> tuple[Trigger, ...]:
             values = table.get(field_name, [])
             if not isinstance(values, list):
                 raise ConfigError(f"quill config: {field} must be a list of names")
+            if action == VOICE_ACTION and kind == "button" and values:
+                raise ConfigError(f"quill config: {field} must be empty: the voice trigger takes a key, "
+                                  "never a mouse button")
+            if action == VOICE_ACTION and kind == "key" and len(values) > 1:
+                raise ConfigError(f"quill config: {field} takes at most one key")
             for index, name in enumerate(values):
                 here = f"{field}[{index}]"
                 if not isinstance(name, str) or name not in names:
@@ -355,6 +377,26 @@ def _claude_alert(data: dict[str, object]) -> ClaudeAlert:
         sound=_bool(_get(data, "claude_alert.sound"), "claude_alert.sound"),
         filter=_choice(_get(data, "claude_alert.filter"), "claude_alert.filter", FILTERS),
     )
+
+
+def _voice(data: dict[str, object]) -> VoiceSettings:
+    field = "voice_commands.shortcut_dirs"
+    value = _get(data, field)
+    if not isinstance(value, list):
+        raise ConfigError(f"quill config: {field} must be a list of folder paths")
+    if len(value) > MAX_SHORTCUT_DIRS:
+        raise ConfigError(f"quill config: {field} takes at most {MAX_SHORTCUT_DIRS} folders")
+    folders: list[Path] = []
+    for index, item in enumerate(value):
+        here = f"{field}[{index}]"
+        if (not isinstance(item, str) or not item.strip() or len(item) > MAX_PATH_TEXT
+                or any(ord(ch) < 0x20 or 0x7F <= ord(ch) <= 0x9F for ch in item)):
+            raise ConfigError(f"quill config: {here} must be a path of at most {MAX_PATH_TEXT} printable characters")
+        path = Path(item)
+        if not path.is_absolute():
+            raise ConfigError(f"quill config: {here} must be an absolute folder path")
+        folders.append(path)
+    return VoiceSettings(tuple(folders))
 
 
 def _min_hold(value: object) -> int:
@@ -433,6 +475,7 @@ def validate(data: dict[str, object]) -> Config:
         edit_window_s=_edit_window(_get(data, "corrections.edit_window_s")),
         autorewrite=_autorewrite(data, triggers, correction),
         claude_alert=_claude_alert(data),
+        voice=_voice(data),
     )
 
 
@@ -466,6 +509,10 @@ def load_config(local: Path | None = LOCAL_CONFIG, example: Path = EXAMPLE_CONFI
 def _free_example_inputs(example: dict[str, object], override: dict[str, object]) -> dict[str, object]:
     """The example's trigger lists without the inputs the local file binds to a trigger.
 
+    The example's voice trigger also gives its key up to the local correction
+    or undo key: an older local file with ``corrections.key = "f9"`` keeps
+    loading (other example triggers keep refusing those keys, as before).
+
     Only lists the local file leaves to the example lose an input: two
     triggers of the local file bound to one input still raise ``ConfigError``.
     Names that are not strings or not supported are left for ``validate``.
@@ -477,17 +524,24 @@ def _free_example_inputs(example: dict[str, object], override: dict[str, object]
             values = table.get(field_name, []) if isinstance(table, dict) else []
             if isinstance(values, list):
                 taken |= {(kind, names[name]) for name in values if isinstance(name, str) and name in names}
-    if not taken:
+    keys: set[tuple[str, int]] = set()  # the local correction and undo keys
+    for table, field in (("corrections", "key"), ("autorewrite", "undo_key")):
+        section = override.get(table)
+        name = section.get(field) if isinstance(section, dict) else None
+        if isinstance(name, str) and name in KEYS:
+            keys.add(("key", KEYS[name]))
+    if not taken and not keys:
         return example
     triggers: dict[str, object] = {}
     for action, table in example.get("triggers", {}).items():
         freed = dict(table)
+        gone = taken | keys if action == VOICE_ACTION else taken
         for field_name, kind, names in (("buttons", "button", BUTTONS), ("keys", "key", KEYS)):
             values = table.get(field_name)
             if field_name in local.get(action, {}) or not isinstance(values, list):
                 continue
             freed[field_name] = [name for name in values
-                                 if not (isinstance(name, str) and name in names and (kind, names[name]) in taken)]
+                                 if not (isinstance(name, str) and name in names and (kind, names[name]) in gone)]
         triggers[action] = freed
     return {**example, "triggers": triggers}
 

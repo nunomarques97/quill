@@ -4,18 +4,20 @@
 in place from the reference project) with the dictation set attached as
 ``settings.dictation``, the command-mode set of spoken rewrite
 instructions as ``settings.rewrite`` and the spoken voice commands ("abre VS
-Code no <projeto>") as ``settings.voice``. These three live in this
-repository: their scripts are committed and their recordings stay under the
-ignored ``local/`` folder. The voice set's ``<projeto-N>`` placeholders name
-project-hub shortcuts, so its own ``[voice.projects]`` mapping, not the
-reference config, lists the names it may use.
+Code no <projeto>") as ``settings.voice`` and the spoken Claude Code prompts with domain terms as
+``settings.prompts``. These four live in this repository: their scripts are
+committed and their recordings stay under the ignored ``local/`` folder. The
+voice set's ``<projeto-N>`` placeholders name project-hub shortcuts, so its
+own ``[voice.projects]`` mapping, not the reference config, lists the names it
+may use; the prompts set does the same with ``[prompts.projects]`` and maps
+its ``<termo-N>`` placeholders to real domain terms with ``[prompts.terms]``.
 """
 
 from __future__ import annotations
 
 import re
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -43,8 +45,15 @@ VOICE_EXPECTED_TAKES = 15
 # The target (95 % correct) needs every one of the 15 commands: all are required.
 VOICE_MIN_TAKES = 15
 
+PROMPTS_SCRIPT = REPO_ROOT / "bench" / "dictation" / "guiao-prompts-pt.md"
+PROMPTS_PREFIX = "pp"
+PROMPTS_EXPECTED_TAKES = 15
+# The domain-term comparison needs every prompt: all are required.
+PROMPTS_MIN_TAKES = 15
+
 ID_PREFIX = re.compile(r"^[a-z]{2,8}$")
 PLACEHOLDER_KEY = re.compile(r"^<projeto-\d+>$")
+TERM_KEY = re.compile(r"^<termo-\d+>$")
 
 
 class SettingsError(Exception):
@@ -69,11 +78,15 @@ class Settings:
     projects: tuple[tuple[str, str], ...] | None = None
     # When true, the names of ``projects`` are the only valid names (voice set: shortcut names).
     own_names: bool = False
+    # Placeholder -> real domain term shown while recording (prompts set only).
+    terms: tuple[tuple[str, str], ...] | None = field(default=None, repr=False)
     dictation: Settings | None = None
     # Spoken rewrite instructions for command mode (commands set only).
     rewrite: Settings | None = None
     # Spoken voice commands (commands set only).
     voice: Settings | None = None
+    # Spoken Claude Code prompts with domain terms (commands set only).
+    prompts: Settings | None = None
     # MME input device name for bench.record; None falls back to the reference config.
     recorder_device: str | None = None
 
@@ -84,7 +97,7 @@ class Settings:
     def for_set(self, name: str) -> Settings:
         if name == self.name:
             return self
-        for extra in (self.dictation, self.rewrite, self.voice):
+        for extra in (self.dictation, self.rewrite, self.voice, self.prompts):
             if extra is not None and name == extra.name:
                 return extra
         raise SettingsError(f"unknown dataset set: {name}")
@@ -107,8 +120,9 @@ def _inside(path: Path, root: Path) -> bool:
 
 
 def _script_set(data: dict, section: str, reference_config: Path, *, recordings: Path, script: Path, prefix: str,
-                expected: int, minimum: int, projects: bool, own_names: bool = False) -> Settings:
-    """A set recorded with bench.record from a committed script: [dictation], [rewrite] or [voice]."""
+                expected: int, minimum: int, projects: bool, own_names: bool = False,
+                terms: bool = False) -> Settings:
+    """A set recorded with bench.record from a committed script: [dictation], [rewrite], [voice] or [prompts]."""
     table = data.get(section, {})
     if not isinstance(table, dict):
         raise SettingsError(f"benchmark settings: [{section}] must be a table")
@@ -139,6 +153,15 @@ def _script_set(data: dict, section: str, reference_config: Path, *, recordings:
             if not PLACEHOLDER_KEY.match(key) or not isinstance(value, str) or not value.strip():
                 raise SettingsError(f"benchmark settings: [{section}.projects] maps \"<projeto-N>\" to a project name")
         mapping = tuple(sorted((key, value.strip()) for key, value in table_projects.items()))
+    term_mapping: tuple[tuple[str, str], ...] | None = None
+    table_terms = table.get("terms") if terms else None
+    if table_terms is not None:
+        if not isinstance(table_terms, dict):
+            raise SettingsError(f"benchmark settings: [{section}.terms] must be a table")
+        for key, value in table_terms.items():
+            if not TERM_KEY.match(key) or not isinstance(value, str) or not value.strip() or not value.isprintable():
+                raise SettingsError(f"benchmark settings: [{section}.terms] maps \"<termo-N>\" to a domain term")
+        term_mapping = tuple(sorted((key, value.strip()) for key, value in table_terms.items()))
     return Settings(
         recordings_dir=recordings_dir,
         recording_script=script,
@@ -152,6 +175,7 @@ def _script_set(data: dict, section: str, reference_config: Path, *, recordings:
         allow_pending=True,
         projects=mapping,
         own_names=own_names,
+        terms=term_mapping,
     )
 
 
@@ -172,6 +196,12 @@ def _voice(data: dict, reference_config: Path) -> Settings:
     return _script_set(data, "voice", reference_config, recordings=LOCAL_DIR / "recordings" / "voice",
                        script=VOICE_SCRIPT, prefix=VOICE_PREFIX, expected=VOICE_EXPECTED_TAKES, minimum=VOICE_MIN_TAKES,
                        projects=True, own_names=True)
+
+
+def _prompts(data: dict, reference_config: Path) -> Settings:
+    return _script_set(data, "prompts", reference_config, recordings=LOCAL_DIR / "recordings" / "prompts",
+                       script=PROMPTS_SCRIPT, prefix=PROMPTS_PREFIX, expected=PROMPTS_EXPECTED_TAKES,
+                       minimum=PROMPTS_MIN_TAKES, projects=True, own_names=True, terms=True)
 
 
 def load_settings(path: Path | None = None) -> Settings:
@@ -225,5 +255,6 @@ def load_settings(path: Path | None = None) -> Settings:
         dictation=_dictation(data, reference_config),
         rewrite=_rewrite(data, reference_config),
         voice=_voice(data, reference_config),
+        prompts=_prompts(data, reference_config),
         recorder_device=device.strip() if isinstance(device, str) else None,
     )

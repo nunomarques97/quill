@@ -71,6 +71,33 @@ expected_takes = 44
 # "<projeto-12>" = "harbor"
 # "<projeto-13>" = "compass"
 
+# Optional: the Claude Code prompts set (defaults shown), recorded with
+# `bench.record --set prompts` and measured with `bench.prompts`. Its script
+# is committed with <projeto-N> and <termo-N> placeholders and invented text;
+# its recordings stay under the ignored local/ folder.
+# [prompts]
+# recordings_dir = "local/recordings/prompts"   # must be under local/
+# recording_script = "bench/dictation/guiao-prompts-pt.md"
+# id_prefix = "pp"
+# expected_takes = 15
+# min_takes = 15
+#
+# Required to record the prompts set: the project-hub shortcut name of each
+# project placeholder (as for [voice.projects]: a name the project detection
+# maps to a local folder) and the real domain term read for each term
+# placeholder, a word of that project's own domain that its context pack
+# lists (`bench.prompts --dry-run` counts the terms found in their pack).
+# Both are flagged by the privacy guard in every committed file.
+# [prompts.projects]
+# "<projeto-1>" = "nimbus-deck"
+# "<projeto-2>" = "orchard"
+# "<projeto-3>" = "tidepool"
+# "<projeto-4>" = "harbor"
+# [prompts.terms]
+# "<termo-1>" = "gridlock"
+# "<termo-2>" = "quillmark"
+# ... one line per <termo-N> of the script (15 terms)
+
 # Optional: MME input device used by bench.record. A name truncated by MME to
 # 31 characters still matches. Without it the reference config's microphone
 # name ([microfone].nome) is used.

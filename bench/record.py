@@ -5,15 +5,20 @@ Usage:
     py -3.12 -m bench.record --redo dt-05,dt-07
     py -3.12 -m bench.record --set rewrite     # the command-mode rewrite instructions
     py -3.12 -m bench.record --set voice       # the voice commands ("abre VS Code no <projeto>")
+    py -3.12 -m bench.record --set prompts     # Claude Code prompts with real domain terms
     py -3.12 -m bench.record --list-devices    # MME inputs; the microphone is not opened
 
-Three sets are recorded: ``dictation`` (the default, ``dt-NN``),
+Four sets are recorded: ``dictation`` (the default, ``dt-NN``),
 ``rewrite`` (``rw-NN``, the spoken instructions of command mode; the
 invented selected text of each take is shown first, for context only, and is
 not read aloud) and ``voice`` (``vc-NN``, the spoken voice commands; the
 names are the project-hub shortcut names of ``[voice.projects]``, and every
-placeholder must have one before the microphone opens). Each phrase is shown
-with the ``<projeto-N>`` placeholders replaced by the names from the local
+placeholder must have one before the microphone opens) and ``prompts``
+(``pp-NN``, spoken Claude Code prompts; ``[prompts.projects]`` names the
+``<projeto-N>`` placeholders and ``[prompts.terms]`` the real domain terms of
+the ``<termo-N>`` ones, all required before the microphone opens; each take's
+manifest entry keeps the terms under ``termos``). Each phrase is shown
+with the placeholders replaced by the names and terms from the local
 configuration. Enter starts and stops a take; ``s``
 skips it (it stays pending), ``q`` quits, ``r`` repeats the take just saved.
 A take is rejected, and asked again, when it has 0.5 s or more of exact
@@ -63,11 +68,12 @@ from bench.dataset import (
     load_script,
     parse_markup,
     resolve_placeholders,
+    resolve_terms,
 )
 from bench.settings import LOCAL_DIR, Settings, SettingsError, load_settings
 
 MANIFEST_VERSION = 1
-RECORDED_SETS = ("dictation", "rewrite", "voice")
+RECORDED_SETS = ("dictation", "rewrite", "voice", "prompts")
 
 
 class Console:
@@ -149,6 +155,8 @@ class Session:
     now: Callable[[], datetime] = datetime.now
     # Text shown before the phrase for context, never read aloud (rewrite set: the selected text).
     context: Callable[[ScriptRow], str | None] = field(default=lambda row: None, repr=False)
+    # <termo-N> -> real domain term shown and stored with each take (prompts set).
+    terms: dict[str, str] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
         if not _inside(self.recordings_dir, LOCAL_DIR) or not _inside(self.manifest_path, LOCAL_DIR):
@@ -191,6 +199,7 @@ class Session:
 
     def phrase(self, row: ScriptRow) -> str:
         resolved, _ = resolve_placeholders(row.text, self.mapping, self.known, row.id)
+        resolved, _ = resolve_terms(resolved, self.terms, row.id)
         return display_text(parse_markup(resolved, row.id))
 
     def save(self, row: ScriptRow, pcm: bytes, elapsed_s: float) -> float:
@@ -212,6 +221,8 @@ class Session:
             "gravado_em": self.now().isoformat(timespec="seconds"),
             "substituiu": replaced,
         }
+        if self.terms:
+            manifest["gravacoes"][row.id]["termos"] = dict(self.terms)
         self.save_manifest(manifest)
         return duration
 
@@ -315,7 +326,13 @@ def main(argv: list[str] | None = None, *, api: object | None = None, console: C
         chosen = settings.for_set(args.set)
         rows = load_script(chosen)
         context = rewrite_context(chosen) if args.set == "rewrite" else (lambda row: None)
-        if args.set == "voice":
+        terms: dict[str, str] = {}
+        if args.set == "prompts":
+            from bench.prompts import load_prompt_rows, recording_names as prompt_names
+
+            mapping, terms = prompt_names(chosen, load_prompt_rows(chosen))
+            known = known_names(chosen)
+        elif args.set == "voice":
             from bench.voice_commands import load_voice_rows, recording_names
 
             mapping = recording_names(chosen, load_voice_rows(chosen))
@@ -337,6 +354,7 @@ def main(argv: list[str] | None = None, *, api: object | None = None, console: C
             capture_factory=lambda: Capture(api, index),
             console=console,
             context=context,
+            terms=terms,
         )
         redo = [part.strip() for part in args.redo.split(",") if part.strip()]
         session.run(redo)

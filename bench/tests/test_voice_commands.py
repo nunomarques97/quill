@@ -160,7 +160,8 @@ class ScriptTest(Case):
             if row.action == V.OPEN:
                 self.assertRegex(row.project, r"^<projeto-\d+>$")
         # Every placeholder of the script has an invented name in the example config.
-        example = EXAMPLE.read_text(encoding="utf-8").split("# [voice.projects]", 1)[1]
+        # Only the [voice.projects] block: other sets (prompts) have their own <projeto-N>.
+        example = EXAMPLE.read_text(encoding="utf-8").split("# [voice.projects]", 1)[1].split("\n\n", 1)[0]
         documented = dict(re.findall(r'^# ("<projeto-\d+>") = "([^"]+)"', example, re.MULTILINE))
         documented = {key.strip('"'): value for key, value in documented.items()}
         self.assertEqual(set(documented), set(V.placeholders(self.rows())))

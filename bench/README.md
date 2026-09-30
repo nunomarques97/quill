@@ -53,6 +53,11 @@ py -3.12 -m bench.rewrite --dry-run                 # rewrite script and recordi
 py -3.12 -m bench.record --set voice                # record the spoken voice commands
 py -3.12 -m bench.voice_commands --dry-run          # voice script, recording and shortcut counts; no microphone
 .venv\Scripts\python -m bench.voice_commands        # voice commands: correct actions, wrong shortcuts, latency
+py -3.12 -m bench.record --set prompts              # record the spoken Claude Code prompts
+py -3.12 -m bench.prompts --dry-run                 # prompts script, recording, folder and pack counts; no GPU
+.venv\Scripts\python -m bench.prompts               # mouse 5: domain-term errors, lost, invented, latency
+.venv\Scripts\python -m bench.prompts --set dictation   # existing claude-code dictation takes only
+py -3.12 -m bench.prompts --check docs/research/prompts-summary.json
 py -3.12 -m bench.pipeline --summary docs/research/phase2-summary.json --add-command-mode bench/results/rewrite/<run>/summary.json --add-selftests local/selftest
 py -3.12 -m bench.pipeline --summary docs/research/phase2-summary.json --require complete --require overall
 py -3.12 -m bench.pipeline --summary docs/research/phase2-summary.json --write-doc docs/research/FASE2.md
@@ -413,6 +418,57 @@ no <projeto>") on the Sponsor's voice. Recording steps for the Sponsor:
   goes to the committed `docs/research/voice-commands-summary.json`, which
   holds `"status": "pending_recordings"` until then.
 
+### Claude Code prompts (prompts set)
+
+The `prompts` set measures mouse 5 (`send_polished`) into Claude Code on the
+Sponsor's voice: the correction with the project's context pack and the
+prompt enrichment. Recording steps for the Sponsor:
+[docs/research/GRAVAR-PROMPTS.md](../docs/research/GRAVAR-PROMPTS.md).
+
+- The script `bench/dictation/guiao-prompts-pt.md` is committed with the
+  columns `id` (`pp-NN`), `caso` (`termo`, `restrição` or `números`),
+  `frase`, `intenção`, `projeto` (the one `<projeto-N>` of the phrase),
+  `termos` (its `<termo-N>`, in order) and `estilo` (`claude-code`). Its text
+  is invented.
+- `[prompts.projects]` in `local/bench.toml` names each project with a name
+  the app's project detection maps to a local folder, and `[prompts.terms]`
+  gives the real domain term of each `<termo-N>`, a word of that project's
+  context pack. `bench.record --set prompts` shows the resolved phrase,
+  refuses to open the microphone until every placeholder is mapped, records
+  under `local/recordings/prompts/` and keeps each take's terms under
+  `termos` in its manifest entry.
+- `--dry-run` prints the script cases, how many placeholders are mapped,
+  recorded N of 15 and `complete: yes/no`, and how many projects have a
+  folder and a context pack and how many terms their pack lists
+  (placeholders only when one is missing). It never opens the microphone,
+  the GPU or Ollama.
+- Each take is replayed through the product's streaming engine (the app's
+  model and hints) and its final text goes through the app's text pipeline
+  (cleanup, vocabulary, learned corrections, profile, project detection) for
+  the Claude Code panel of VS Code, titled in the project hub format. Mouse
+  5 then runs twice with the app's rewriter: today's (the title's project
+  hint only, no pack, no enrichment) and the new one (detected project, its
+  context pack, context mode and enrichment).
+- Measured: domain-term errors (occurrences of the take's terms the text
+  lacks) after the pipeline, after today's mouse 5 and after the new
+  correction; content words lost (reference content words mouse 5's input
+  had right that the output lacks outside its context part); invented
+  content words, counted independently of the product guard (beyond the
+  input, not a pack word and not a structure word; an added number always
+  counts) and pack words outside the context part; p50/p95 latency of
+  transcription, today's correction, the pack lookup, the new correction,
+  the enrichment and their total. Targets: new domain-term errors at most
+  half of today's, 0 lost, 0 invented.
+- `--set dictation` measures the existing `claude-code` takes of the
+  dictation set (lost, invented and latency, no domain terms) without new
+  recordings; `--set all` (the default) measures both.
+- Per-take text and `exemplos.md` (before/after enrichment examples for the
+  Sponsor to judge) go only to `bench/results/prompts/<run>/`. The aggregate
+  goes to `docs/research/prompts-summary.json` and is refused when a spoken
+  phrase, a transcription, a name or a real domain term would leak into it.
+  `--require` exits 1 on an unmet target or when the prompts set has missing
+  takes; `--check SUMMARY` applies the same checks to a saved summary.
+
 ### Streaming replay
 
 `bench.streaming` feeds each real take, read in place, to `quill.streaming`
@@ -645,11 +701,15 @@ not ignore. It fails on:
 - `project-name`: the project names resolved at runtime (any case, with
   spaces, dashes, dots or underscores between their parts);
 - `personal-name`: the Git `user.name`, whole or any part of 4+ letters;
+- `domain-term`: the real domain terms of the prompts set
+  (`[prompts.terms]` and each take's manifest), matched like project names;
 - `script-text`: any 4-word sequence of a script phrase, raw or resolved,
   after normalization (also across line breaks). Dictation phrases count in
   their verbatim and clean forms. Only the committed dictation script may
-  contain dictation phrases; it is still checked against the commands script
-  and every other rule;
+  contain dictation phrases, and only the committed prompts script the
+  Claude Code prompts; both are still checked against the commands script
+  and every other rule. The phrases of Quill's own voice-command syntax
+  (`PUBLIC_PHRASES`, for example "abre o VS Code no") are never script text;
 - `home-path`: absolute paths inside a Windows `Users` folder or a Unix home;
 - `api-key`: key-shaped strings (known provider prefixes, private key blocks,
   or a long letter-and-digit value assigned to an API key name);

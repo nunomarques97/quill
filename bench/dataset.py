@@ -8,7 +8,9 @@ the reference project. The dictation set (ids dt-NN by default) has a committed
 script whose phrases carry markup: ``{hum}`` marks a filler and ``[abre o]`` a
 self-repetition. The markup gives the verbatim reference (what is spoken), the
 clean reference (what the final text should say) and the spans cleanup must
-remove.
+remove. The prompts set (ids pp-NN) also has ``<termo-N>`` placeholders:
+the manifest entry of each take stores, under ``termos``, the real domain
+term each one was read as (``Take.terms``).
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ DURATION_TOLERANCE_S = 0.05
 
 DISCARDED_MARKER = ".invalida-"
 PLACEHOLDER = re.compile(r"<projeto-\d+>")
+TERM_PLACEHOLDER = re.compile(r"<termo-\d+>")
 
 # Spoken fillers the dictation script may mark (normalized form).
 FILLERS = frozenset({"hum", "pronto", "tipo", "é pá"})
@@ -100,6 +103,8 @@ class Take:
     # without markup, where the verbatim reference is already clean.
     clean_reference: str = field(default="", repr=False)
     segments: tuple[Segment, ...] = field(default=(), repr=False)
+    # Real domain terms of the ``<termo-N>`` placeholders, in phrase order (prompts set).
+    terms: tuple[str, ...] = field(default=(), repr=False)
 
     @property
     def clean(self) -> str:
@@ -303,6 +308,27 @@ def resolve_placeholders(text: str, mapping: dict[str, str], known: frozenset[st
     return PLACEHOLDER.sub(replace, text), tuple(used)
 
 
+def valid_term(value: object) -> bool:
+    """A domain term a ``<termo-N>`` may stand for: printable, non-empty, no markup or tag characters."""
+    return (isinstance(value, str) and bool(value.strip()) and value.isprintable() and len(value) <= 60
+            and not any(ch in value for ch in "{}[]<>|"))
+
+
+def resolve_terms(text: str, mapping: dict[str, str], take_id: str) -> tuple[str, tuple[str, ...]]:
+    """Replace <termo-N> with the recording's domain term; errors name the placeholder, never the term."""
+    used: list[str] = []
+
+    def replace(match: re.Match[str]) -> str:
+        placeholder = match.group(0)
+        term = mapping.get(placeholder)
+        if not valid_term(term):
+            raise DatasetError(f"{take_id}: placeholder {placeholder} has no valid domain term")
+        used.append(term.strip())
+        return term.strip()
+
+    return TERM_PLACEHOLDER.sub(replace, text), tuple(used)
+
+
 def dictation_projects(settings: Settings, commands: Settings | None = None) -> dict[str, str]:
     """Placeholder -> name shown while recording the dictation set.
 
@@ -427,6 +453,10 @@ def load_dataset(settings: Settings) -> Dataset:
         if PLACEHOLDER.search(row.text) and not isinstance(mapping, dict):
             raise DatasetError(f"{row.id}: manifest entry has no project mapping")
         reference, used = resolve_placeholders(row.text, mapping or {}, known, row.id)
+        term_mapping = entry.get("termos")
+        if TERM_PLACEHOLDER.search(row.text) and not isinstance(term_mapping, dict):
+            raise DatasetError(f"{row.id}: manifest entry has no term mapping")
+        reference, terms = resolve_terms(reference, term_mapping or {}, row.id)
         if isinstance(mapping, dict):
             for placeholder, name in mapping.items():
                 if not isinstance(name, str) or name not in known:
@@ -468,6 +498,7 @@ def load_dataset(settings: Settings) -> Dataset:
                 style=row.style,
                 clean_reference=clean_reference,
                 segments=segments,
+                terms=terms,
             )
         )
 

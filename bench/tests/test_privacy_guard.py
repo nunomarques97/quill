@@ -111,6 +111,59 @@ class DictationScriptTest(unittest.TestCase):
         self.assertTrue(guard.scan_text("README.md", phrases[0], rules))
 
 
+class PromptsScriptTest(unittest.TestCase):
+    """Prompt phrases may appear only in the committed prompts script; real domain terms nowhere."""
+
+    DICTATION = ("abre o painel do <projeto-2> e corre os testes",)
+    PROMPTS = (
+        "arruma no <projeto-1> a fila do <termo-1> antes da reunião",
+        "arruma no zeta-board a fila do Kwartz antes da reunião",
+    )
+    DICTATION_PATH = "bench/dictation/guiao.md"
+    PROMPTS_PATH = "bench/dictation/prompts.md"
+
+    def rules(self, script=SCRIPT):
+        return guard.build_rules(PROJECTS, PERSON, script, self.DICTATION, [self.DICTATION_PATH],
+                                 path_texts={self.PROMPTS_PATH: self.PROMPTS}, domain_terms=["Kwartz", "ledger-ly"])
+
+    def found(self, path, text, script=SCRIPT):
+        return [(f.line, f.category) for f in guard.scan_text(path, text, self.rules(script))]
+
+    def test_domain_terms_are_flagged_everywhere(self):
+        for text in ("o Kwartz", "KWARTZ.", "ledger ly", "ledgerly"):
+            self.assertEqual(self.found("docs/notes.md", text), [(1, "domain-term")], text)
+            self.assertEqual(self.found(self.PROMPTS_PATH, text), [(1, "domain-term")], text)
+        self.assertEqual(self.found("docs/notes.md", "kwartzite"), [])
+
+    def test_prompt_phrases_only_in_their_own_script(self):
+        raw = "| pp-01 | termo | Arruma no <projeto-1> a fila do <termo-1> antes da reunião. |"
+        self.assertEqual(self.found(self.PROMPTS_PATH, raw), [])
+        for path in ("README.md", self.DICTATION_PATH):
+            self.assertIn((1, "script-text"), self.found(path, raw), path)
+        # The resolved phrase is caught by its name and term even in the prompts script.
+        self.assertEqual(self.found(self.PROMPTS_PATH, self.PROMPTS[1]), [(1, "domain-term"), (1, "project-name")])
+
+    def test_prompts_script_is_still_checked_against_the_other_scripts(self):
+        found = self.found(self.PROMPTS_PATH, "abre o painel do omegapp\nliga o painel do <projeto-1>")
+        self.assertEqual(found, [(1, "project-name"), (1, "script-text"), (2, "script-text")])
+
+    def test_public_voice_command_syntax_is_never_script_text(self):
+        script = ("Abre o VS Code no <projeto-1> agora",)
+        self.assertEqual(self.found("quill/voice.py", 'VOICE_PROMPT = "Abre o VS Code no projeto."', script), [])
+        self.assertIn((1, "script-text"), self.found("docs/notes.md", "o VS Code no <projeto-1> agora", script))
+
+    def test_committed_prompts_script_passes_its_own_exemption(self):
+        from bench.prompts import parse_prompt_script
+        from bench.settings import PROMPTS_SCRIPT, REPO_ROOT
+
+        text = PROMPTS_SCRIPT.read_text(encoding="utf-8")
+        phrases = [row.text for row in parse_prompt_script(text)]
+        path = PROMPTS_SCRIPT.relative_to(REPO_ROOT).as_posix()
+        rules = guard.build_rules((), None, (), path_texts={path: phrases})
+        self.assertEqual(guard.scan_text(path, text, rules), [])
+        self.assertTrue(guard.scan_text("README.md", phrases[0], rules))
+
+
 class PatternTest(unittest.TestCase):
     def test_home_paths(self):
         for path in (HOME_WIN, HOME_WIN_FWD, HOME_JSON, HOME_UNIX):

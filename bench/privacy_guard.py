@@ -1,13 +1,20 @@
 """Fail when files Git would publish contain private data.
 
 Scans tracked files and untracked files that are not ignored. Categories:
-project-name, personal-name, script-text, home-path, api-key, audio-file.
-Output shows only ``file:line: category``; the matched text is never printed.
+project-name, personal-name, domain-term, script-text, home-path, api-key,
+audio-file. Output shows only ``file:line: category``; the matched text is
+never printed.
 
-The script-text rule uses the phrases of both recording scripts, raw and with
+The script-text rule uses the phrases of the recording scripts, raw and with
 placeholders resolved. The committed dictation script (invented text) is the
-only file allowed to contain dictation phrases; it is still checked against
-the commands script and every other rule.
+only file allowed to contain dictation phrases, and the committed prompts
+script (``bench/dictation/guiao-prompts-pt.md``, invented text) the only one
+allowed to contain the Claude Code prompts; both are still checked against the
+commands script and every other rule. The real project names and domain terms
+of the prompts set (``[prompts.projects]`` and ``[prompts.terms]`` of
+``local/bench.toml`` and each take's manifest) are flagged everywhere. The
+phrases of Quill's own voice-command syntax (``PUBLIC_PHRASES``) are public by
+design and never script text.
 
 Usage: py -3.12 -m bench.privacy_guard [--config local/bench.toml]
 """
@@ -18,15 +25,19 @@ import argparse
 import re
 import subprocess
 import sys
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from bench.dataset import DatasetError, load_dictation_private_text, load_private_text
 from bench.normalize import normalize_words
-from bench.settings import DICTATION_SCRIPT, REPO_ROOT, SettingsError, load_settings
+from bench.prompts import private_text as load_prompts_private_text
+from bench.settings import DICTATION_SCRIPT, PROMPTS_SCRIPT, REPO_ROOT, SettingsError, load_settings
 
 NGRAM = 4
+# The voice-command syntax Quill itself implements and documents (quill.voice):
+# public by design, even where a private recording script says the same words.
+PUBLIC_PHRASES = ("abre o VS Code no",)
 AUDIO_EXTENSIONS = {
     ".wav", ".mp3", ".flac", ".ogg", ".opus", ".webm", ".m4a", ".aac",
     ".aif", ".aiff", ".wma", ".amr", ".mka",
@@ -74,10 +85,13 @@ def _name_pattern(name: str) -> re.Pattern[str] | None:
 class Rules:
     project_names: list[re.Pattern[str]] = field(default_factory=list)
     personal_names: list[re.Pattern[str]] = field(default_factory=list)
+    domain_terms: list[re.Pattern[str]] = field(default_factory=list)
     ngrams: set[tuple[str, ...]] = field(default_factory=set)
     # N-grams that only the files in exempt_paths may contain.
     exempt_ngrams: set[tuple[str, ...]] = field(default_factory=set)
     exempt_paths: frozenset[str] = frozenset()
+    # Path -> n-grams that only that one file may contain (the prompts script).
+    exempt_by_path: dict[str, set[tuple[str, ...]]] = field(default_factory=dict)
 
 
 def _ngrams(texts: Iterable[str]) -> set[tuple[str, ...]]:
@@ -95,21 +109,37 @@ def build_rules(
     script_texts: Iterable[str],
     exempt_texts: Iterable[str] = (),
     exempt_paths: Iterable[str] = (),
+    *,
+    path_texts: Mapping[str, Iterable[str]] | None = None,
+    domain_terms: Iterable[str] = (),
 ) -> Rules:
-    """``exempt_texts`` are flagged everywhere except in ``exempt_paths``."""
+    """``exempt_texts`` are flagged everywhere except in ``exempt_paths``.
+
+    ``path_texts`` maps one file to texts flagged everywhere except in that
+    file; ``domain_terms`` are flagged everywhere, like project names.
+    """
     rules = Rules(exempt_paths=frozenset(exempt_paths))
     for name in project_names:
         pattern = _name_pattern(name)
         if pattern is not None:
             rules.project_names.append(pattern)
+    for term in domain_terms:
+        pattern = _name_pattern(term)
+        if pattern is not None:
+            rules.domain_terms.append(pattern)
     if person_name and person_name.strip():
         for candidate in [person_name, *re.findall(r"[^\W\d_]{4,}", person_name)]:
             pattern = _name_pattern(candidate)
             if pattern is not None:
                 rules.personal_names.append(pattern)
-    rules.ngrams = _ngrams(script_texts)
-    rules.exempt_ngrams = _ngrams(exempt_texts) - rules.ngrams
+    public = _ngrams(PUBLIC_PHRASES)
+    rules.ngrams = _ngrams(script_texts) - public
+    rules.exempt_ngrams = _ngrams(exempt_texts) - rules.ngrams - public
+    for path, texts in (path_texts or {}).items():
+        rules.exempt_by_path[path] = _ngrams(texts) - rules.ngrams - public
     rules.ngrams |= rules.exempt_ngrams
+    for grams in rules.exempt_by_path.values():
+        rules.ngrams |= grams
     return rules
 
 
@@ -119,13 +149,15 @@ def _is_key_like(value: str) -> bool:
 
 def scan_text(path: str, text: str, rules: Rules) -> list[Finding]:
     found: set[Finding] = set()
-    exempt = rules.exempt_ngrams if path in rules.exempt_paths else set()
+    exempt = (rules.exempt_ngrams if path in rules.exempt_paths else set()) | rules.exempt_by_path.get(path, set())
     stream: list[tuple[str, int]] = []
     for number, line in enumerate(text.splitlines(), start=1):
         if any(p.search(line) for p in rules.project_names):
             found.add(Finding(path, number, "project-name"))
         if any(p.search(line) for p in rules.personal_names):
             found.add(Finding(path, number, "personal-name"))
+        if any(p.search(line) for p in rules.domain_terms):
+            found.add(Finding(path, number, "domain-term"))
         if HOME_PATH.search(line):
             found.add(Finding(path, number, "home-path"))
         if any(p.search(line) for p in API_KEY_PATTERNS) or any(
@@ -199,6 +231,7 @@ def main(argv: list[str] | None = None) -> int:
         settings = load_settings(args.config)
         texts, names = load_private_text(settings)
         dictation_texts, dictation_names = load_dictation_private_text(settings.dictation, settings)
+        prompt_texts, prompt_names, prompt_terms = load_prompts_private_text(settings.prompts)
     except (SettingsError, DatasetError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -206,7 +239,9 @@ def main(argv: list[str] | None = None) -> int:
     if person is None:
         print("warning: git user.name is not set; personal-name check skipped", file=sys.stderr)
     exempt_path = DICTATION_SCRIPT.relative_to(REPO_ROOT).as_posix()
-    rules = build_rules(names | dictation_names, person, texts, dictation_texts, [exempt_path])
+    prompts_path = PROMPTS_SCRIPT.relative_to(REPO_ROOT).as_posix()
+    rules = build_rules(names | dictation_names | prompt_names, person, texts, dictation_texts, [exempt_path],
+                        path_texts={prompts_path: prompt_texts}, domain_terms=prompt_terms)
     try:
         files = list_files(REPO_ROOT)
     except (OSError, subprocess.CalledProcessError):

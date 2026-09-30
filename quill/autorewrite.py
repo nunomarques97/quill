@@ -45,6 +45,15 @@ own guard and ``enrich_timeout_s``); a refused, failed or timed-out
 enrichment keeps the corrected text, and a refused or failed correction
 types the input without enrichment.
 
+In context mode, a fix may only bring a content word that is not in the
+input when it is a term: the replaced words' new content words must
+together be one vocabulary term, pack term or the project name, or each be
+one, or differ from a replaced word only in case and accents. Any other fix
+that passes the rules above is undone: those words are typed as they were
+dictated, and the reply's other fixes stay (``Verdict.kept`` counts them).
+The prompt says so (``TERMS_ONLY_RULE``). send_polished outside context mode
+and the automatic rewrite of long dictations keep the rules above.
+
 Only function words (articles, prepositions, pronouns, conjunctions) and
 hesitations may be dropped or added, and they count as changes; words of
 negation, condition, alternative and contrast (``POLARITY``: "sem", "nem",
@@ -169,6 +178,11 @@ CONTEXT_RULE = (
     "vocabulary term only when that term fits the context of its sentence and sounds close to the misheard word; "
     "otherwise keep the word as it is written."
 )
+TERMS_ONLY_RULE = (
+    "Replace a misheard word only with a term of the vocabulary or of the project, written exactly as listed; never "
+    "with any other word, not even a word that fits better or a different form of the same word. When no term "
+    "fits, keep the word exactly as it is written, even when it looks wrong."
+)
 VOCABULARY_LINE = "Vocabulary (write these exactly like this): {terms}"
 PROJECT_LINE = "Active project: {project}"
 USER_TEMPLATE = "<dictation>\n{text}\n</dictation>"
@@ -218,6 +232,8 @@ class _Word:
     text: str
     key: str
     protected: str | None  # NUMBER or NAME when the word may not change
+    start: int = 0  # position in its text
+    end: int = 0
 
 
 def _words(text: str) -> list[_Word]:
@@ -232,7 +248,7 @@ def _words(text: str) -> list[_Word]:
             protected = NUMBER
         elif any(ch.isupper() for ch in word[1:]) or (word[0].isupper() and not at_start):
             protected = NAME
-        found.append(_Word(word, fold(word), protected))
+        found.append(_Word(word, fold(word), protected, match.start(), match.end()))
     return found
 
 
@@ -254,6 +270,7 @@ class Verdict:
     text: str | None = field(repr=False)
     reason: str  # "ok" or one of REFUSALS
     changes: int = 0
+    kept: int = 0  # fixes undone because their new words are not terms (``replacements``)
 
     @property
     def ok(self) -> bool:
@@ -334,16 +351,30 @@ def _unfit(lost: Sequence[_Word], new: Sequence[_Word], spelling: Callable[[str]
     return _uncovered(lost, new, spelling)
 
 
+def _from_terms(lost: Sequence[_Word], new: Sequence[_Word], allowed: set[str]) -> bool:
+    """Whether the new content words of a fix are terms of ``allowed`` or replaced words in another case or accent."""
+    content = [word for word in new if word.key not in FLEXIBLE]
+    if {_bare(" ".join(word.text for word in words)) for words in (new, content)} & allowed:
+        return True
+    said = {_bare(word.text) for word in lost}
+    return all(_bare(word.text) in allowed or _bare(word.text) in said for word in content)
+
+
 def guard(source: str, reply: str, *, profile: str = DEFAULT, keep: Iterable[str] = (),
-          terms: Iterable[str] = ()) -> Verdict:
+          terms: Iterable[str] = (), replacements: Iterable[str] | None = None) -> Verdict:
     """Compare the model's ``reply`` with its input ``source``; see the module docstring for the rules.
 
     ``terms`` (context mode only: the pack terms and the vocabulary) may also
     replace a misheard word or group that sounds close (``sound_key``).
+    ``replacements`` (context mode), when given, are the only terms a fix
+    may bring that are not in the input; any other fix is undone.
     """
     style_of(profile)  # an unknown profile is a programming error
     keep = tuple(keep)
     sounds = {_bare(term) for term in terms if isinstance(term, str)} - {""}
+    allowed = None
+    if replacements is not None:
+        allowed = {_bare(term) for term in replacements if isinstance(term, str)} - {""}
     text = reply.replace("\r\n", "\n").strip()
     if not text:
         return _refused(EMPTY)
@@ -359,6 +390,7 @@ def guard(source: str, reply: str, *, profile: str = DEFAULT, keep: Iterable[str
 
     before, after = _words(source), _words(laid_out)
     changes = 0
+    undone: list[tuple[int, int, str]] = []  # (start, end) in the reply and the dictated words for that place
     matcher = difflib.SequenceMatcher(None, [w.key for w in before], [w.key for w in after], autojunk=False)
     for op, i1, i2, j1, j2 in matcher.get_opcodes():
         if op == "equal":
@@ -390,13 +422,18 @@ def guard(source: str, reply: str, *, profile: str = DEFAULT, keep: Iterable[str
             unfit = None  # a pack or vocabulary term that sounds like the misheard words
         if unfit:
             return _refused(unfit, changes)
+        if allowed is not None and not _from_terms(lost, new, allowed):
+            undone.append((new[0].start, new[-1].end, source[lost[0].start:lost[-1].end]))
+            continue
         changes += 1
     if changes > max(MIN_CHANGES, int(MAX_CHANGE_RATIO * len(before))):
         return _refused(TOO_MANY, changes)
+    for start, end, dictated in reversed(undone):
+        laid_out = laid_out[:start] + dictated + laid_out[end:]
     low, high = LENGTH_BOUNDS
     if not low * _letters(source) <= _letters(laid_out) <= high * _letters(source):
         return _refused(LENGTH, changes)
-    return Verdict(shape(laid_out, profile, keep), "ok", changes)
+    return Verdict(shape(laid_out, profile, keep), "ok", changes, len(undone))
 
 
 # ---------------------------------------------------------------- context
@@ -432,10 +469,10 @@ def project_hint(info: object | None, names: Iterable[str] = ()) -> str:
 def build_prompt(text: str, profile: str, keep: Sequence[str] = (), project: str = "", *,
                  context: bool = False, pack: object | None = None) -> tuple[str, str]:
     """(system prompt, user message) for one long dictation; ``context`` (send_polished in Claude Code) adds
-    the context rule and the project pack as data."""
+    the context rule, the rule that a misheard word is only replaced with a term and the project pack as data."""
     layout = CLAUDE_LAYOUT if profile == CLAUDE_CODE else LAYOUTS[style_of(profile)]
     if context:
-        layout = f"{layout} {CONTEXT_RULE}"
+        layout = f"{layout} {CONTEXT_RULE} {TERMS_ONLY_RULE}"
         data = enrich.pack_data(pack, project)
         project = ""  # the project name is inside the data blocks
     lines = []
@@ -476,6 +513,7 @@ class AutoRewrite:
     enrichment: str = ""
     enrich_detail: str = ""
     enrich_seconds: float = 0.0
+    kept: int = 0  # misheard-word fixes typed as dictated because their new words are not terms
 
     @property
     def corrected(self) -> bool:
@@ -556,11 +594,11 @@ class AutoRewriter:
         words = word_count(text)
 
         def done(reason: str, result: str | None = None, detail: str = "", seconds: float = 0.0,
-                 changes: int = 0) -> AutoRewrite:
+                 changes: int = 0, kept: int = 0) -> AutoRewrite:
             if reason not in (SHORT, DISABLED):
-                log.info("autorewrite: %s%s (%d words, %.2f s)", reason, f" ({detail})" if detail else "", words,
-                         seconds)
-            return AutoRewrite(text if result is None else result, text, reason, detail, seconds, changes)
+                log.info("autorewrite: %s%s (%d words%s, %.2f s)", reason, f" ({detail})" if detail else "", words,
+                         f", {kept} fixes kept as dictated" if kept else "", seconds)
+            return AutoRewrite(text if result is None else result, text, reason, detail, seconds, changes, kept=kept)
 
         if not force and not self.settings.enabled:
             return done(DISABLED)
@@ -585,9 +623,10 @@ class AutoRewriter:
         if not isinstance(content, str):
             return done(FAILED, detail="no_text", seconds=seconds)
         terms = (*keep, *enrich.pack_parts(pack)[1]) if context else ()
-        verdict = guard(text, content, profile=profile, keep=keep, terms=terms)
+        replacements = (*terms, project) if context else None
+        verdict = guard(text, content, profile=profile, keep=keep, terms=terms, replacements=replacements)
         if not verdict.ok:
             return done(REFUSED, detail=verdict.reason, seconds=seconds, changes=verdict.changes)
         if verdict.text == text.strip():
-            return done(UNCHANGED, seconds=seconds)
-        return done(REWRITTEN, verdict.text, seconds=seconds, changes=verdict.changes)
+            return done(UNCHANGED, seconds=seconds, kept=verdict.kept)
+        return done(REWRITTEN, verdict.text, seconds=seconds, changes=verdict.changes, kept=verdict.kept)

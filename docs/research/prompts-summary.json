@@ -1,0 +1,200 @@
+{
+  "schema": 1,
+  "kind": "mouse5_prompts",
+  "status": "measured",
+  "targets": {
+    "term_errors_ratio_max": 0.5,
+    "lost_max": 0,
+    "invented_max": 0,
+    "pack_outside_context_max": 0
+  },
+  "sets": {
+    "prompts": {
+      "status": "measured",
+      "dataset": {
+        "script_rows": 15,
+        "recorded": 15,
+        "pending": 0,
+        "invalid": 0
+      },
+      "takes": 15,
+      "no_speech": 0,
+      "projects_detected": 15,
+      "packs_found": 15,
+      "term_occurrences": 16,
+      "term_errors": {
+        "pipeline": 7,
+        "today": 7,
+        "new": 5
+      },
+      "lost": {
+        "today": 0,
+        "new": 0
+      },
+      "invented": {
+        "today": 2,
+        "new": 0
+      },
+      "pack_outside_context": 0,
+      "enriched": 3,
+      "reasons": {
+        "today": {
+          "autorewrite_refused": 13,
+          "autorewrite_rewritten": 2
+        },
+        "correction": {
+          "autorewrite_refused": 2,
+          "autorewrite_rewritten": 4,
+          "autorewrite_unchanged": 9
+        },
+        "correction_refusals": {
+          "changed": 1,
+          "name": 1
+        },
+        "enrichment": {
+          "enrich_enriched": 3,
+          "enrich_refused": 10,
+          "not_asked": 2
+        },
+        "enrichment_refusals": {
+          "empty_part": 3,
+          "invented": 1,
+          "length": 5,
+          "pack_outside": 1
+        },
+        "packs": {
+          "cached": 15
+        }
+      },
+      "latency": {
+        "transcription_p50_s": 0.419,
+        "transcription_p95_s": 0.471,
+        "today_correction_p50_s": 3.324,
+        "today_correction_p95_s": 3.863,
+        "pack_p50_s": 0.095,
+        "pack_p95_s": 0.143,
+        "correction_p50_s": 0.986,
+        "correction_p95_s": 1.484,
+        "enrichment_p50_s": 3.265,
+        "enrichment_p95_s": 7.911,
+        "total_p50_s": 4.222,
+        "total_p95_s": 8.894
+      },
+      "over_product_timeout": {
+        "correction": 0,
+        "enrichment": 0
+      }
+    },
+    "dictation": {
+      "status": "measured",
+      "dataset": {
+        "script_rows": 9,
+        "recorded": 9,
+        "pending": 0,
+        "invalid": 0
+      },
+      "takes": 9,
+      "no_speech": 0,
+      "projects_detected": 4,
+      "packs_found": 4,
+      "term_occurrences": null,
+      "term_errors": null,
+      "lost": {
+        "today": 1,
+        "new": 0
+      },
+      "invented": {
+        "today": 2,
+        "new": 0
+      },
+      "pack_outside_context": 0,
+      "enriched": 5,
+      "reasons": {
+        "today": {
+          "autorewrite_refused": 4,
+          "autorewrite_rewritten": 2,
+          "autorewrite_unchanged": 3
+        },
+        "correction": {
+          "autorewrite_refused": 1,
+          "autorewrite_rewritten": 3,
+          "autorewrite_unchanged": 5
+        },
+        "correction_refusals": {
+          "changed": 1
+        },
+        "enrichment": {
+          "enrich_enriched": 5,
+          "enrich_refused": 3,
+          "not_asked": 1
+        },
+        "enrichment_refusals": {
+          "length": 2,
+          "pack_outside": 1
+        },
+        "packs": {
+          "cached": 4,
+          "no_folder": 5
+        }
+      },
+      "latency": {
+        "transcription_p50_s": 0.39,
+        "transcription_p95_s": 0.541,
+        "today_correction_p50_s": 1.21,
+        "today_correction_p95_s": 3.369,
+        "pack_p50_s": 0.092,
+        "pack_p95_s": 0.095,
+        "correction_p50_s": 1.241,
+        "correction_p95_s": 1.615,
+        "enrichment_p50_s": 1.543,
+        "enrichment_p95_s": 7.292,
+        "total_p50_s": 2.658,
+        "total_p95_s": 8.768
+      },
+      "over_product_timeout": {
+        "correction": 0,
+        "enrichment": 0
+      }
+    }
+  },
+  "engine": {
+    "model": "large-v3-turbo",
+    "step_s": 0.5,
+    "commit": false,
+    "agreement": false,
+    "partial_beam": 1,
+    "final_beam": 5,
+    "commit_margin_s": 1.0,
+    "context_chars": 200,
+    "max_window_s": 20.0,
+    "tail_pad_s": 0.3,
+    "speculate": true,
+    "pause_commit": true,
+    "pause_commit_min_s": 1.5,
+    "min_speech_s": 0.2,
+    "lead_s": 0.2,
+    "min_speech_rms": 0.001,
+    "floor_ratio": 4.0,
+    "tokens_per_s": 10.0,
+    "min_new_tokens": 24,
+    "hints": {
+      "count": 41,
+      "chars": 247
+    }
+  },
+  "rewrite": {
+    "model": "qwen3:8b",
+    "timeout_s": 4.0,
+    "enrich_timeout_s": 15.0,
+    "bench_timeout_s": 120.0,
+    "cleanup": "rules"
+  },
+  "meets_targets": {
+    "complete": true,
+    "term_errors": false,
+    "lost": true,
+    "invented": true,
+    "pack_outside_context": true,
+    "all": false
+  }
+}

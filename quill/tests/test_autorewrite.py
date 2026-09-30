@@ -225,7 +225,9 @@ class RewriterTest(unittest.TestCase):
             result = self.run_with(client, short.replace("ficheiro", "fixeiro"), audio_s=1.0, settings=settings,
                                    force=True)
             self.assertEqual(len(client.calls), 1)
-            self.assertEqual((result.reason, result.called), (A.REWRITTEN, True))
+            # Outside context mode a fix to a word that is no term stays, as before.
+            self.assertEqual((result.reason, result.called, result.text, result.kept), (A.REWRITTEN, True, short, 0))
+            self.assertNotIn("never with any other word", client.calls[0].system)
         refused = self.run_with(FakeClient("Abre o ficheiro."), short, audio_s=1.0, settings=Settings(), force=True)
         self.assertEqual((refused.reason, refused.text), (A.REFUSED, short))  # a dropped word: the original
         failed = self.run_with(FakeClient(error=OSError("down")), short, audio_s=1.0, settings=Settings(), force=True)
@@ -474,6 +476,88 @@ class ContextRewriterTest(unittest.TestCase):
         # A refused correction is not enriched: the hook is not called.
         result = self.run_with(Replies(FIXED), pack=None, on_enrich=lambda: seen.append(1))
         self.assertEqual((seen, result.reason), ([], A.REFUSED))
+
+
+class TermsOnlyTest(unittest.TestCase):
+    """send_polished in Claude Code: a fix may only bring a word that was not dictated when it is a term."""
+
+    SOURCE = ("Gera o gráfico mensal da uólete no json e faz o de ploi quando o servidor responde, depois arquiva "
+              "a cópia.")
+    REPLY = ("Gera o gráfico mensal da wallet no JSON e faz o deploy quando o servidor responder, depois arquiva "
+             "a cópia.")
+
+    def test_a_fix_to_a_word_that_is_no_term_is_typed_as_dictated(self) -> None:
+        verdict = A.guard(self.SOURCE, self.REPLY, profile="claude-code", terms=("wallet",),
+                          replacements=("wallet", "deploy", "JSON"))
+        # Case fixes and term fixes stay; the other verb form is undone.
+        self.assertEqual((verdict.reason, verdict.changes, verdict.kept), ("ok", 2, 1))
+        self.assertEqual(verdict.text, self.REPLY.replace("responder", "responde"))
+        # Without the restriction (the automatic rewrite), all three fixes count: too many for 20 words.
+        today = A.guard(self.SOURCE, self.REPLY, profile="claude-code", terms=("wallet",))
+        self.assertEqual((today.reason, today.changes, today.kept), (A.TOO_MANY, 3, 0))
+
+    def test_only_whole_terms_accents_and_case_count(self) -> None:
+        source = "Abre o painel de rísco e mostra a ordem de conpra."
+        reply = "Abre o painel de risco e mostra a ordem de compra."
+        # An accent-only fix needs no term; "compra" alone is only a word of a term, so it is undone.
+        verdict = A.guard(source, reply, replacements=("ordem de compra",))
+        self.assertEqual((verdict.text, verdict.kept), (reply.replace("compra", "conpra"), 1))
+        # The whole term as one fix is accepted.
+        verdict = A.guard("Abre o painel de risco e mostra a ordemde conpra.", reply,
+                          replacements=("ordem de compra",))
+        self.assertEqual((verdict.text, verdict.kept), (reply, 0))
+        # An empty list of terms undoes every fix that brings a new word.
+        verdict = A.guard(source, reply, replacements=())
+        self.assertEqual((verdict.text, verdict.kept), (reply.replace("compra", "conpra"), 1))
+
+    def test_undoing_keeps_the_dictated_words_and_the_other_rules(self) -> None:
+        source = "Guarda a lista de compras e eu reveijo, antes da reunião."
+        verdict = A.guard(source, "Guarda a lista de compras e eu revejo, antes da reunião.", replacements=())
+        self.assertEqual((verdict.text, verdict.kept, verdict.changes), (source, 1, 0))
+        # Refusals are unchanged: a dropped word, an added word, a changed number.
+        for reply, reason in (("Guarda a lista e eu revejo, antes da reunião.", A.DROPPED),
+                              ("Guarda a lista de compras e eu revejo, antes da reunião, por favor.", A.EXPLANATION),
+                              ("Guarda a lista de compras e eu revejo, antes da reunião 2.", A.NUMBER)):
+            with self.subTest(reason=reason):
+                self.assertEqual(A.guard(source, reply, replacements=()).reason, reason)
+
+    def test_the_rewriter_passes_the_terms_of_its_mode(self) -> None:
+        heard = "Corre o de ploi da uólete no módulo do trader e mostra o fexeiro de registo."
+        reply = "Corre o deploy da wallet no módulo do trader e mostra o ficheiro de registo."
+        clock = Clock()
+        # Context mode: vocabulary, pack terms and the project name.
+        rewriter = A.AutoRewriter(Replies(reply), "m", CONTEXT_ON, clock=clock)
+        with self.assertLogs("quill.autorewrite", logging.INFO) as logs:
+            result = rewriter.rewrite(heard, audio_s=3.0, profile="claude-code", keep=KEEP, project="trader",
+                                      force=True, pack=PACK)
+        self.assertEqual((result.reason, result.kept), (A.REWRITTEN, 1))
+        self.assertEqual(result.text, reply.replace("ficheiro", "fexeiro"))
+        self.assertIn("1 fixes kept as dictated", logs.output[-1])
+        for word in ("fexeiro", "ficheiro", "wallet", "trader"):
+            self.assertNotIn(word, logs.output[-1])
+        # send_polished in any other window keeps today's rewrite: no sound-key allowance, no terms-only rule.
+        rewriter = A.AutoRewriter(Replies(reply), "m", CONTEXT_ON, clock=clock)
+        result = rewriter.rewrite(heard, audio_s=3.0, profile="default", keep=KEEP, project="trader", force=True)
+        self.assertEqual((result.reason, result.detail), (A.REFUSED, A.CHANGED))
+        rewriter = A.AutoRewriter(Replies(reply.replace("wallet", "uólete")), "m", CONTEXT_ON, clock=clock)
+        result = rewriter.rewrite(heard, audio_s=3.0, profile="default", keep=KEEP, force=True)
+        self.assertEqual((result.reason, result.text, result.kept), (A.REWRITTEN, reply.replace("wallet", "uólete"), 0))
+        # The same in the claude-code profile with context=False (Claude Code without context mode).
+        rewriter = A.AutoRewriter(Replies(reply.replace("wallet", "uólete")), "m", CONTEXT_ON, clock=clock)
+        result = rewriter.rewrite(heard, audio_s=3.0, profile="claude-code", keep=KEEP, force=True, context=False)
+        self.assertEqual((result.reason, result.kept), (A.REWRITTEN, 0))
+        self.assertIn("ficheiro", result.text)
+        # The automatic rewrite of a long dictation keeps today's rules.
+        rewriter = A.AutoRewriter(Replies(reply.replace("wallet", "uólete")), "m", CONTEXT_ON, clock=clock)
+        result = rewriter.rewrite(heard, audio_s=20.0, profile="default", keep=KEEP)
+        self.assertEqual((result.text, result.kept), (reply.replace("wallet", "uólete"), 0))
+
+    def test_the_prompt_says_the_rule_only_in_context_mode(self) -> None:
+        for profile in ("default", "claude-code"):
+            self.assertNotIn("only with a term", A.build_prompt(HEARD, profile, KEEP, "trader")[0])
+        context = A.build_prompt(HEARD, "claude-code", KEEP, "trader", context=True, pack=PACK)
+        self.assertIn("only with a term of the vocabulary or of the project", context[0])
+        self.assertIn("<project_terms>", context[1])
 
 
 class ClientTimeoutTest(unittest.TestCase):

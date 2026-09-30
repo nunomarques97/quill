@@ -368,6 +368,14 @@ class VoiceTest(ConfigCase):
         self.assertEqual(self.load(f"[voice_commands]\nshortcut_dirs = ['{absent}']\n").voice.shortcut_dirs,
                          (Path(absent),))
 
+    def test_voice_model(self) -> None:
+        # The example decodes the voice holds with large-v3; dictation keeps [engine] model.
+        settings = load_config(None)
+        self.assertEqual((settings.voice.model, settings.engine_model), ("large-v3", "large-v3-turbo"))
+        self.assertEqual(self.load('[voice_commands]\nmodel = "large-v3-turbo"\n').voice.model, "large-v3-turbo")
+        self.rejected('[voice_commands]\nmodel = "tiny-invented"\n', "voice_commands.model", "tiny-invented")
+        self.rejected("[voice_commands]\nmodel = 3\n", "voice_commands.model")
+
     def test_shortcut_folder_values_are_checked_naming_the_field_only(self) -> None:
         field = "voice_commands.shortcut_dirs"
         self.rejected(f"[voice_commands]\nshortcut_dirs = '{self.folder}'\n", field, str(self.folder))

@@ -9,7 +9,8 @@ The ``voice`` set (``bench/dictation/guiao-comandos-pt.md``, recorded with
 expected action: open the shortcut named by ``<projeto-N>`` (the names come
 from ``[voice.projects]`` of the ignored ``local/bench.toml``), or open
 nothing. Each recorded take goes through the product path: it is replayed
-through ``quill.streaming`` (local large-v3-turbo) with exactly the hints the
+through ``quill.streaming`` with the app's voice model (``[voice_commands]
+model`` of the quill config, local large-v3 by default) and exactly the hints the
 app gives a voice session (``quill.voice.VoiceHints``: Portuguese, the
 command prompt, the listed shortcut names and the personal-vocabulary names
 with their variants; not the dictation hints), and the final text goes to the
@@ -414,19 +415,25 @@ def spoken_texts(dataset: Dataset, rows: Sequence[VoiceRow], results: Sequence[T
 Streamer = Callable[[Sequence[Take]], list[tuple[str, float]]]
 
 
+def voice_model() -> str:
+    """``[voice_commands] model`` of the app's config: the model that decodes the voice trigger's holds."""
+    from quill.config import load_config
+
+    return load_config().voice.model
+
+
 def default_streamer(hints: SessionHints) -> tuple[Streamer, dict]:
-    """The product streaming path; every take is opened as a voice session with ``hints``."""
+    """The product streaming path with the app's voice model; every take is opened as a voice session with ``hints``."""
     from bench.rewrite import default_streamer as product_streamer
 
-    return product_streamer((), hints)
+    return product_streamer((), hints, voice_model())
 
 
 def default_tokens() -> Callable[[str], int]:
-    """The token counter of the measured engine model, as the app counts with its own."""
-    from bench.pipeline import STREAM_MODEL
+    """The token counter of the voice model, as the app counts with its own."""
     from quill.whisper import TokenCounter
 
-    return TokenCounter(STREAM_MODEL)
+    return TokenCounter(voice_model())
 
 
 def hints_record(hints: SessionHints, shortcut_names: int, tokens: Callable[[str], int]) -> dict:

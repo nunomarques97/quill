@@ -453,11 +453,13 @@ def spoken_texts(dataset: Dataset, rows: Sequence[RewriteRow], results: Sequence
 Streamer = Callable[[Sequence[Take]], list[tuple[str, float]]]
 
 
-def default_streamer(hints: Sequence[str], session_hints: SessionHints | None = None) -> tuple[Streamer, dict]:
+def default_streamer(hints: Sequence[str], session_hints: SessionHints | None = None,
+                     model_name: str | None = None) -> tuple[Streamer, dict]:
     """The product streaming path, with its engine model and tuning; ``stream.close`` frees the model.
 
     ``session_hints`` open every take's session as the app opens a voice
     session; without them the takes get the vocabulary ``hints``.
+    ``model_name`` replaces the dictation engine model (the voice trigger's model).
     """
     from dataclasses import asdict
 
@@ -466,14 +468,15 @@ def default_streamer(hints: Sequence[str], session_hints: SessionHints | None = 
     from quill.streaming import options_for
     from quill.whisper import Whisper
 
-    options = options_for(STREAM_MODEL)
-    model = Whisper(STREAM_MODEL, compute_type=ENGINE_COMPUTE)
+    name = model_name or STREAM_MODEL
+    options = options_for(name)
+    model = Whisper(name, compute_type=ENGINE_COMPUTE)
 
     def stream(takes: Sequence[Take]) -> list[tuple[str, float]]:
         return stream_takes(model, takes, list(hints), options, hints=session_hints)
 
     stream.close = model.close
-    return stream, {"model": STREAM_MODEL, **asdict(options)}
+    return stream, {"model": name, **asdict(options)}
 
 
 def default_rewriter(terms: Sequence[str] = ()) -> tuple[CommandRewriter, str]:

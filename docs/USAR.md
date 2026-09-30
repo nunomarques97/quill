@@ -87,12 +87,20 @@ A F14 fica para um botão do Streamlabs. Enquanto o Quill está ligado, a F8 dei
 Com a tecla F9 dá ordens ao Quill em vez de ditar. Por agora há um comando: abrir um projeto no VS Code a partir do atalho do Windows desse projeto.
 
 1. Mantenha premida a tecla F9. O indicador mostra "Comando de voz" e as palavras ao vivo.
-2. Diga, por exemplo, «abre VS Code no <nome do projeto>». Também serve «abre o VS Code na <nome>» ou «abrir VS Code em <nome>».
+2. Diga o nome do projeto. Não precisa do verbo: a F9 serve só para comandos. Pode dizer só «<nome do projeto>», ou uma frase como «abre VS Code no <nome>», «VS Code na pasta <nome>» ou «abre o projeto <nome>, se faz favor». O Quill ignora o verbo (mesmo mal ouvido), «VS Code» e as formas como o Whisper o escreve, «projeto», «pasta», as preposições e as palavras de cortesia, e procura o nome em qualquer parte da frase.
 3. Largue a tecla. Se o Quill tiver a certeza do projeto, mostra "A abrir <nome>" e o VS Code abre esse projeto.
-4. Se não tiver a certeza (nenhum atalho com esse nome, ou dois parecidos), não abre nada e mostra até 3 nomes parecidos, por exemplo "Não sei qual abrir. Parecidos: alfa, alfa-public". Repita com o nome certo.
-5. Se o que disse não for um comando, aparece "Comando não reconhecido" e nada acontece.
+4. Se o nome não for claro, não abre nada e mostra até 3 nomes parecidos, por exemplo "Não sei qual abrir. Parecidos: alfa, alfa-public". Isto acontece quando nenhum atalho tem um nome parecido que chegue, quando disse dois nomes, ou quando dois atalhos são demasiado parecidos. Repita com o nome certo.
+5. Se só disse palavras de enchimento (por exemplo «abre o VS Code»), aparece "Comando não reconhecido" e nada acontece.
 
-A F9 nunca clica, nunca escreve texto e nunca carrega em Enter. O nome dito é só comparado com os nomes dos atalhos; nunca é executado. Um nome exato ganha a um nome mais comprido: «alfa» abre alfa e «alfa public» abre alfa-public. Os nomes e as variantes do seu vocabulário pessoal (`local\vocabulary.toml`) também contam: se o Quill ouvir mal um nome, acrescente a forma que ele ouve como variante desse nome.
+A F9 nunca clica, nunca escreve texto e nunca carrega em Enter. O nome dito é só comparado com os nomes dos atalhos; nunca é executado. Um nome exato ganha a um nome mais comprido: «alfa» abre alfa e «alfa public» abre alfa-public (um nome com hífen pode ser dito como duas palavras). Na F9 o Whisper ouve sempre em português e recebe como dica os nomes dos atalhos e os nomes do seu vocabulário. Os nomes e as variantes do seu vocabulário pessoal (`local\vocabulary.toml`) também contam: se o Quill ouvir mal um nome, acrescente a forma que ele ouve como variante desse nome.
+
+A F9 é transcrita com um modelo próprio, o large-v3 (já está no PC), que ouve melhor os nomes dos projetos; o ditado continua com o large-v3-turbo. Os dois modelos ficam carregados, o que ocupa cerca de 3 GB a mais na memória da placa gráfica. Nos primeiros segundos depois de ligar o Quill, enquanto o large-v3 carrega, a F9 usa o modelo do ditado. Para voltar a usar só um modelo, acrescente esta linha à secção `[voice_commands]` de `local\quill.toml` e volte a ligar o Quill (a F9 volta a acertar menos nomes):
+
+```
+model = "large-v3-turbo"
+```
+
+Na medição com as suas 15 gravações de comandos, com o large-v3 a F9 acertou as 15 e nunca abriu o projeto errado (meta: pelo menos 95 % e nenhum projeto errado). Com o large-v3-turbo acertava 12; nas outras 3 ouvia mal o nome e não abria nada. Detalhes em `docs/research/VOICE-COMMANDS.md`.
 
 O Quill só abre atalhos (ficheiros `.lnk`) que estejam diretamente dentro das pastas indicadas em `local\quill.toml`, uma pasta por linha:
 

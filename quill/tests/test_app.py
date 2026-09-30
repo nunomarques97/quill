@@ -602,7 +602,7 @@ SPOKEN_WORDS = {"w1": "abre", "w2": "vs", "w3": "code", "w4": "no", "w5": "orla"
 class VoiceCommandTest(AppCase):
     """F9 held: the spoken command opens an invented hub shortcut through a fake launcher."""
 
-    def voice_app(self, launcher, vocabulary_names=None, **hint_options):
+    def voice_app(self, launcher, vocabulary_names=None, voice_model=None, **hint_options):
         hub = self.folder / "hub"
         hub.mkdir(exist_ok=True)
         for name in ("orla", "orla-public", "nimbus-deck"):
@@ -617,6 +617,8 @@ class VoiceCommandTest(AppCase):
             parts = dict(vocabulary=source.load(), vocabulary_file=source)
         # An invented token count: the tokenizer of a real model is never read here.
         parts["voice_hint_options"] = {"tokens": word_tokens, **hint_options}
+        if voice_model is not None:
+            parts["voice_model"] = voice_model
         return self.start(self.make_app(config, launcher=launcher, **parts)), hub
 
     def speak(self, quill, words):
@@ -665,7 +667,7 @@ class VoiceCommandTest(AppCase):
         listed = [shortcut.name for shortcut in list_shortcuts((hub,)).shortcuts]
         expected = voice_hints(listed, quill.vocabulary, tokens=word_tokens)
         self.assertIn("orla-public", expected.prompt)
-        self.assertIn("orla public", expected.hotwords)
+        self.assertNotIn("orla", expected.hotwords)
         self.assertIn("quasar", expected.hotwords)
         for call in voice:  # partials and the final alike
             self.assertEqual((call.options.initial_prompt, call.options.hotwords, call.options.language),
@@ -711,6 +713,65 @@ class VoiceCommandTest(AppCase):
                                                "utf-8")
         self.assertEqual(self.speak(quill, (1, 2, 3, 4, 7)).reason, "opened")
         self.assertEqual(launcher.opened, [hub / "nimbus-deck.lnk"])
+
+    def test_the_voice_model_decodes_f9_once_loaded_after_the_engine_model(self):
+        launcher = FakeLauncher()
+        voice_model = SpokenModel()
+        voice_model.loaded.clear()  # the voice model is still loading
+        with self.assertLogs("quill", level="INFO") as logs:
+            quill, hub = self.voice_app(launcher, voice_model=voice_model)
+            self.assertIsNotNone(quill.voice_transcriber)
+            # Loading: the engine model decodes F9.
+            wait_for(lambda: voice_model.loads == 0 and quill.voice_transcriber.running, "the voice model to load")
+            self.assertEqual(self.speak(quill, (1, 2, 3, 4, 5)).reason, "opened")
+            engine_calls = len(self.model.calls)
+            self.assertTrue(engine_calls)
+            self.assertEqual(voice_model.calls, [])
+            voice_model.loaded.set()
+            wait_for(lambda: quill.voice_transcriber.ready.is_set(), "the voice model to be ready")
+            wait_for(lambda: "voice model ready" in "\n".join(logs.output), "the voice model log line")
+            # Ready: the voice model decodes F9 with the voice hints; the engine model is not used.
+            self.assertEqual(self.speak(quill, (1, 2, 3, 4, 5, 6)).reason, "opened")
+            self.assertEqual(launcher.opened, [hub / "orla.lnk", hub / "orla-public.lnk"])
+            self.assertTrue(voice_model.calls)
+            self.assertTrue(all(call.options.language == "pt" for call in voice_model.calls))
+            self.assertEqual(len(self.model.calls), engine_calls)
+            # Dictation keeps the engine model.
+            voice_calls = len(voice_model.calls)
+            self.hold((5, 6), quill=quill)
+            self.assertGreater(len(self.model.calls), engine_calls)
+            self.assertEqual(len(voice_model.calls), voice_calls)
+            quill.stop()
+        self.assertEqual((voice_model.loads, voice_model.closes), (1, 1))
+        text = "\n".join(logs.output)
+        self.assertIn("voice model large-v3", text)
+        for private in ("orla", str(hub)):
+            self.assertNotIn(private, text)
+
+    def test_a_voice_model_that_fails_leaves_f9_on_the_engine_model(self):
+        launcher = FakeLauncher()
+        voice_model = SpokenModel()
+        voice_model.fail_load = RuntimeError("invented")
+        with self.assertLogs("quill", level="INFO") as logs:
+            quill, hub = self.voice_app(launcher, voice_model=voice_model)
+            wait_for(lambda: quill.voice_transcriber.ready.is_set(), "the voice model load to end")
+            self.assertEqual(self.speak(quill, (1, 2, 3, 4, 5)).reason, "opened")
+        self.assertEqual(launcher.opened, [hub / "orla.lnk"])
+        self.assertEqual(voice_model.calls, [])
+        self.assertTrue(self.model.calls)
+        self.assertIn("voice model not loaded, voice commands use the engine model", "\n".join(logs.output))
+
+    def test_the_voice_model_is_never_loaded_when_the_engine_model_fails(self):
+        self.model = GatedModel()
+        self.model.fail_load = RuntimeError("invented")
+        voice_model = GatedModel()
+        quill = self.make_app(self.make_config(voice=VoiceSettings((self.folder,))), launcher=FakeLauncher(),
+                              voice_model=voice_model)
+        quill.start()
+        wait_for(lambda: quill.transcriber.ready.is_set(), "the engine model load to end")
+        wait_for(lambda: quill._loader is not None and not quill._loader.is_alive(), "the loader to end")
+        quill.stop()
+        self.assertEqual((voice_model.loads, voice_model.closes), (0, 0))
 
     def test_without_a_launcher_or_a_voice_key_there_are_no_voice_commands(self):
         self.assertIsNone(self.make_app(self.make_config(voice=VoiceSettings((self.folder,)))).voice)
@@ -1204,6 +1265,21 @@ class CheckTest(unittest.TestCase):
         self.assertFalse(lines["venv"].ok)
         self.assertFalse(lines["microphone"].ok)
         self.assertEqual(A.print_check(list(lines.values()), lambda line: None), A.EXIT_FAILED)
+
+    def test_the_voice_model_is_checked_but_not_required(self):
+        self.ready_files()
+        line = {line.name: line for line in self.check()}["voice model"]
+        self.assertEqual((line.ok, line.required), (False, False))
+        self.assertIn("large-v3: files missing in models/faster-whisper-large-v3; voice commands use "
+                      "large-v3-turbo", line.detail)
+        (self.models / "faster-whisper-large-v3").mkdir()
+        for name in ("model.bin", "config.json", "tokenizer.json"):
+            (self.models / "faster-whisper-large-v3" / name).write_bytes(b"")
+        line = {line.name: line for line in self.check()}["voice model"]
+        self.assertEqual((line.ok, line.detail), (True, "large-v3: files present"))
+        self.config = dataclasses.replace(self.config, voice=VoiceSettings(model="large-v3-turbo"))
+        line = {line.name: line for line in self.check()}["voice model"]
+        self.assertEqual((line.ok, line.detail), (True, "large-v3-turbo (the engine model)"))
 
     def test_ollama_is_required_only_for_the_llm_cleanup(self):
         self.ready_files()

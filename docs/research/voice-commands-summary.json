@@ -7,32 +7,32 @@
     "wrong_shortcuts_max": 0
   },
   "takes": 15,
-  "correct": 2,
-  "correct_rate": 0.1333,
+  "correct": 15,
+  "correct_rate": 1.0,
   "wrong_shortcuts": 0,
   "ambiguous": 0,
-  "unrecognized": 14,
-  "no_match": 1,
+  "unrecognized": 0,
+  "no_match": 2,
   "reasons": {
-    "no_match": 1,
-    "unrecognized": 14
+    "no_match": 2,
+    "opened": 13
   },
   "by_case": {
     "exato": {
       "takes": 3,
-      "correct": 0
+      "correct": 3
     },
     "irmão": {
       "takes": 5,
-      "correct": 0
+      "correct": 5
     },
     "vocabulário": {
       "takes": 2,
-      "correct": 0
+      "correct": 2
     },
     "variante": {
       "takes": 3,
-      "correct": 0
+      "correct": 3
     },
     "negativo": {
       "takes": 2,
@@ -40,15 +40,15 @@
     }
   },
   "meets_targets": {
-    "correct_rate": false,
+    "correct_rate": true,
     "wrong_shortcuts": true,
-    "all": false
+    "all": true
   },
   "latency": {
-    "transcription_p50_s": 0.175,
-    "transcription_p95_s": 0.196,
-    "command_p50_s": 0.0,
-    "command_p95_s": 0.001
+    "transcription_p50_s": 0.337,
+    "transcription_p95_s": 0.384,
+    "command_p50_s": 0.002,
+    "command_p95_s": 0.003
   },
   "dataset": {
     "script_rows": 15,
@@ -57,9 +57,9 @@
     "invalid": 0
   },
   "engine": {
-    "model": "large-v3-turbo",
+    "model": "large-v3",
     "step_s": 0.5,
-    "commit": false,
+    "commit": true,
     "agreement": false,
     "partial_beam": 1,
     "final_beam": 5,
@@ -75,6 +75,14 @@
     "min_speech_rms": 0.001,
     "floor_ratio": 4.0,
     "tokens_per_s": 10.0,
-    "min_new_tokens": 24
+    "min_new_tokens": 24,
+    "hints": {
+      "kind": "voice",
+      "language": "pt",
+      "prompt_chars": 387,
+      "hotwords_chars": 49,
+      "shortcut_names": 26,
+      "token_count": "tokenizer"
+    }
   }
 }

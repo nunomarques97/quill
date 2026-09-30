@@ -172,8 +172,16 @@ filter = "attended"
 # to 3 close names ("Parecidos: ..."). A shortcut that starts VS Code is
 # opened as a double click would; a shortcut to a folder opens that folder in
 # VS Code; any other shortcut is refused.
+# model decodes the voice trigger's holds only (dictation keeps [engine]
+# model). "large-v3" (default) recognised the spoken project names clearly
+# better than "large-v3-turbo" in the voice-command measurement
+# (docs/research/VOICE-COMMANDS.md), about 0.1 s slower. When it differs
+# from [engine] model, Quill keeps both models loaded (about 3 GB more video
+# memory); until it is ready, or if it cannot load, the voice trigger uses
+# the [engine] model.
 [voice_commands]
 shortcut_dirs = []
+model = "large-v3"
 
 # Personal data. Paths are relative to the repository and must stay inside
 # the ignored local/ folder. style is a folder of writing samples:

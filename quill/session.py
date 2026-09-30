@@ -286,6 +286,8 @@ class SessionManager:
     is a ``quill.voice.VoiceCommands`` (None: the voice trigger only says it
     is unavailable) and ``voice_hints()`` returns the decoding hints of a
     voice session (``quill.whisper.SessionHints``; None: the vocabulary hints).
+    ``voice_transcriber`` decodes the voice sessions with its own model once it
+    is ready (None, still loading or failed: ``transcriber`` decodes them).
     ``on_session_start`` runs when a hold starts recording and
     ``on_typed(target, text, original, newline)`` after a successful
     injection (manual-edit detection, the correction key and the undo key):
@@ -298,7 +300,7 @@ class SessionManager:
     def __init__(self, *, transcriber: object, capture_factory: Callable[[Callable[[bytes], None]], object],
                  focus: object, injector: object, indicator: object, pipeline: TextPipeline,
                  command: object | None = None, rewriter: object | None = None, voice: object | None = None,
-                 voice_hints: Callable[[], object] | None = None,
+                 voice_hints: Callable[[], object] | None = None, voice_transcriber: object | None = None,
                  on_session_start: Callable[[], None] | None = None,
                  on_typed: Callable[[Target, str, str | None, str], None] | None = None,
                  housekeeping: Callable[[], None] | None = None,
@@ -315,6 +317,7 @@ class SessionManager:
         self.rewriter = rewriter
         self.voice = voice
         self.voice_hints = voice_hints
+        self.voice_transcriber = voice_transcriber
         self.on_session_start = on_session_start
         self.on_typed = on_typed
         self.housekeeping = housekeeping
@@ -501,7 +504,8 @@ class SessionManager:
         hints = self._session_hints(hold)
         extra = {} if hints is None else {"hints": hints}
         try:
-            hold.asr = self.transcriber.open(on_partial=lambda partial: self._on_partial(hold, partial), **extra)
+            transcriber = self._transcriber_for(hold)
+            hold.asr = transcriber.open(on_partial=lambda partial: self._on_partial(hold, partial), **extra)
             capture = self.capture_factory(lambda pcm: self._on_audio(hold, pcm))
             capture.start()
         except Exception as exc:  # noqa: BLE001 - microphone missing, busy or unplugged
@@ -511,6 +515,17 @@ class SessionManager:
         with self._lock:
             hold.capture = capture
             hold.capturing = True
+
+    def _transcriber_for(self, hold: _Hold) -> object:
+        """The voice model for a voice session when it is loaded; the engine model otherwise."""
+        voice = self.voice_transcriber
+        if hold.action != VOICE_ACTION or voice is None:
+            return self.transcriber
+        if voice.ready.is_set() and not voice.load_error:
+            return voice
+        log.info("session %d: voice model %s; decoding with the engine model", hold.number,
+                 "not loaded" if voice.load_error else "still loading")
+        return self.transcriber
 
     def _session_hints(self, hold: _Hold) -> object | None:
         """The decoding hints of a voice session; None (the vocabulary hints) for any other or on failure."""

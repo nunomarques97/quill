@@ -40,6 +40,10 @@ Optional, decided by the research: a key that sends the text straight to Claude 
 - Final-text WER and intent: keep the current engine and measure again after weeks of real use; the corrections made in daily use become the material for a later local fine-tuning trial, with no extra recording sessions. The targets are not lowered and the gap stays open until the new measurement. See docs/research/FASE2.md.
 - Command mode target: at least 90 % correct rewrites on the 20 real spoken rewrite instructions. Measured on 2026-09-29: 80 % (16 of 20). The gap stays open and is worked in the next run (prompt improvements and automatic rewrite of long dictations), like the WER and intent gap. See docs/research/FASE2.md.
 
+## Sponsor decisions (2026-09-30)
+
+- F9 voice commands use local Whisper large-v3 (already in `models/`, 0 EUR/month, nothing installed), set by `[voice_commands] model`; dictation, command mode and the send triggers stay on large-v3-turbo. On the 15 real voice-command takes large-v3 gives 15/15 with 0 wrong shortcuts, and turbo 12/15. The cost is about 0.13 s more latency on F9 and about 3 GB more video memory. This lifts the "large-v3-turbo only" rule for F9 sessions only. See docs/research/VOICE-COMMANDS.md.
+
 ## Non-negotiable rules
 
 - Nothing is installed without the Sponsor approving the exact command.

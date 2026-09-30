@@ -14,6 +14,7 @@ import tomllib
 import unittest
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from bench import record
@@ -419,7 +420,7 @@ class MeasureTest(Case):
         self.assertEqual(streamer.hints, voice_hints(listed, vocabulary, tokens=word_tokens))
         self.assertIn("marble", streamer.hints.prompt)
         self.assertEqual(streamer.hints.language, "pt")
-        self.assertIn("nimbus deck", streamer.hints.hotwords)
+        self.assertIn("nimbus-deck", streamer.hints.hotwords)
         self.assertIn("nimbos deque", streamer.hints.hotwords)
         self.assertNotIn("Vocabulário", streamer.hints.prompt)
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -487,11 +488,22 @@ class DefaultStreamerTest(unittest.TestCase):
             seen.append((type(model).__name__, model.loaded, list(vocabulary), hints))
             return []
 
-        with mock.patch("bench.streaming.stream_takes", stream_takes):
+        with mock.patch("bench.streaming.stream_takes", stream_takes), \
+                mock.patch.object(V, "voice_model", return_value="large-v3"):
             stream, options = V.default_streamer(hints)
             stream([])
         self.assertEqual(seen, [("Whisper", False, [], hints)])  # never loaded: the fake stood in
-        self.assertEqual(options["model"], "large-v3-turbo")
+        # The app's voice model, with the app's streaming options for that model.
+        self.assertEqual((options["model"], options["commit"]), ("large-v3", True))
+
+    def test_the_voice_model_and_its_tokenizer_come_from_the_app_config(self):
+        from quill.config import VoiceSettings
+
+        config = SimpleNamespace(voice=VoiceSettings(model="large-v3-turbo"))
+        with mock.patch("quill.config.load_config", return_value=config):
+            self.assertEqual(V.voice_model(), "large-v3-turbo")
+            path = V.default_tokens().path
+        self.assertEqual((path.parent.name, path.name), ("faster-whisper-large-v3-turbo", "tokenizer.json"))
 
 
 class AggregateTest(unittest.TestCase):
@@ -573,8 +585,24 @@ class CommittedFilesTest(unittest.TestCase):
         else:
             self.assertEqual(summary["takes"], 15)
             self.assertIsInstance(summary["meets_targets"]["all"], bool)
+        # No per-take field anywhere; "opened" may only be a reason code counted in "reasons".
+        reasons = summary.get("reasons", {})
+        self.assertTrue(all(isinstance(count, int) for count in reasons.values()))
+
+        def keys(value):
+            if isinstance(value, dict):
+                for key, inner in value.items():
+                    if inner is not reasons:
+                        yield key
+                        yield from keys(inner)
+            elif isinstance(value, list):
+                for inner in value:
+                    yield from keys(inner)
+
+        found = set(keys(summary))
         for key in ("heard", "expected", "opened", "text", "shown"):
-            self.assertNotIn(f'"{key}"', SUMMARY.read_text(encoding="utf-8"))
+            self.assertNotIn(key, found)
+        self.assertNotIn('"heard"', SUMMARY.read_text(encoding="utf-8"))
 
     def test_recording_steps_are_numbered_and_name_the_commands(self):
         text = STEPS.read_text(encoding="utf-8")

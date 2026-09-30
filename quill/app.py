@@ -27,7 +27,10 @@ trigger is (whatever ``[autorewrite]`` says), and the undo key
 When the voice trigger is bound, ``quill.voice`` runs spoken commands ("abre
 VS Code no <projeto>" opens the matching shortcut of ``[voice_commands]``
 through ``Parts.launcher``); its holds are decoded in Portuguese with the
-voice hints (``quill.voice.VoiceHints``), dictation with the vocabulary hints. When ``[claude_alert]`` is on, ``quill.notify.AlertListener`` waits for the
+voice hints (``quill.voice.VoiceHints``) and ``[voice_commands] model``
+(a second model loaded after the engine model when they differ; the engine
+model decodes them until it is ready or when it fails), dictation with the
+vocabulary hints. When ``[claude_alert]`` is on, ``quill.notify.AlertListener`` waits for the
 named events set by the Claude Code hooks and the sessions show the alert
 and play its sound (``quill.sound``) once no dictation is recording.
 Learning from corrections is wired too:
@@ -375,6 +378,7 @@ class Parts:
     alert_events: object | None = None  # named events of the Claude Code alerts (quill.notify.Events); None: off
     player: object | None = None  # alert sounds (quill.sound.WinsoundPlayer); None: silent alerts
     launcher: object | None = None  # opens voice-command shortcuts (quill.shortcuts.ShellLauncher); None: off
+    voice_model: object | None = None  # decodes the voice holds (load / transcribe / close); None: ``model`` does
     vocabulary: Vocabulary = field(default_factory=Vocabulary)
     generic_terms: Sequence[str] = ()
     vocabulary_file: VocabularyFile | None = None  # read again before each dictation; None: never reloaded
@@ -410,12 +414,17 @@ class QuillApp:
         self.vocabulary = parts.vocabulary  # the current personal vocabulary, for the voice commands
         self.voice: VoiceCommands | None = None
         self.voice_hints: VoiceHints | None = None
+        self.voice_transcriber: StreamingTranscriber | None = None
+        self._voice_lock = threading.Lock()
         if config.trigger("voice").enabled and parts.launcher is not None:
             self.voice = VoiceCommands(default_parser(config.voice.shortcut_dirs, lambda: self.vocabulary,
                                                       parts.launcher), clock=parts.clock)
             # Built at each press, after the vocabulary is refreshed, from the same folders.
             self.voice_hints = VoiceHints(config.voice.shortcut_dirs, lambda: self.vocabulary,
-                                          **{"tokens": TokenCounter(config.engine_model), **parts.voice_hint_options})
+                                          **{"tokens": TokenCounter(config.voice.model), **parts.voice_hint_options})
+            if parts.voice_model is not None:
+                self.voice_transcriber = StreamingTranscriber(parts.voice_model, options_for(config.voice.model),
+                                                              hints)
         self.rewriter: AutoRewriter | None = None
         if wants_rewriter(config) and parts.rewrite_client is not None:
             self.rewriter = AutoRewriter(parts.rewrite_client, config.ollama_model, config.autorewrite)
@@ -436,7 +445,8 @@ class QuillApp:
         self.sessions = SessionManager(
             transcriber=self.transcriber, capture_factory=parts.capture_factory, focus=self.focus,
             injector=self.injector, indicator=parts.indicator, pipeline=self.pipeline, command=self.command,
-            rewriter=self.rewriter, voice=self.voice, voice_hints=self.voice_hints, on_session_start=self._session_started, on_typed=self._typed,
+            rewriter=self.rewriter, voice=self.voice, voice_hints=self.voice_hints,
+            voice_transcriber=self.voice_transcriber, on_session_start=self._session_started, on_typed=self._typed,
             housekeeping=self._housekeeping, player=parts.player if config.claude_alert.sound else None,
             clock=parts.clock,
         )
@@ -477,10 +487,11 @@ class QuillApp:
         except BaseException:
             self.stop()
             raise
-        log.info("Quill started (engine %s, cleanup %s, indicator %s, command mode %s, voice commands %s, "
+        log.info("Quill started (engine %s, cleanup %s, indicator %s, command mode %s, voice commands %s, voice model %s, "
                  "automatic rewrite %s, claude alert %s)", self.config.engine_model, self.config.cleanup_mode,
                  self.config.indicator_position, "on" if self.command else "off",
                  f"on ({len(self.config.voice.shortcut_dirs)} folders)" if self.voice else "off",
+                 self.config.voice.model if self.voice_transcriber else "engine",
                  ("on" if self.config.autorewrite.enabled else "send_polished only") if self.rewriter else "off",
                  "on" if self.alerts is not None and self.alerts.running else "off")
 
@@ -507,6 +518,26 @@ class QuillApp:
         if self.voice_hints is not None:
             self._warm_voice_hints()
         self.sessions.loaded(error=bool(error))
+        if not error:
+            self._load_voice_model()
+
+    def _load_voice_model(self) -> None:
+        """Load the voice model after the engine model, so dictation is ready first."""
+        voice = self.voice_transcriber
+        if voice is None:
+            return
+        with self._voice_lock:
+            if self._stopping.is_set():
+                return
+            voice.start()
+        started = self.parts.clock()
+        while not voice.ready.wait(LOAD_WAIT_S):
+            if self._stopping.is_set():
+                return
+        if voice.load_error:
+            log.error("voice model not loaded, voice commands use the engine model: %s", voice.load_error)
+        else:
+            log.info("voice model ready in %.1f s", self.parts.clock() - started)
 
     def _warm_voice_hints(self) -> None:
         """Read the tokenizer of the voice hints now, not at the first voice press."""
@@ -524,6 +555,7 @@ class QuillApp:
             ("hooks", self._stop_hooks),
             ("alerts", self._stop_alerts),
             ("engine", self.transcriber.stop),
+            ("voice engine", self._stop_voice_model),
             ("sessions", self.sessions.stop),
             ("loader", self._join_loader),
             ("corrections", self._join_correction),
@@ -544,6 +576,11 @@ class QuillApp:
         hooks, self.hooks = self.hooks, None
         if hooks is not None:
             hooks.stop()
+
+    def _stop_voice_model(self) -> None:
+        with self._voice_lock:
+            if self.voice_transcriber is not None:
+                self.voice_transcriber.stop()
 
     def _stop_alerts(self) -> None:
         if self.alerts is not None:
@@ -597,6 +634,8 @@ class QuillApp:
         if vocabulary is None:
             return
         self.transcriber.vocabulary = tuple(whisper_hints(vocabulary, (), self.parts.generic_terms))
+        if self.voice_transcriber is not None:
+            self.voice_transcriber.vocabulary = self.transcriber.vocabulary
         self.pipeline.use_vocabulary(vocabulary)
         self.vocabulary = vocabulary
         counts = vocabulary.counts()
@@ -727,6 +766,8 @@ def real_parts(config: Config) -> Parts:
         alert_events=Events() if config.claude_alert.enabled else None,
         player=WinsoundPlayer() if config.claude_alert.enabled and config.claude_alert.sound else None,
         launcher=ShellLauncher() if config.trigger("voice").enabled else None,
+        voice_model=(WarmModel(Whisper(config.voice.model))
+                     if config.trigger("voice").enabled and config.voice.model != config.engine_model else None),
     )
 
 
@@ -795,6 +836,7 @@ def check_readiness(config: Config, *, models_dir: Path | None = None, venv: Pat
         lines.append(CheckLine("vocabulary", False, str(exc)))
 
     lines.append(voice_line(config))
+    lines.append(voice_model_line(config, folder))
 
     needed = config.cleanup_mode == "llm"
     if client is None:
@@ -841,6 +883,17 @@ def voice_line(config: Config) -> CheckLine:
     detail = (f"{trigger.inputs[0].name.upper()}; {listing.folders_read} of {len(folders)} shortcut folders read, "
               f"{len(listing.shortcuts)} shortcuts")
     return CheckLine("voice commands", bool(listing.shortcuts), detail, required=False)
+
+
+def voice_model_line(config: Config, models_dir: Path) -> CheckLine:
+    """The model of the voice holds: present, or the engine model decodes them instead."""
+    model = config.voice.model
+    if not config.trigger("voice").enabled or model == config.engine_model:
+        return CheckLine("voice model", True, f"{config.engine_model} (the engine model)", required=False)
+    present = model_present(model, models_dir)
+    return CheckLine("voice model", present, f"{model}: " + (
+        "files present" if present else f"files missing in models/{MODELS[model]}; voice commands use "
+        f"{config.engine_model}"), required=False)
 
 
 def print_check(lines: Sequence[CheckLine], out: Callable[[str], None] = print) -> int:

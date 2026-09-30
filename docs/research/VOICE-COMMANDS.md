@@ -10,11 +10,33 @@ Os nomes usados nos exemplos são inventados (`<projeto>`, `alfa`, `alfa-public`
 - **Botão 5 do rato (`send_polished`):** o texto passa sempre pela revisão do modelo local (Ollama), seja qual for o comprimento, com a guarda de conteúdo e o texto original como alternativa se o modelo falhar; é escrito e segue-se um Enter simples.
 - **Botão do meio (`send_raw`):** escreve o texto tal como foi dito, sem revisão, e carrega em Enter.
 - **Enter só no Claude Code:** o Enter dos botões 5 e do meio só é carregado no Claude Code (Terminal do Windows ou a caixa do Claude Code na barra lateral do VS Code, com o marcador `[Claude Code]` no fim do título). Num editor de código, no terminal integrado do VS Code, no browser ou no WhatsApp, o texto fica escrito sem Enter.
-- **F9 (comandos de voz):** mantém-se a tecla premida, diz-se «abre VS Code no `<projeto>`» e larga-se. O Quill lista os atalhos `.lnk` das pastas de `[voice_commands] shortcut_dirs`, compara o nome dito com os nomes dos atalhos (vocabulário pessoal e distância de edição limitada; «alfa» abre alfa e «alfa public» abre alfa-public) e abre o único atalho claro. Se houver dúvida, não abre nada e mostra os nomes mais próximos no indicador. A F9 nunca clica, nunca escreve e nunca carrega em Enter; o texto dito nunca chega a uma shell.
+- **F9 (comandos de voz):** mantém-se a tecla premida, diz-se o nome do projeto (sozinho ou numa frase como «abre VS Code no `<projeto>`»; o verbo já não é preciso) e larga-se. O Quill lista os atalhos `.lnk` das pastas de `[voice_commands] shortcut_dirs`, compara o nome dito com os nomes dos atalhos (vocabulário pessoal e distância de edição limitada; «alfa» abre alfa e «alfa public» abre alfa-public) e abre o único atalho claro. Se houver dúvida, não abre nada e mostra os nomes mais próximos no indicador. A F9 nunca clica, nunca escreve e nunca carrega em Enter; o texto dito nunca chega a uma shell.
 
 O analisador (`quill/voice.py`, classe `Parser`) é um registo: cada comando novo é uma classe com `parse(text)` e `run(intent)` e entra com `register`, sem mexer nos outros. Os cenários abaixo assumem esse caminho.
 
-A medição dos comandos de voz com a voz real do Sponsor (meta: pelo menos 95 % de ações certas e 0 atalhos errados abertos) está pendente das gravações. **Recomendação geral: não acrescentar comandos antes de essa meta estar cumprida no comando que já existe**, porque todos os cenários dependem do mesmo reconhecimento de nomes.
+A medição dos comandos de voz com a voz real do Sponsor (meta: pelo menos 95 % de ações certas e 0 atalhos errados abertos) está na secção [Medição com a voz real](#medição-com-a-voz-real-2026-09-30): 15 de 15 com o large-v3 na F9, meta cumprida. Os cenários abaixo dependem do mesmo reconhecimento de nomes, por isso cada comando novo deve ser medido da mesma forma antes de ser adotado.
+
+## Medição com a voz real (2026-09-30)
+
+As mesmas 15 gravações do guião de comandos (3 exatos, 5 irmãos, 2 de vocabulário, 3 variantes, 2 negativos), transcritas no PC e passadas pelo mesmo caminho da aplicação (`.venv\Scripts\python -m bench.voice_commands`, com o modelo e as dicas da F9). Nada foi aberto durante a medição e não houve gravações novas. O resumo com só números está em [voice-commands-summary.json](voice-commands-summary.json); o texto ouvido de cada gravação fica em `bench/results/voice/` (ignorado pelo Git).
+
+| Medição | Certas | Atalhos errados | Erradas sem abrir nada |
+|---|---|---|---|
+| Antes (verbo obrigatório, idioma e dicas do ditado; large-v3-turbo) | 2 de 15 (13,3 %) | 0 | 13 |
+| Sem verbo, português, nomes no prompt e nos hotwords (large-v3-turbo) | 8 de 15 (53,3 %) | 0 | 7 |
+| Nomes só no prompt, hotwords só com o vocabulário (large-v3-turbo) | 12 de 15 (80,0 %) | 0 | 3 |
+| **Agora:** as mesmas dicas, F9 transcrita com o large-v3 | **15 de 15 (100 %)** | **0** | 0 |
+
+Por caso, agora: exatos 3/3, irmãos 5/5, vocabulário 2/2, variantes 3/3, negativos 2/2 (os 2 negativos não abrem nada, como devem). Latência do fim da fala ao texto final: p50 0,34 s, p95 0,38 s (com o large-v3-turbo: p50 0,20 s, p95 0,21 s).
+
+O que mudou e porquê:
+
+- A F9 já não precisa do verbo: o Whisper ouvia o «abre» inicial como outras palavras e 14 de 15 comandos eram recusados.
+- O áudio da F9 é sempre transcrito em português, com um prompt de comando e a lista dos nomes dos atalhos e do vocabulário.
+- Os nomes dos atalhos já não se repetem nos hotwords. Com os nomes duas vezes (e os nomes com hífen partidos), o Whisper continuava a lista de nomes ou repetia «VS Code no» em vez de ouvir o nome. Nas variantes testadas nas mesmas gravações, esta foi a melhor regra geral com o large-v3-turbo (12 de 15); nenhuma chegou a 13.
+- A F9 passou a ser transcrita com o large-v3 (`[voice_commands] model`), que já estava no PC; o ditado continua com o large-v3-turbo. Com o large-v3-turbo, 3 gravações (vc-05 e vc-07, irmãos; vc-10, vocabulário) ficavam sem abrir nada em todas as 13 variantes de dicas testadas: o Whisper escrevia outra palavra no lugar do nome, e a comparação de nomes não as podia recuperar sem aceitar nomes demasiado afastados. Com o large-v3 as 3 abrem o atalho certo. Custo 0 €, nada instalado; o preço é cerca de 0,13 s a mais na F9 e cerca de 3 GB a mais na memória da placa gráfica (os dois modelos ficam carregados). Enquanto o large-v3 carrega, ou se não carregar, a F9 usa o modelo do ditado.
+
+Não foram acrescentadas ao vocabulário variantes tiradas destas gravações de teste (seria ajustar o resultado às próprias gravações). Medido à parte, só como referência: com essas variantes e o large-v3-turbo, 14 de 15, mas outra gravação passou a ficar ambígua.
 
 ## Como ler cada cenário
 

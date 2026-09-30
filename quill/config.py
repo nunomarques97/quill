@@ -86,7 +86,7 @@ SCHEMA: dict[str, object] = {
     "autorewrite": {"enabled": None, "min_audio_s": None, "min_words": None, "timeout_s": None, "undo_key": None,
                     "undo_window_s": None},
     "claude_alert": {"enabled": None, "sound": None, "filter": None},
-    "voice_commands": {"shortcut_dirs": None},
+    "voice_commands": {"shortcut_dirs": None, "model": None},
     "paths": {"vocabulary": None, "corrections": None, "style": None},
     "profiles": {name: {"processes": None, "classes": None, "titles": None} for name in PROFILE_NAMES},
 }
@@ -154,9 +154,12 @@ class ClaudeAlert:
 @dataclass(frozen=True)
 class VoiceSettings:
     """``[voice_commands]``: the folders whose Windows shortcuts (.lnk) the voice
-    command "abre VS Code no <projeto>" may open (``quill.shortcuts``)."""
+    command "abre VS Code no <projeto>" may open (``quill.shortcuts``), and the
+    Whisper model that decodes the voice trigger's holds (``model``; the
+    dictation keeps ``[engine] model``)."""
 
     shortcut_dirs: tuple[Path, ...] = ()
+    model: str = PRECISE_MODEL
 
 
 @dataclass(frozen=True)
@@ -396,7 +399,8 @@ def _voice(data: dict[str, object]) -> VoiceSettings:
         if not path.is_absolute():
             raise ConfigError(f"quill config: {here} must be an absolute folder path")
         folders.append(path)
-    return VoiceSettings(tuple(folders))
+    model = _choice(_get(data, "voice_commands.model"), "voice_commands.model", ENGINE_MODELS)
+    return VoiceSettings(tuple(folders), model)
 
 
 def _min_hold(value: object) -> int:

@@ -23,10 +23,10 @@ too close to another one, or no name open nothing. The indicator shows
 
 While the voice trigger is held, the audio is decoded in European Portuguese
 with its own hints (``voice_hints``, built at every press by ``VoiceHints``):
-a command-shaped Portuguese prompt listing the shortcut names, and hotwords
-made of the shortcut names (a hyphenated name also as separate words) and the
-personal-vocabulary names with their spoken variants. Shortcut names come
-first when the hints are trimmed. Dictation keeps the vocabulary hints.
+a command-shaped Portuguese prompt listing the shortcut names and the
+personal-vocabulary names, and hotwords made of the personal-vocabulary names
+with their spoken variants only. Shortcut names come first when the prompt is
+trimmed. Dictation keeps the vocabulary hints.
 
 A voice command never clicks, never types and never presses Enter. Spoken
 text is only compared with the names of the enumerated shortcuts; it never
@@ -280,7 +280,6 @@ VOICE_PART_MAX_TOKENS = 150
 VOICE_ROOM_TOKENS = MAX_LENGTH - 2 * VOICE_PART_MAX_TOKENS - (1 + SOT_SEQUENCE_TOKENS + 1)
 # Reason code of a listing that failed while building the hints.
 HINTS_UNLISTED = "hints_shortcuts_unlisted"
-_NAME_SEPARATORS = re.compile(r"[-_.]+")
 
 
 def utf8_tokens(text: str) -> int:
@@ -303,12 +302,6 @@ def _dedupe(words: Sequence[str], key: Callable[[str], str]) -> list[str]:
     return out
 
 
-def _with_parts(name: str) -> list[str]:
-    """A name, and a hyphenated (or underscored, dotted) name also as separate words."""
-    split = _clean(_NAME_SEPARATORS.sub(" ", name))
-    return [name, split] if split and split != name else [name]
-
-
 def _fits(words: Sequence[str], separator: str, fits: Callable[[str], bool]) -> str:
     """Words joined in order while ``fits``; the first word that does not fit ends the list."""
     out = ""
@@ -325,13 +318,16 @@ def voice_hints(shortcut_names: Sequence[str], vocabulary: Vocabulary = Vocabula
     """The decoding hints of a voice session: the one builder of the app and the benchmark.
 
     The prompt is ``VOICE_PROMPT`` and a list of project names: the shortcut
-    names, then the personal-vocabulary names. The hotwords are the shortcut
-    names, then each vocabulary name and its declared spoken variants; a
-    hyphenated name is also offered as separate words. Each part stays within
-    ``PROMPT_MAX_CHARS`` and ``VOICE_PART_MAX_TOKENS`` as counted by
-    ``tokens`` (``quill.whisper.TokenCounter``; by default the UTF-8 bytes,
-    never fewer than the tokens); each list keeps its order and stops at the
-    first name that does not fit, so shortcut names are the last dropped.
+    names, then the personal-vocabulary names. The hotwords are only each
+    vocabulary name and its declared spoken variants: faster-whisper puts the
+    hotwords before the prompt, and the shortcut names (or their hyphenated
+    parts) listed a second time there make Whisper continue the list or
+    repeat "VS Code no" instead of hearing the name (measured on real voice).
+    Each part stays within ``PROMPT_MAX_CHARS`` and ``VOICE_PART_MAX_TOKENS``
+    as counted by ``tokens`` (``quill.whisper.TokenCounter``; by default the
+    UTF-8 bytes, never fewer than the tokens); each list keeps its order and
+    stops at the first name that does not fit, so shortcut names are the last
+    dropped from the prompt.
     """
 
     def fits(part: str) -> bool:
@@ -343,10 +339,8 @@ def voice_hints(shortcut_names: Sequence[str], vocabulary: Vocabulary = Vocabula
     names = _fits(listed, ", ", lambda joined: fits(f"{VOICE_PROMPT}{PROJECTS_PREFIX}{joined}."))
     prompt = VOICE_PROMPT + (f"{PROJECTS_PREFIX}{names}." if names else "")
     spoken: list[str] = []
-    for name in shortcut:
-        spoken.extend(_with_parts(name))
     for entry in vocabulary.names:
-        spoken.extend(_with_parts(_clean(entry.text)))
+        spoken.append(_clean(entry.text))
         spoken.extend(_clean(text) for text in entry.variants)
     hotwords = _fits(_dedupe(spoken, str.casefold), " ", fits)
     return SessionHints(prompt=prompt, hotwords=hotwords or None, language=VOICE_LANGUAGE)

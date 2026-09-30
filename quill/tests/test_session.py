@@ -1174,6 +1174,48 @@ class VoiceSessionTest(SessionCase):
         self.assertEqual(self.injector.typed, [("Texto inventado de teste.", TARGET)])
 
 
+class VoiceModelTest(VoiceSessionTest):
+    """A voice transcriber with its own model decodes the voice holds once it is ready."""
+
+    def setUp(self):
+        super().setUp()
+        self.voice_model = FakeTranscriber()
+        self.voice_model.ready = threading.Event()
+        self.voice_model.load_error = None
+        self.manager.voice_transcriber = self.voice_model
+
+    def speak_with(self, transcriber, text="abre vs code no orla inventado"):
+        before = len(transcriber.sessions)
+        self.press("voice", "f9")
+        self.captures.made[-1].push(PCM)
+        self.assertEqual(len(transcriber.sessions), before + 1)
+        self.release("voice", "f9")
+        transcriber.sessions[-1].handle.resolve(text)
+        return self.wait_outcomes(len(self.manager.outcomes) + 1)[-1]
+
+    def test_the_voice_model_decodes_voice_holds_once_ready(self):
+        self.voice_model.ready.set()
+        self.assertEqual(self.speak_with(self.voice_model).reason, "opened")
+        self.assertEqual(self.voice.texts, ["abre vs code no orla inventado"])
+        self.assertEqual(self.transcriber.sessions, [])
+        # Dictation keeps the engine model.
+        self.dictate()
+        self.assertEqual(self.wait_outcomes(2)[-1].reason, S.TYPED)
+        self.assertEqual((len(self.transcriber.sessions), len(self.voice_model.sessions)), (1, 1))
+
+    def test_the_engine_model_decodes_while_the_voice_model_loads_or_after_it_failed(self):
+        with self.assertLogs("quill.session", level="INFO") as logs:
+            self.assertEqual(self.speak_with(self.transcriber).reason, "opened")
+        self.assertIn("voice model still loading", "\n".join(logs.output))
+        self.voice_model.load_error = "invented load failure"
+        self.voice_model.ready.set()
+        with self.assertLogs("quill.session", level="INFO") as logs:
+            self.assertEqual(self.speak_with(self.transcriber).reason, "opened")
+        self.assertIn("voice model not loaded", "\n".join(logs.output))
+        self.assertNotIn("invented", "\n".join(logs.output))
+        self.assertEqual(self.voice_model.sessions, [])
+
+
 class VoiceUnavailableTest(SessionCase):
     def test_the_voice_trigger_says_it_is_unavailable_without_recording(self):
         self.ready()

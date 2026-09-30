@@ -362,11 +362,19 @@ class VoiceHintsBuilderTest(unittest.TestCase):
         # Shortcut names, then the vocabulary names not already listed (same letters: listed once).
         self.assertEqual(hints.prompt, "Abre o VS Code no projeto. Projetos: orla, nimbus-deck, orla_public, Velatrix, "
                                        "tarvo-kit.")
-        # Hotwords: shortcut names (split too), then vocabulary names with their variants; no terms.
-        self.assertEqual(hints.hotwords, "orla nimbus-deck nimbus deck orla_public orla public Velatrix vela trix "
-                                         "nimbos deque tarvo-kit tarvo kit")
+        # Hotwords: the vocabulary names with their spoken variants only; no terms.
+        self.assertEqual(hints.hotwords, "Velatrix vela trix Nimbus-Deck nimbos deque tarvo-kit")
         self.assertNotIn("kubectl", hints.hotwords + hints.prompt)
         self.assertNotIn("Vocabulário", hints.prompt)
+
+    def test_shortcut_names_are_never_repeated_in_the_hotwords(self):
+        # Names listed twice (prompt and hotwords), or their hyphenated parts, make Whisper continue the list.
+        hints = voice_hints(["orla", "nimbus-deck", "orla_public", "tarvo-kit"], Vocabulary())
+        self.assertIn("nimbus-deck", hints.prompt)
+        self.assertIsNone(hints.hotwords)
+        hints = voice_hints(["orla", "orla_public"], VOCABULARY)
+        for word in ("orla", "public", "nimbus deck", "tarvo kit"):
+            self.assertNotIn(word, hints.hotwords)
 
     def test_without_names_the_prompt_is_the_command_alone(self):
         hints = voice_hints([], Vocabulary())
@@ -380,10 +388,9 @@ class VoiceHintsBuilderTest(unittest.TestCase):
                 self.assertLessEqual(len(part), PROMPT_MAX_CHARS)
                 self.assertLessEqual(tokens(part), voice.VOICE_PART_MAX_TOKENS)
             self.assertNotIn("Velatrix", hints.prompt)
-            self.assertNotIn("Velatrix", hints.hotwords)
             listed = hints.prompt[len(voice.VOICE_PROMPT + voice.PROJECTS_PREFIX):-1].split(", ")
             self.assertEqual(listed, many[:len(listed)])  # in order, cut at the first that does not fit
-            self.assertTrue(hints.hotwords.startswith("projeto00-kit projeto00 kit projeto01-kit"))
+            self.assertEqual(hints.hotwords, voice_hints([], VOCABULARY, tokens=tokens).hotwords)
         # Byte counting never allows more than a real tokenizer would.
         self.assertLess(len(voice_hints(many, tokens=voice.utf8_tokens).prompt),
                         len(voice_hints(many, tokens=word_tokens).prompt))

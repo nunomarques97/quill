@@ -191,6 +191,8 @@ O Whisper recebe as dicas por esta ordem: nomes de projeto, a lista de termos t�
 
 Quando o Claude Code (no painel do VS Code ou no terminal) acaba a resposta e fica à sua espera, o Quill toca um som curto e o indicador mostra "Claude Code terminou". Quando o Claude Code pede uma permissão, toca outro som e o indicador mostra "Claude Code pede permissão". Não avisa a meio da resposta (quando o Claude Code usa ferramentas ou escreve texto intermédio). Se estiver a ditar, o aviso espera que o ditado acabe, para o som nunca entrar no microfone; vários avisos seguidos tocam uma só vez. As execuções automáticas do Claude Code (`claude -p`, o Agent SDK e as execuções automáticas neste PC) não tocam. O aviso não usa a rede: o Claude Code avisa o Quill dentro do próprio PC.
 
+O aviso diz de que projeto é. O indicador mostra o nome da pasta do projeto (a pasta do repositório Git onde o Claude Code está a trabalhar), por exemplo "projeto-exemplo: Claude acabou" ou "projeto-exemplo: Claude pede permissão". Se vários projetos estiverem à espera, aparecem todos, com os pedidos de permissão no fim. Logo a seguir ao som, uma voz do Windows diz o nome do projeto (no máximo três nomes, primeiro os que pedem permissão; os hífenes, sublinhados e pontos são lidos como espaços). Se começar a ditar enquanto a voz fala, ela cala-se logo, antes de o microfone abrir. Um aviso que chega poucos segundos depois de outro não toca nem fala: só aparece no indicador. Quando o Quill não recebe o nome, o aviso aparece e toca como antes, sem nome.
+
 Instalar (uma vez):
 
 25. Abra o Terminal do Windows na pasta do Quill e veja a alteração que vai ser feita nas definições do Claude Code. Este comando não escreve nada:
@@ -208,6 +210,8 @@ Instalar (uma vez):
     Mostra a mesma alteração e pergunta se a quer escrever. Escreva `yes` e carregue em Enter. As suas outras definições e hooks do Claude Code ficam iguais, e o ficheiro anterior fica guardado ao lado (`settings.json.bak-quill-...`). Se o aviso já estiver instalado, nada muda. Se mudar a pasta do Quill de sítio, corra de novo este comando.
 27. Feche e volte a abrir o Claude Code (a janela do VS Code e o terminal), para ele ler a alteração. Se o Quill já estava ligado antes desta versão, desligue-o e volte a ligá-lo.
 
+Se o aviso já estava instalado antes de o Quill dizer o nome do projeto, não precisa de o instalar outra vez: basta desligar o Quill e voltar a ligá-lo.
+
 Testar:
 
 28. Para ouvir os dois sons, um de cada vez:
@@ -216,9 +220,17 @@ Testar:
     py -3.12 -m quill.sound --play-sound
     ```
 
-29. Com o Quill ligado, no painel do Claude Code do VS Code, peça uma coisa curta (por exemplo "diz olá"). Quando a resposta acabar, ouve o primeiro som e o indicador mostra "Claude Code terminou" durante uns segundos.
+    Para ouvir um exemplo com o nome do projeto (o primeiro som e depois a voz a dizer "projeto exemplo"):
+
+    ```
+    py -3.12 -m quill.sound --play-sound --speak
+    ```
+
+    Para ouvir outro nome, acrescente `--project` e o nome, por exemplo `--project meu-projeto`.
+
+29. Com o Quill ligado, no painel do Claude Code do VS Code, peça uma coisa curta (por exemplo "diz olá"). Quando a resposta acabar, ouve o primeiro som e a voz a dizer o nome do projeto, e o indicador mostra "Claude Code terminou" com "<projeto>: Claude acabou" durante uns segundos.
 30. Repita no Claude Code do terminal.
-31. Peça uma coisa que precise de autorização (por exemplo, correr um comando que ainda não autorizou). Ouve o segundo som e o indicador mostra "Claude Code pede permissão".
+31. Peça uma coisa que precise de autorização (por exemplo, correr um comando que ainda não autorizou). Ouve o segundo som e o nome do projeto, e o indicador mostra "Claude Code pede permissão" com "<projeto>: Claude pede permissão".
 32. Peça uma resposta mais longa e, enquanto ela é escrita, segure o botão de ditado e fale. O som só toca depois de largar o botão e o texto ser escrito.
 
 Se não ouvir nada: confirme que o Quill está ligado, que os sons do Windows estão ligados (Definições > Sistema > Som > Mais definições de som > separador Sons: "Asterisco" e "Exclamação") e, no Claude Code, escreva `/hooks` para ver as duas entradas do Quill (Stop e Notification).
@@ -230,6 +242,29 @@ Para deixar só o indicador, sem som, ou desligar o aviso, escreva em `local\qui
 sound = false
 enabled = true
 ```
+
+Com `sound = false` também não se ouve o nome. Para ouvir só o som, sem a voz a dizer o nome (o indicador continua a mostrar o projeto):
+
+```
+[claude_alert]
+speak_project = false
+```
+
+Para mudar o volume da voz (de 0 a 100; hoje 80) ou a velocidade (1.0 é a velocidade normal; 1.2 é um pouco mais rápido, 0.8 um pouco mais lento):
+
+```
+[claude_alert]
+speech_volume = 60
+speech_rate = 1.2
+```
+
+A voz é uma das que o Windows já tem; o Quill não instala nada e o nome não sai do PC. Se o Windows tiver uma voz de português de Portugal, é essa que fala. Se não tiver, fala outra voz portuguesa e, se também não houver, a voz normal do Windows (por exemplo em inglês). Se o Windows não tiver voz nenhuma, toca só o som e o indicador continua a mostrar o nome. Para saber que voz vai falar, sem tocar nada:
+
+```
+py -3.12 -m quill.speech --probe
+```
+
+Mostra só a língua da voz (por exemplo `pt-PT`) e o tamanho do áudio de teste.
 
 Limites do filtro das execuções automáticas: o Quill usa uma indicação que o Claude Code dá a cada hook (`CLAUDE_CODE_SESSION_ATTENDED`: `1` quando alguém está a usar a sessão, `0` quando é automática). Foi confirmada na versão do Claude Code instalada neste PC. Uma versão que não dê esta indicação nunca toca; nesse caso use `filter = "unless-headless"` em `[claude_alert]` (toca sempre, menos quando a indicação diz que a sessão é automática). Um `claude -p` que corra à mão também não toca, porque também é automático. Com `filter = "all"` toca em todas as sessões, também nas automáticas.
 

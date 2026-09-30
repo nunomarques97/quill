@@ -73,6 +73,8 @@ class ExampleTest(ConfigCase):
     def test_claude_alert_defaults(self) -> None:
         alert = load_config(None).claude_alert
         self.assertEqual((alert.enabled, alert.sound, alert.filter), (True, True, "attended"))
+        self.assertEqual((alert.speak_project, alert.speech_volume, alert.speech_rate), (True, 80, 1.0))
+        self.assertEqual(alert, config.ClaudeAlert())  # the example and the dataclass agree
 
     def test_action_for_maps_inputs_to_actions(self) -> None:
         settings = load_config(None)
@@ -281,9 +283,32 @@ class RejectTest(ConfigCase):
             ('filter = "Attended"', "claude_alert.filter"),
             ("filter = 1", "claude_alert.filter"),
             ("volume = 3", "claude_alert.volume"),
+            ("speak_project = 1", "claude_alert.speak_project"),
+            ('speak_project = "no"', "claude_alert.speak_project"),
+            ("speech_volume = -1", "claude_alert.speech_volume"),
+            ("speech_volume = 101", "claude_alert.speech_volume"),
+            ("speech_volume = 50.5", "claude_alert.speech_volume"),
+            ("speech_volume = true", "claude_alert.speech_volume"),
+            ('speech_volume = "80"', "claude_alert.speech_volume"),
+            ("speech_rate = 0.4", "claude_alert.speech_rate"),
+            ("speech_rate = 6.5", "claude_alert.speech_rate"),
+            ("speech_rate = false", "claude_alert.speech_rate"),
+            ('speech_rate = "1.0"', "claude_alert.speech_rate"),
+            ("speech_rate = nan", "claude_alert.speech_rate"),
+            ("speech_rate = inf", "claude_alert.speech_rate"),
         ):
             with self.subTest(text=text):
                 self.assertTrue(self.rejected(f"[claude_alert]\n{text}\n", field).isascii())
+
+    def test_speech_values_merge_over_the_example(self) -> None:
+        alert = self.load("[claude_alert]\nspeak_project = false\n").claude_alert
+        self.assertEqual((alert.speak_project, alert.speech_volume, alert.speech_rate, alert.sound),
+                         (False, 80, 1.0, True))
+        alert = self.load("[claude_alert]\nspeech_volume = 0\nspeech_rate = 6\n").claude_alert
+        self.assertEqual((alert.speak_project, alert.speech_volume, alert.speech_rate), (True, 0, 6.0))
+        alert = self.load("[claude_alert]\nspeech_volume = 100\nspeech_rate = 0.5\n").claude_alert
+        self.assertEqual((alert.speech_volume, alert.speech_rate), (100, 0.5))
+        self.assertIsInstance(alert.speech_rate, float)
 
     def test_undo_key_values(self) -> None:
         rewrite = self.load('[autorewrite]\nundo_key = "f18"\nundo_window_s = 60\n').autorewrite

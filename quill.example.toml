@@ -142,9 +142,10 @@ undo_window_s = 30
 
 # Alert when Claude Code (the VS Code panel or the terminal) finishes its reply
 # and waits for you, or asks for a permission: a short sound and the indicator
-# state "Claude Code terminou" or "Claude Code pede permissão". It needs the
-# Claude Code hooks, added only by the manual command (it shows the exact
-# change and asks before writing):
+# state "Claude Code terminou" or "Claude Code pede permissão", with the
+# project ("<projeto>: Claude acabou"). It needs the Claude Code hooks, added
+# only by the manual command (it shows the exact change and asks before
+# writing):
 #   py -3.12 -m quill.claude_hooks --install
 # While a dictation or a command is recording, the alert waits until that
 # session ends, so the sound never reaches the microphone; alerts close
@@ -153,10 +154,19 @@ undo_window_s = 30
 #     them); claude -p, the Agent SDK and automated runs never ring;
 #   "unless-headless": also a Claude Code that does not mark its sessions;
 #   "all": every session, headless ones too.
+# speak_project: after the sound, a voice Windows already has says the
+# project names (a Portuguese voice when Windows has one; at most three,
+# permission requests first). A dictation that starts stops it at once.
+# speech_volume: 0 to 100. speech_rate: 0.5 to 6.0 (1.0 is normal speed).
+# With sound = false nothing is spoken either. Hear an example with
+#   py -3.12 -m quill.sound --play-sound --speak
 [claude_alert]
 enabled = true
 sound = true
 filter = "attended"
+speak_project = true
+speech_volume = 80
+speech_rate = 1.0
 
 # Folders with one Windows shortcut (.lnk) per project, for the voice command
 # "abre VS Code no <projeto>". Empty here: list absolute folder paths only in

@@ -488,6 +488,59 @@ class FakePlayer:
             self.playing = False
 
 
+class FakeProcess:
+    """A started speech process: records terminate calls; ``wait`` returns ``code``."""
+
+    def __init__(self, data: bytes, code: int = 0) -> None:
+        self.data = data
+        self.code = code
+        self.terminated = 0
+
+    def terminate(self) -> None:
+        self.terminated += 1
+
+    def wait(self, timeout: float | None = None) -> int:
+        return self.code
+
+
+class FakeSpeechEngine:
+    """The speech engine (``quill.speech.PowerShellSpeech``): records each started process.
+
+    ``on_start`` (optional) runs inside ``start`` before it returns, so tests
+    can make a hold start while a process is being started.
+    """
+
+    def __init__(self) -> None:
+        self.processes: list[FakeProcess] = []
+        self.fail = False
+        self.code = 0
+        self.on_start: Callable[[], None] | None = None
+        self.probes: list[bytes] = []
+        self.probe_result: tuple[int, str] = (0, "")
+
+    def start(self, data: bytes) -> FakeProcess:
+        if self.fail:
+            raise OSError("fake: powershell missing")
+        process = FakeProcess(data, self.code)
+        self.processes.append(process)
+        if self.on_start is not None:
+            self.on_start()
+        return process
+
+    def probe(self, data: bytes) -> tuple[int, str]:
+        self.probes.append(data)
+        if self.fail:
+            raise OSError("fake: powershell missing")
+        return self.probe_result
+
+    @property
+    def spoken(self) -> list[list[str]]:
+        """The names of each started process, from its stdin payload."""
+        import json
+
+        return [json.loads(process.data.decode("utf-8"))["names"] for process in self.processes]
+
+
 class FakeAlertEvents:
     """Named auto-reset events of the Claude Code alerts, in memory (``quill.notify.Events``)."""
 

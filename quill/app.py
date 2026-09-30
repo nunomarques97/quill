@@ -33,7 +33,8 @@ model decodes them until it is ready or when it fails), dictation with the
 vocabulary hints. When ``[claude_alert]`` is on, ``quill.notify.AlertListener`` waits for the
 named events set by the Claude Code hooks (with the project records in ``local/alerts``) and the
 sessions show the alert with its project and play its sound (``quill.sound``) once no dictation is
-recording.
+recording; after the sound a Windows voice says the project names (``quill.speech``) when
+``speak_project`` is on.
 Learning from corrections is wired too:
 the correction key and manual-edit detection (``quill.corrections``,
 ``quill.edits``) see the key events of the hooks in memory only.
@@ -379,6 +380,7 @@ class Parts:
     alert_events: object | None = None  # named events of the Claude Code alerts (quill.notify.Events); None: off
     alerts_dir: Path | None = None  # project records of the Claude Code alerts; None: alerts without a name
     player: object | None = None  # alert sounds (quill.sound.WinsoundPlayer); None: silent alerts
+    speaker: object | None = None  # spoken project names (quill.speech.Speaker); None: only the sound
     launcher: object | None = None  # opens voice-command shortcuts (quill.shortcuts.ShellLauncher); None: off
     voice_model: object | None = None  # decodes the voice holds (load / transcribe / close); None: ``model`` does
     vocabulary: Vocabulary = field(default_factory=Vocabulary)
@@ -450,6 +452,7 @@ class QuillApp:
             rewriter=self.rewriter, voice=self.voice, voice_hints=self.voice_hints,
             voice_transcriber=self.voice_transcriber, on_session_start=self._session_started, on_typed=self._typed,
             housekeeping=self._housekeeping, player=parts.player if config.claude_alert.sound else None,
+            speaker=parts.speaker if config.claude_alert.sound and config.claude_alert.speak_project else None,
             clock=parts.clock,
         )
         self.alerts: AlertListener | None = None
@@ -746,6 +749,7 @@ def real_parts(config: Config) -> Parts:
     from quill.ollama import OllamaClient
     from quill.shortcuts import ShellLauncher
     from quill.sound import WinsoundPlayer
+    from quill.speech import real_speaker
     from quill.whisper import Whisper
     from quill.win32 import User32
 
@@ -768,6 +772,9 @@ def real_parts(config: Config) -> Parts:
         alert_events=Events() if config.claude_alert.enabled else None,
         alerts_dir=ALERTS_DIR if config.claude_alert.enabled else None,
         player=WinsoundPlayer() if config.claude_alert.enabled and config.claude_alert.sound else None,
+        speaker=(real_speaker(config.claude_alert.speech_rate, config.claude_alert.speech_volume)
+                 if config.claude_alert.enabled and config.claude_alert.sound and config.claude_alert.speak_project
+                 else None),
         launcher=ShellLauncher() if config.trigger("voice").enabled else None,
         voice_model=(WarmModel(Whisper(config.voice.model))
                      if config.trigger("voice").enabled and config.voice.model != config.engine_model else None),

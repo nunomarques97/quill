@@ -98,6 +98,7 @@ from quill import command as commands
 from quill import inject
 from quill import focus as focus_reasons
 from quill import sound
+from quill import speech
 from quill.indicator.render import (CLAUDE_DONE, CLAUDE_PERMISSION, COMMAND, ERROR, LISTENING, LOADING, REVIEWING,
                                     SENT, TRANSCRIBING, VOICE, VOICE_OPEN)
 from quill.inject import NEWLINE_SPACE, InjectOptions, Target, normalize_text
@@ -336,7 +337,9 @@ class SessionManager:
     ``text`` as typed, and ``original`` the text a rewrite replaced, as it
     would be typed (None when there is no rewrite to undo); ``housekeeping``
     runs on the finalizer thread about every ``poll_s``. ``player`` plays the
-    Claude Code alert sounds (``quill.sound``; None: the alerts are silent).
+    Claude Code alert sounds (``quill.sound``; None: the alerts are silent) and
+    ``speaker`` says the project names after them (``quill.speech.Speaker``;
+    None: only the chime).
     """
 
     def __init__(self, *, transcriber: object, capture_factory: Callable[[Callable[[bytes], None]], object],
@@ -346,7 +349,8 @@ class SessionManager:
                  on_session_start: Callable[[], None] | None = None,
                  on_typed: Callable[[Target, str, str | None, str], None] | None = None,
                  housekeeping: Callable[[], None] | None = None,
-                 player: object | None = None, alert_repeat_s: float = ALERT_REPEAT_S,
+                 player: object | None = None, speaker: object | None = None,
+                 alert_repeat_s: float = ALERT_REPEAT_S,
                  clock: Callable[[], float] = time.perf_counter,
                  final_timeout_s: float = FINAL_TIMEOUT_S, poll_s: float = POLL_S) -> None:
         self.transcriber = transcriber
@@ -364,6 +368,7 @@ class SessionManager:
         self.on_typed = on_typed
         self.housekeeping = housekeeping
         self.player = player
+        self.speaker = speaker
         self.alert_repeat_s = alert_repeat_s
         self.clock = clock
         self.final_timeout_s = final_timeout_s
@@ -521,7 +526,8 @@ class SessionManager:
             self._numbers += 1
             hold = _Hold(self._numbers, signal.action, signal.trigger)
             self._active = hold
-            # From here no alert sound may start, and one still playing stops before the microphone opens.
+            # From here no alert sound or spoken name may start, and one still playing stops before the
+            # microphone opens.
             self._silence()
             self._on_screen = []
             if not self._ready:
@@ -906,12 +912,17 @@ class SessionManager:
         self._on_screen = []
 
     def _silence(self) -> None:
-        if self.player is None:
-            return
-        try:
-            self.player.stop()
-        except Exception as exc:  # noqa: BLE001
-            log.error("alert sound stop failed (%s)", type(exc).__name__)
+        """Stop the chime and the spoken names (a pending one never starts), without waiting."""
+        if self.player is not None:
+            try:
+                self.player.stop()
+            except Exception as exc:  # noqa: BLE001
+                log.error("alert sound stop failed (%s)", type(exc).__name__)
+        if self.speaker is not None:
+            try:
+                self.speaker.stop()
+            except Exception as exc:  # noqa: BLE001
+                log.error("alert speech stop failed (%s)", type(exc).__name__)
 
     def _deliver_alerts(self) -> bool:
         """Show (and ring) the waiting alerts when nothing else needs the screen or the
@@ -941,6 +952,12 @@ class SessionManager:
                 rang = True
             except Exception as exc:  # noqa: BLE001 - the indicator still shows the alert
                 log.error("alert sound failed (%s)", type(exc).__name__)
+            if rang and self.speaker is not None:
+                try:
+                    # Nameless alerts speak nothing (and end a speech still going, like the chime does).
+                    self.speaker.say(speech.spoken_names(alerts))
+                except Exception as exc:  # noqa: BLE001 - the chime played and the indicator shows the names
+                    log.error("alert speech failed (%s)", type(exc).__name__)
         self.indicator.show(ALERT_STATES[kind], text, hide_after_s=ALERT_SHOW_S)
         log.info("claude alert %s shown (%d listed, %d named, %s)", kind, len(alerts),
                  sum(1 for _, project in alerts if project), "sound" if rang else "no sound")

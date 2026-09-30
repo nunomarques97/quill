@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from quill.notify import DEFAULT_FILTER, FILTERS
+from quill.speech import DEFAULT_RATE, DEFAULT_VOLUME, RATE_RANGE, VOLUME_RANGE
 from quill.whisper import DEFAULT_MODEL, PRECISE_MODEL
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -85,7 +86,8 @@ SCHEMA: dict[str, object] = {
     "corrections": {"key": None, "edit_window_s": None},
     "autorewrite": {"enabled": None, "min_audio_s": None, "min_words": None, "timeout_s": None, "undo_key": None,
                     "undo_window_s": None},
-    "claude_alert": {"enabled": None, "sound": None, "filter": None},
+    "claude_alert": {"enabled": None, "sound": None, "filter": None, "speak_project": None, "speech_volume": None,
+                     "speech_rate": None},
     "voice_commands": {"shortcut_dirs": None, "model": None},
     "paths": {"vocabulary": None, "corrections": None, "style": None},
     "profiles": {name: {"processes": None, "classes": None, "titles": None} for name in PROFILE_NAMES},
@@ -144,11 +146,17 @@ class AutoRewrite:
 class ClaudeAlert:
     """``[claude_alert]``: the alert when Claude Code finishes a reply or asks for a
     permission (``quill.notify``). ``sound`` plays a short sound with it;
-    ``filter`` chooses which Claude Code sessions ring (``quill.notify.FILTERS``)."""
+    ``filter`` chooses which Claude Code sessions ring (``quill.notify.FILTERS``).
+    ``speak_project`` says the project names after the sound with a Windows
+    voice (``quill.speech``) at ``speech_volume`` (0-100) and ``speech_rate``
+    (1.0 is normal speed); without ``sound`` nothing is spoken either."""
 
     enabled: bool = True
     sound: bool = True
     filter: str = DEFAULT_FILTER
+    speak_project: bool = True
+    speech_volume: int = DEFAULT_VOLUME
+    speech_rate: float = DEFAULT_RATE
 
 
 @dataclass(frozen=True)
@@ -379,6 +387,9 @@ def _claude_alert(data: dict[str, object]) -> ClaudeAlert:
         enabled=_bool(_get(data, "claude_alert.enabled"), "claude_alert.enabled"),
         sound=_bool(_get(data, "claude_alert.sound"), "claude_alert.sound"),
         filter=_choice(_get(data, "claude_alert.filter"), "claude_alert.filter", FILTERS),
+        speak_project=_bool(_get(data, "claude_alert.speak_project"), "claude_alert.speak_project"),
+        speech_volume=_integer(_get(data, "claude_alert.speech_volume"), "claude_alert.speech_volume", VOLUME_RANGE),
+        speech_rate=_number(_get(data, "claude_alert.speech_rate"), "claude_alert.speech_rate", RATE_RANGE),
     )
 
 

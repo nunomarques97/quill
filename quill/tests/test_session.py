@@ -5,6 +5,7 @@ are fakes; no microphone, window, hook or input is touched. The texts are
 invented.
 """
 
+import json
 import logging
 import threading
 import time
@@ -19,7 +20,8 @@ from quill.indicator.render import (CLAUDE_DONE, CLAUDE_PERMISSION, ERROR, LISTE
                                     TRANSCRIBING, VOICE, VOICE_NONE, VOICE_OPEN)
 from quill.inject import InjectResult, Target
 from quill.session import Processed, SessionManager
-from quill.tests.fakes import FakeCaptures, FakeClock, FakeIndicator, FakePlayer
+from quill import speech as SP
+from quill.tests.fakes import FakeCaptures, FakeClock, FakeIndicator, FakePlayer, FakeSpeechEngine
 from quill.triggers import CANCEL, CONFIRM, START, STOP, Signal
 
 TARGET = Target(hwnd=100, pid=7)
@@ -191,6 +193,7 @@ class SessionCase(unittest.TestCase):
         self.pipeline = FakePipeline()
         self.rewriter = self.make_rewriter()
         self.player = self.make_player()
+        self.speaker = self.make_speaker()
         self.voice = self.make_voice()
         self.started = 0
         self.typed_hook = []
@@ -199,7 +202,7 @@ class SessionCase(unittest.TestCase):
             transcriber=self.transcriber, capture_factory=self.captures, focus=self.focus, injector=self.injector,
             indicator=self.indicator, pipeline=self.pipeline, rewriter=self.rewriter, voice=self.voice,
             on_session_start=self._started,
-            on_typed=self._typed, player=self.player, clock=self.clock,
+            on_typed=self._typed, player=self.player, speaker=self.speaker, clock=self.clock,
             final_timeout_s=5.0, poll_s=0.05)
         self.manager.start()
         self.addCleanup(self.manager.stop)
@@ -208,6 +211,9 @@ class SessionCase(unittest.TestCase):
         return None
 
     def make_player(self):
+        return None
+
+    def make_speaker(self):
         return None
 
     def make_voice(self):
@@ -1392,6 +1398,162 @@ class VoiceUnavailableTest(SessionCase):
         self.assertEqual(self.focus.calls, [])
         self.assertEqual(self.indicator.last, ("show", ERROR, S.MESSAGES[S.VOICE_UNAVAILABLE]))
         self.assertEqual(self.wait_outcomes(1)[0].reason, S.VOICE_UNAVAILABLE)
+
+
+class SpokenNameTest(SessionCase):
+    """The project names spoken after the chime: a fake speech engine and the fake clock; the
+    speaker has no thread here, ``tick`` starts a due speech. The names are invented."""
+
+    def make_player(self):
+        return FakePlayer(recording=lambda: bool(self.captures.open))
+
+    def make_speaker(self):
+        self.engine = FakeSpeechEngine()
+        return SP.Speaker(self.engine, rate=1.25, volume=60, clock=self.clock, threaded=False)
+
+    def setUp(self):
+        super().setUp()
+        self.ready()
+
+    def after_gap(self):
+        self.clock.now += SP.CHIME_GAP_S
+        return self.speaker.tick()
+
+    def test_the_name_is_spoken_after_the_chime_gap_with_the_configured_rate_and_volume(self):
+        self.manager.alert(S.sound.DONE, "zorblat-kit")
+        self.assertEqual(self.player.plays, [S.sound.DONE])
+        self.assertFalse(self.speaker.tick())  # the chime has just started
+        self.clock.now += SP.CHIME_GAP_S - 0.01
+        self.assertFalse(self.speaker.tick())
+        self.assertEqual(self.engine.processes, [])
+        self.clock.now += 0.01
+        self.assertTrue(self.speaker.tick())
+        self.assertEqual(self.engine.spoken, [["zorblat kit"]])
+        request = json.loads(self.engine.processes[0].data.decode("utf-8"))
+        self.assertEqual((request["rate"], request["volume"], request["probe"]), (1.25, 60, False))
+        self.assertFalse(self.speaker.tick())  # started once
+
+    def test_a_hold_during_the_chime_gap_starts_no_process(self):
+        self.manager.alert(S.sound.PERMISSION, "quenta-tree")
+        self.clock.now += SP.CHIME_GAP_S / 2
+        self.press()
+        self.assertFalse(self.speaker.pending)
+        self.clock.now += SP.CHIME_GAP_S
+        self.assertFalse(self.speaker.tick())
+        self.assertEqual(self.engine.processes, [])
+
+    def test_a_hold_during_speech_terminates_it_before_the_capture_opens(self):
+        self.manager.alert(S.sound.DONE, "zorblat-kit")
+        self.assertTrue(self.after_gap())
+        process = self.engine.processes[0]
+        at_start = []
+        self.captures.on_start = lambda capture: at_start.append((process.terminated, self.player.playing))
+        self.press()
+        self.assertEqual(at_start, [(1, False)])
+        self.release()
+        self.transcriber.sessions[0].handle.resolve()
+        self.wait_outcomes(1)
+        self.assertEqual(process.terminated, 1)  # terminated once, never waited for
+
+    def test_the_next_alert_speaks_again(self):
+        self.manager.alert(S.sound.DONE, "zorblat-kit")
+        self.clock.now += SP.CHIME_GAP_S / 2
+        self.press()
+        self.release()
+        self.transcriber.sessions[0].handle.resolve()
+        self.wait_outcomes(1)
+        self.clock.now += S.ALERT_REPEAT_S
+        self.manager.alert(S.sound.PERMISSION, "vellum-app")
+        self.wait_until(lambda: self.player.plays == [S.sound.DONE, S.sound.PERMISSION])
+        self.assertTrue(self.after_gap())
+        self.assertEqual(self.engine.spoken, [["vellum app"]])
+
+    def test_a_hold_that_starts_while_the_process_starts_terminates_it(self):
+        self.manager.alert(S.sound.DONE, "zorblat-kit")
+        self.engine.on_start = self.press  # the hold wins the race with the starting process
+        self.assertFalse(self.after_gap())
+        self.assertEqual(self.engine.processes[0].terminated, 1)
+
+    def test_an_alert_shown_without_a_ring_speaks_nothing(self):
+        self.manager.alert(S.sound.DONE, "zorblat-kit")
+        self.assertTrue(self.after_gap())
+        self.clock.now += 1  # still within alert_repeat_s of the ring
+        self.manager.alert(S.sound.PERMISSION, "quenta-tree")
+        self.assertEqual(self.player.plays, [S.sound.DONE])
+        self.assertEqual(self.indicator.last[1], CLAUDE_PERMISSION)
+        self.assertFalse(self.speaker.pending)
+        self.assertEqual(self.engine.processes[0].terminated, 0)  # the first name is not cut
+        self.clock.now += SP.CHIME_GAP_S
+        self.assertFalse(self.speaker.tick())
+        self.assertEqual(self.engine.spoken, [["zorblat kit"]])
+
+    def test_several_names_permission_first_at_most_three(self):
+        self.press()
+        for kind, project in ((S.sound.DONE, "zorblat-kit"), (S.sound.DONE, "vellum_app"),
+                              (S.sound.PERMISSION, "quenta.tree"), (S.sound.DONE, "brask-lab"),
+                              (S.sound.PERMISSION, None)):
+            self.manager.alert(kind, project)
+        self.release()
+        self.transcriber.sessions[0].handle.resolve()
+        self.wait_outcomes(1)
+        self.wait_until(lambda: self.player.plays == [S.sound.PERMISSION])
+        self.assertTrue(self.after_gap())
+        self.assertEqual(self.engine.spoken, [["quenta tree", "zorblat kit", "vellum app"]])
+
+    def test_a_nameless_alert_speaks_nothing(self):
+        self.manager.alert(S.sound.DONE)
+        self.assertEqual(self.player.plays, [S.sound.DONE])
+        self.assertFalse(self.speaker.pending)
+        self.assertFalse(self.after_gap())
+        self.assertEqual(self.engine.processes, [])
+
+    def test_a_new_ring_ends_the_previous_speech(self):
+        self.manager.alert(S.sound.DONE, "zorblat-kit")
+        self.assertTrue(self.after_gap())
+        self.clock.now += S.ALERT_REPEAT_S + S.ALERT_SHOW_S
+        self.manager.alert(S.sound.DONE, "vellum-app")
+        self.assertEqual(self.engine.processes[0].terminated, 1)
+        self.assertTrue(self.after_gap())
+        self.assertEqual(self.engine.spoken, [["zorblat kit"], ["vellum app"]])
+
+    def test_an_engine_failure_is_logged_by_type_only_and_the_alert_stays(self):
+        self.engine.fail = True
+        self.manager.alert(S.sound.DONE, "zorblat-kit")
+        with self.assertLogs("quill.speech", level="ERROR") as logs:
+            self.assertFalse(self.after_gap())
+        self.assertEqual(self.indicator.last, ("show", CLAUDE_DONE, "zorblat-kit: Claude acabou"))
+        self.assertIn("OSError", "\n".join(logs.output))
+        self.assertNotIn("zorblat", "\n".join(logs.output))
+
+    def test_stop_ends_the_speech(self):
+        self.manager.alert(S.sound.DONE, "zorblat-kit")
+        self.assertTrue(self.after_gap())
+        self.manager.stop()
+        self.assertEqual(self.engine.processes[0].terminated, 1)
+
+    def wait_until(self, condition):
+        deadline = time.monotonic() + 5
+        while not condition():
+            if time.monotonic() > deadline:
+                self.fail("condition not reached")
+            time.sleep(0.005)
+
+
+class SpokenNameWithoutSoundTest(SessionCase):
+    """Without a player (sound = false) the speaker is never asked to speak."""
+
+    def make_speaker(self):
+        self.engine = FakeSpeechEngine()
+        return SP.Speaker(self.engine, clock=self.clock, threaded=False)
+
+    def test_no_sound_no_name(self):
+        self.ready()
+        self.manager.alert(S.sound.DONE, "zorblat-kit")
+        self.assertEqual(self.indicator.last, ("show", CLAUDE_DONE, "zorblat-kit: Claude acabou"))
+        self.assertFalse(self.speaker.pending)
+        self.clock.now += SP.CHIME_GAP_S
+        self.assertFalse(self.speaker.tick())
+        self.assertEqual(self.engine.processes, [])
 
 
 if __name__ == "__main__":

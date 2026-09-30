@@ -25,6 +25,7 @@ from quill import autorewrite as R
 from quill import inject
 from quill import session as S
 from quill import sound
+from quill import speech as SP
 from quill import startup
 from quill import vocabulary as V
 from quill.config import EXAMPLE_CONFIG, ClaudeAlert, VoiceSettings, load_config
@@ -45,6 +46,7 @@ from quill.tests.fakes import (
     FakeKernel,
     FakePlayer,
     FakeRegistry,
+    FakeSpeechEngine,
     FakeWin32,
 )
 from quill.tests.test_edits import FakeLayout
@@ -692,6 +694,59 @@ class ClaudeAlertTest(AppCase):
         self.assertEqual(self.player.plays, [sound.DONE])
         alerts = [call for call in self.indicator.calls if call[0] == "show" and call[1] in S.ALERT_STATES.values()]
         self.assertFalse(any(call[2] == "" for call in alerts))  # no nameless duplicate
+
+    # Spoken names: a Speaker without its thread on a fake engine and the app's fake clock.
+
+    def speaker_setup(self, **changes):
+        self.engine = FakeSpeechEngine()
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.base = Path(folder.name).resolve()
+        self.alerts_dir = self.base / "local" / "alerts"
+        self.now = [1000.0]
+        self.speaker = SP.Speaker(self.engine, clock=lambda: self.now[0], threaded=False)
+        config = self.alert_config(**changes) if changes else None
+        return self.make_app(config, alerts_dir=self.alerts_dir, clock=lambda: self.now[0], speaker=self.speaker)
+
+    def test_the_project_name_is_spoken_after_the_sound(self):
+        quill = self.start(self.speaker_setup())
+        self.assertIs(quill.sessions.speaker, self.speaker)
+        self.assertEqual(self.hook("zorblat-kit"), "signalled")
+        wait_for(lambda: self.speaker.pending, "the pending speech")
+        self.assertEqual(self.player.plays, [sound.DONE])
+        self.assertFalse(self.speaker.tick())
+        self.now[0] += SP.CHIME_GAP_S
+        self.assertTrue(self.speaker.tick())
+        self.assertEqual(self.engine.spoken, [["zorblat kit"]])
+        quill.stop()
+        self.assertEqual(self.engine.processes[0].terminated, 1)
+
+    def test_a_hold_stops_the_spoken_name(self):
+        quill = self.start(self.speaker_setup())
+        self.assertEqual(self.hook("zorblat-kit", "permission"), "signalled")
+        wait_for(lambda: self.speaker.pending, "the pending speech")
+        self.now[0] += SP.CHIME_GAP_S
+        self.assertTrue(self.speaker.tick())
+        process = self.engine.processes[0]
+        at_start = []
+        self.captures.on_start = lambda capture: at_start.append(process.terminated)
+        self.hold((1,), quill=quill)
+        self.assertEqual(at_start, [1])
+        self.assertEqual(self.api.received_text(), "w1.")
+
+    def test_speak_project_off_or_sound_off_speaks_nothing(self):
+        for changes in ({"speak_project": False}, {"sound": False}):
+            with self.subTest(changes=changes):
+                quill = self.start(self.speaker_setup(**changes))
+                self.assertIsNone(quill.sessions.speaker)
+                self.assertEqual(self.hook("zorblat-kit"), "signalled")
+                wait_for(lambda: self.indicator.last == ("show", CLAUDE_DONE, "zorblat-kit: Claude acabou"),
+                         "the named alert")
+                self.now[0] += SP.CHIME_GAP_S
+                self.assertFalse(self.speaker.tick())
+                self.assertEqual(self.engine.processes, [])
+                self.assertEqual(self.player.plays, [] if changes.get("sound") is False else [sound.DONE])
+                quill.stop()
 
     def test_without_an_alerts_folder_the_alerts_stay_nameless(self):
         self.start()

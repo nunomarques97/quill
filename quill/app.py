@@ -31,8 +31,9 @@ voice hints (``quill.voice.VoiceHints``) and ``[voice_commands] model``
 (a second model loaded after the engine model when they differ; the engine
 model decodes them until it is ready or when it fails), dictation with the
 vocabulary hints. When ``[claude_alert]`` is on, ``quill.notify.AlertListener`` waits for the
-named events set by the Claude Code hooks and the sessions show the alert
-and play its sound (``quill.sound``) once no dictation is recording.
+named events set by the Claude Code hooks (with the project records in ``local/alerts``) and the
+sessions show the alert with its project and play its sound (``quill.sound``) once no dictation is
+recording.
 Learning from corrections is wired too:
 the correction key and manual-edit detection (``quill.corrections``,
 ``quill.edits``) see the key events of the hooks in memory only.
@@ -69,7 +70,7 @@ from quill.focus import ClickToFocus
 from quill.hooks import TriggerHooks, monotonic_ms, real_hooks
 from quill.indicator.render import ERROR, LOADING
 from quill.inject import NEWLINE_SHIFT_ENTER, NEWLINE_SPACE, Injector, Target
-from quill.notify import AlertListener
+from quill.notify import ALERTS_DIR, AlertListener
 from quill.profiles import CLAUDE_CODE, Profiles, StyleError, WindowInfo, apply_profile, load_style_samples, style_prompt, window_info
 from quill.session import CLEANUP_FALLBACK, Processed, SessionManager
 from quill.streaming import StreamingTranscriber, options_for
@@ -376,6 +377,7 @@ class Parts:
     command_client: object | None = None  # local Ollama client of command mode; None disables it
     rewrite_client: object | None = None  # local Ollama client of the automatic rewrite; None disables it
     alert_events: object | None = None  # named events of the Claude Code alerts (quill.notify.Events); None: off
+    alerts_dir: Path | None = None  # project records of the Claude Code alerts; None: alerts without a name
     player: object | None = None  # alert sounds (quill.sound.WinsoundPlayer); None: silent alerts
     launcher: object | None = None  # opens voice-command shortcuts (quill.shortcuts.ShellLauncher); None: off
     voice_model: object | None = None  # decodes the voice holds (load / transcribe / close); None: ``model`` does
@@ -452,7 +454,7 @@ class QuillApp:
         )
         self.alerts: AlertListener | None = None
         if config.claude_alert.enabled and parts.alert_events is not None:
-            self.alerts = AlertListener(self.sessions.alert, parts.alert_events)
+            self.alerts = AlertListener(self.sessions.alert, parts.alert_events, alerts_dir=parts.alerts_dir)
         self.hooks: TriggerHooks | None = None
         self._loader: threading.Thread | None = None
         self._stopping = threading.Event()
@@ -764,6 +766,7 @@ def real_parts(config: Config) -> Parts:
         generic_terms=terms,
         vocabulary_file=source,
         alert_events=Events() if config.claude_alert.enabled else None,
+        alerts_dir=ALERTS_DIR if config.claude_alert.enabled else None,
         player=WinsoundPlayer() if config.claude_alert.enabled and config.claude_alert.sound else None,
         launcher=ShellLauncher() if config.trigger("voice").enabled else None,
         voice_model=(WarmModel(Whisper(config.voice.model))

@@ -955,7 +955,8 @@ class AlertTest(SessionCase):
         self.assertEqual(self.indicator.last, ("show", CLAUDE_DONE, ""))
         self.assertEqual(self.player.plays, [S.sound.DONE])
         self.assertTrue(self.manager.alert(S.sound.PERMISSION) and self.player.plays == [S.sound.DONE])
-        self.assertEqual(self.indicator.last, ("show", CLAUDE_PERMISSION, ""))
+        # The finished reply is still on screen: the permission request is shown together with it.
+        self.assertEqual(self.indicator.last, ("show", CLAUDE_PERMISSION, S.ALSO_DONE))
         self.assertNotIn("texto", "\n".join(logs.output))
 
     def test_an_alert_during_a_recording_waits_until_the_session_ends(self):
@@ -1004,7 +1005,7 @@ class AlertTest(SessionCase):
         self.manager.alert(S.sound.DONE)
         self.manager.alert(S.sound.PERMISSION)
         self.assertEqual(self.player.plays, [S.sound.DONE])
-        self.assertEqual(self.indicator.last, ("show", CLAUDE_PERMISSION, ""))
+        self.assertEqual(self.indicator.last, ("show", CLAUDE_PERMISSION, S.ALSO_DONE))
         self.clock.now += 1
         self.manager.alert(S.sound.PERMISSION)
         self.assertEqual(self.player.plays, [S.sound.DONE, S.sound.PERMISSION])
@@ -1066,6 +1067,122 @@ class AlertTest(SessionCase):
         self.assertEqual(self.player.plays_while_recording, 0)
         self.assertEqual(len(self.injector.typed), 20)
 
+    # Project names (invented).
+
+    def test_a_named_alert_shows_its_project(self):
+        with self.assertLogs("quill.session", level="INFO") as logs:
+            self.assertTrue(self.manager.alert(S.sound.DONE, "zorblat-kit"))
+            self.assertEqual(self.indicator.last, ("show", CLAUDE_DONE, "zorblat-kit: Claude acabou"))
+            self.clock.now += S.ALERT_SHOW_S  # the first alert is gone from the screen
+            self.assertTrue(self.manager.alert(S.sound.PERMISSION, "quenta-tree"))
+            self.assertEqual(self.indicator.last, ("show", CLAUDE_PERMISSION, "quenta-tree: Claude pede permissão"))
+        self.assertEqual(self.player.plays, [S.sound.DONE, S.sound.PERMISSION])
+        output = "\n".join(logs.output)
+        self.assertNotIn("zorblat", output)
+        self.assertNotIn("quenta", output)
+        self.assertIn("1 named", output)
+
+    def test_named_alerts_kept_together_name_every_project_permission_last(self):
+        self.press()
+        for kind, project in ((S.sound.DONE, "zorblat-kit"), (S.sound.DONE, None), (S.sound.PERMISSION, "quenta-tree"),
+                              (S.sound.DONE, "vellum-app"), (S.sound.PERMISSION, None), (S.sound.DONE, "zorblat-kit"),
+                              (S.sound.PERMISSION, "brask-lab")):
+            self.manager.alert(kind, project)
+        self.release()
+        self.transcriber.sessions[0].handle.resolve()
+        self.wait_outcomes(1)
+        self.wait_shown(CLAUDE_PERMISSION)
+        time.sleep(0.15)  # several finalizer polls: nothing more is shown
+        shown = [call for call in self.indicator.calls if call[0] == "show" and call[1] in S.ALERT_STATES.values()]
+        self.assertEqual(shown, [("show", CLAUDE_PERMISSION,
+                                  "zorblat-kit, vellum-app: Claude acabou; quenta-tree, brask-lab: Claude pede permissão")])
+        self.assertEqual(self.player.plays, [S.sound.PERMISSION])
+        self.assertEqual(self.player.plays_while_recording, 0)
+
+    def test_a_named_alert_within_the_repeat_time_is_shown_without_sound(self):
+        self.manager.alert(S.sound.DONE, "zorblat-kit")
+        self.clock.now += S.ALERT_REPEAT_S - 1
+        self.manager.alert(S.sound.DONE, "vellum-app")
+        self.assertEqual(self.indicator.last, ("show", CLAUDE_DONE, "zorblat-kit, vellum-app: Claude acabou"))
+        self.assertEqual(self.player.plays, [S.sound.DONE])
+
+    def test_named_alerts_arriving_while_idle_are_all_shown(self):
+        names = ("zorblat-kit", "quenta-tree", "vellum-app", "brask-lab", "orrin-ops")
+        for number, name in enumerate(names):
+            self.manager.alert(S.sound.DONE, name)
+            self.assertEqual(self.indicator.last, ("show", CLAUDE_DONE, f"{', '.join(names[:number + 1])}: Claude acabou"))
+            self.clock.now += 1
+        self.assertEqual(self.player.plays, [S.sound.DONE])  # all within alert_repeat_s of the first
+        self.manager.alert(S.sound.DONE, "quenta-tree")  # already shown: nothing new
+        self.assertEqual(self.indicator.last[2], f"{', '.join(names)}: Claude acabou")
+
+    def test_a_permission_on_screen_is_not_hidden_by_a_later_finished_reply(self):
+        self.manager.alert(S.sound.PERMISSION, "quenta-tree")
+        self.clock.now += 1
+        self.manager.alert(S.sound.DONE, "zorblat-kit")
+        self.assertEqual(self.indicator.last, ("show", CLAUDE_PERMISSION,
+                                               "zorblat-kit: Claude acabou; quenta-tree: Claude pede permissão"))
+        self.clock.now += 1
+        self.manager.alert(S.sound.DONE)  # nameless: absorbed by the named finished reply
+        self.assertEqual(self.indicator.last[1:], (CLAUDE_PERMISSION,
+                                                   "zorblat-kit: Claude acabou; quenta-tree: Claude pede permissão"))
+        self.assertEqual(self.player.plays, [S.sound.PERMISSION])
+
+    def test_an_alert_after_the_shown_ones_left_the_screen_is_shown_alone(self):
+        self.manager.alert(S.sound.PERMISSION, "quenta-tree")
+        self.clock.now += S.ALERT_SHOW_S
+        self.manager.alert(S.sound.DONE, "zorblat-kit")
+        self.assertEqual(self.indicator.last, ("show", CLAUDE_DONE, "zorblat-kit: Claude acabou"))
+        self.assertEqual(self.player.plays, [S.sound.PERMISSION, S.sound.DONE])
+
+    def test_a_dictation_replaces_the_shown_alerts(self):
+        self.manager.alert(S.sound.PERMISSION, "quenta-tree")
+        self.dictate("frase inventada")
+        self.wait_outcomes(1)
+        self.clock.now += S.SENT_SHOW_S + S.ERROR_SHOW_S  # the outcome has been seen, the first alert is still recent
+        self.manager.alert(S.sound.DONE, "zorblat-kit")
+        self.assertEqual(self.indicator.last, ("show", CLAUDE_DONE, "zorblat-kit: Claude acabou"))
+
+    def test_a_notice_replaces_the_shown_alerts(self):
+        self.manager.alert(S.sound.DONE, "zorblat-kit")
+        self.assertTrue(self.manager.notify(ERROR, "Aviso inventado", 0.5))
+        self.clock.now += 1
+        self.manager.alert(S.sound.DONE, "vellum-app")
+        self.assertEqual(self.indicator.last, ("show", CLAUDE_DONE, "vellum-app: Claude acabou"))
+
+    def test_a_named_alert_waits_for_an_outcome_on_screen(self):
+        self.press("command", "f14")  # command mode unavailable: an error shown for a few seconds
+        self.release("command", "f14")
+        self.wait_outcomes(1)
+        self.manager.alert(S.sound.PERMISSION, "quenta-tree")
+        time.sleep(0.15)
+        self.assertEqual(self.player.plays, [])
+        self.clock.now += S.ERROR_SHOW_S
+        self.wait_shown(CLAUDE_PERMISSION)
+        self.assertEqual(self.indicator.last, ("show", CLAUDE_PERMISSION, "quenta-tree: Claude pede permissão"))
+
+    def test_an_empty_name_is_nameless_and_other_values_are_refused(self):
+        self.manager.alert(S.sound.DONE, "")
+        self.assertEqual(self.indicator.last, ("show", CLAUDE_DONE, ""))
+        for bad in (5, b"zorblat", ["zorblat"]):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                self.manager.alert(S.sound.DONE, bad)
+
+    def test_many_waiting_projects_are_bounded_keeping_the_permission_requests(self):
+        self.press()
+        self.manager.alert(S.sound.PERMISSION, "quenta-tree")
+        for index in range(S.MAX_ALERTS + 10):
+            self.manager.alert(S.sound.DONE, f"brask-{index}")
+        self.release()
+        self.transcriber.sessions[0].handle.resolve()
+        self.wait_outcomes(1)
+        self.wait_shown(CLAUDE_PERMISSION)
+        text = self.indicator.last[2]
+        self.assertTrue(text.endswith("; quenta-tree: Claude pede permissão"))
+        self.assertEqual(text.count("brask-"), S.MAX_ALERTS - 1)
+        self.assertIn(f"brask-{S.MAX_ALERTS + 9}", text)
+        self.assertNotIn("brask-0,", text)
+
 
 class SilentAlertTest(SessionCase):
     def test_without_a_player_the_alert_is_only_shown(self):
@@ -1073,6 +1190,56 @@ class SilentAlertTest(SessionCase):
         self.assertEqual(self.indicator.states, [])  # still loading
         self.ready()
         self.assertEqual(self.indicator.last, ("show", CLAUDE_DONE, ""))
+
+
+class AlertTextTest(unittest.TestCase):
+    """The words line of the waiting alerts (invented project names)."""
+
+    DONE, PERMISSION = S.sound.DONE, S.sound.PERMISSION
+
+    def test_nameless_alerts_keep_the_plain_texts(self):
+        self.assertEqual(S.alert_text([(self.DONE, None)]), (self.DONE, ""))
+        self.assertEqual(S.alert_text([(self.PERMISSION, None)]), (self.PERMISSION, ""))
+        self.assertEqual(S.alert_text([(self.DONE, None), (self.PERMISSION, None)]), (self.PERMISSION, S.ALSO_DONE))
+        self.assertEqual(S.alert_text([(self.PERMISSION, None), (self.DONE, None)]), (self.PERMISSION, S.ALSO_DONE))
+
+    def test_one_named_alert(self):
+        self.assertEqual(S.alert_text([(self.DONE, "zorblat-kit")]), (self.DONE, "zorblat-kit: Claude acabou"))
+        self.assertEqual(S.alert_text([(self.PERMISSION, "zorblat-kit")]),
+                         (self.PERMISSION, "zorblat-kit: Claude pede permissão"))
+
+    def test_a_nameless_alert_is_absorbed_by_a_named_one_of_its_kind(self):
+        self.assertEqual(S.alert_text([(self.DONE, None), (self.DONE, "zorblat-kit")]),
+                         (self.DONE, "zorblat-kit: Claude acabou"))
+        self.assertEqual(S.alert_text([(self.PERMISSION, "quenta-tree"), (self.PERMISSION, None)]),
+                         (self.PERMISSION, "quenta-tree: Claude pede permissão"))
+
+    def test_a_nameless_alert_of_the_other_kind_keeps_its_phrase(self):
+        self.assertEqual(S.alert_text([(self.DONE, None), (self.PERMISSION, "quenta-tree")]),
+                         (self.PERMISSION, "Claude acabou; quenta-tree: Claude pede permissão"))
+        self.assertEqual(S.alert_text([(self.PERMISSION, None), (self.DONE, "zorblat-kit")]),
+                         (self.PERMISSION, "zorblat-kit: Claude acabou; Claude pede permissão"))
+
+    def test_several_projects_permission_last(self):
+        alerts = [(self.PERMISSION, "quenta-tree"), (self.DONE, "zorblat-kit"), (self.DONE, "vellum-app"),
+                  (self.PERMISSION, "zorblat-kit")]
+        self.assertEqual(S.alert_text(alerts), (self.PERMISSION, "zorblat-kit, vellum-app: Claude acabou; "
+                                                                 "quenta-tree, zorblat-kit: Claude pede permissão"))
+
+    def test_the_indicator_truncation_never_hides_the_permission_requests(self):
+        from quill.indicator.render import METRICS, fit_words
+
+        done = [(self.DONE, f"brask-lab-{index:02d}-{'x' * 30}") for index in range(20)]
+        permission = [(self.PERMISSION, "quenta-tree"), (self.PERMISSION, "zorblat-kit")]
+        _, text = S.alert_text(permission[:1] + done + permission[1:])
+        for scale in (1.0, 1.5):
+            room = (METRICS.max_width - METRICS.orb_area - METRICS.pad_right) * scale
+            # A wide estimate of the words font (the real one is narrower): wider can only cut more.
+            lines = fit_words(text, room, lambda line: 9.5 * scale * len(line))
+            shown = " ".join(lines)
+            with self.subTest(scale=scale):
+                self.assertTrue(lines[0].startswith("…"))
+                self.assertTrue(shown.endswith("quenta-tree, zorblat-kit: Claude pede permissão"))
 
 
 class HelpersTest(unittest.TestCase):

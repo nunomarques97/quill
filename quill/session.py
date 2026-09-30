@@ -49,16 +49,22 @@ after all of it is typed. A rewrite typed without Enter is reported to
 ``on_typed`` with its original, for the undo key. ``submit`` runs other
 work (the undo key) on the finalizer thread, in order with the sessions.
 
-``alert(kind)`` shows a Claude Code alert (``quill.notify``: Claude Code
-finished its reply or asks for a permission) with a short sound from the
-``player``. While a hold is recording, a session is being finalized, the
-model is loading or an outcome is on screen, the alert waits: it is kept,
-once per kind, and shown when all of them are over (the finalizer checks
-about every ``poll_s``). The sound never plays into the microphone: a
-starting hold stops it under the same lock that decides whether an alert may
-play. Several alerts waiting together are shown once (a permission request
-first, since it needs an answer) and ring once; an alert within
-``alert_repeat_s`` of the last sound is shown without sound.
+``alert(kind, project)`` shows a Claude Code alert (``quill.notify``: Claude
+Code finished its reply or asks for a permission, in the project ``project``
+or an unnamed one) with a short sound from the ``player``. While a hold is
+recording, a session is being finalized, the model is loading or an outcome
+is on screen, the alert waits: it is kept, once per (kind, project), and
+shown when all of them are over (the finalizer checks about every
+``poll_s``). The sound never plays into the microphone: a starting hold stops
+it under the same lock that decides whether an alert may play. Several alerts
+waiting together are shown once and ring once: the state is the permission
+request when there is one, since it needs an answer, and the words line
+names every waiting project (``alert_text``), the permission requests last so
+the indicator's truncation, which keeps the end, never hides them. An alert
+arriving while earlier alerts are still on screen (``ALERT_SHOW_S``) is shown
+together with them, so several sessions finishing close together are all
+named. An alert within ``alert_repeat_s`` of the last sound is shown without
+sound.
 
 A failure (microphone,
 engine, target gone, foreground changed, ...) ends that session with the
@@ -172,9 +178,45 @@ ALERT_REPEAT_S = 5.0
 # Claude Code alert kind -> indicator state; the text when a permission request also covers a finished reply.
 ALERT_STATES = {sound.DONE: CLAUDE_DONE, sound.PERMISSION: CLAUDE_PERMISSION}
 ALSO_DONE = "Aprove ou recuse o pedido; outra resposta também terminou"
+# What each alert kind says after a project name.
+ALERT_PHRASES = {sound.DONE: "Claude acabou", sound.PERMISSION: "Claude pede permissão"}
+MAX_ALERTS = 24  # distinct (kind, project) kept waiting; beyond it the oldest finished reply is dropped
 FINAL_TIMEOUT_S = 30.0
 POLL_S = 1.0
 STOP_TIMEOUT_S = 10.0
+
+
+def alert_text(alerts: list[tuple[str, str | None]]) -> tuple[str, str]:
+    """(kind shown, words line) of the waiting (kind, project) alerts, in arrival order.
+
+    Named alerts read '<name>: Claude acabou' and '<name>: Claude pede
+    permissão', several names of one kind sharing the phrase; the finished
+    replies come first and the permission requests last. A nameless alert
+    of a kind that has a named one adds nothing; alone among named ones it
+    shows its phrase without a name. Nameless alerts only keep the plain
+    texts (the state's placeholder, or ``ALSO_DONE``).
+    """
+    kinds = {kind for kind, _ in alerts}
+    shown = sound.PERMISSION if sound.PERMISSION in kinds else sound.DONE
+    names: dict[str, list[str]] = {kind: [] for kind in ALERT_PHRASES}
+    for kind, project in alerts:
+        if project and project not in names[kind]:
+            names[kind].append(project)
+    if not any(names.values()):
+        return shown, ALSO_DONE if shown == sound.PERMISSION and sound.DONE in kinds else ""
+    parts = [f"{', '.join(names[kind])}: {ALERT_PHRASES[kind]}" if names[kind] else ALERT_PHRASES[kind]
+             for kind in (sound.DONE, sound.PERMISSION) if kind in kinds]
+    return shown, "; ".join(parts)
+
+
+def _keep(alerts: list[tuple[str, str | None]], entry: tuple[str, str | None]) -> None:
+    """Add ``entry`` once to ``alerts``; beyond ``MAX_ALERTS`` the oldest finished reply is dropped."""
+    if entry in alerts:
+        return
+    if len(alerts) >= MAX_ALERTS:
+        kinds = [kind for kind, _ in alerts]
+        alerts.pop(kinds.index(sound.DONE) if sound.DONE in kinds else 0)
+    alerts.append(entry)
 
 
 def message(reason: str, typed: int = 0) -> str:
@@ -336,11 +378,14 @@ class SessionManager:
         self._live: list[_Hold] = []
         self._jobs: queue.SimpleQueue = queue.SimpleQueue()
         self._thread: threading.Thread | None = None
-        # Claude Code alerts: the kinds waiting (in arrival order), until when an
-        # outcome stays on screen, and when the last alert sound played.
-        self._alerts: list[str] = []
+        # Claude Code alerts: the (kind, project) waiting (in arrival order), until
+        # when an outcome stays on screen, and when the last alert sound played.
+        self._alerts: list[tuple[str, str | None]] = []
         self._quiet_until = 0.0
         self._last_ring: float | None = None
+        # The alerts on screen and until when: a new alert is shown together with them.
+        self._on_screen: list[tuple[str, str | None]] = []
+        self._on_screen_until = 0.0
 
     # ------------------------------------------------------------ lifecycle
 
@@ -359,6 +404,7 @@ class SessionManager:
             self._alerts = []
             self._quiet_until = 0.0
             self._last_ring = None
+            self._on_screen = []
             self._jobs = queue.SimpleQueue()
             self._thread = threading.Thread(target=self._run, args=(self._jobs,), name="quill-sessions", daemon=True)
             self._thread.start()
@@ -370,6 +416,7 @@ class SessionManager:
             self._load_error = error
             if self._live or self._active is not None and not self._active.loading:
                 return
+            self._on_screen = []
             if error:
                 self._show_timed(ERROR, MESSAGES[MODEL_UNAVAILABLE], ERROR_SHOW_S)
             else:
@@ -410,21 +457,25 @@ class SessionManager:
         with self._lock:
             if self._live or self._active is not None:
                 return False
+            self._on_screen = []
             if state is None:
                 self.indicator.hide()
             else:
                 self._show_timed(state, text, hide_after_s)
             return True
 
-    def alert(self, kind: str) -> bool:
-        """A Claude Code alert (``quill.sound`` kind): shown now, or kept until no session is live."""
+    def alert(self, kind: str, project: str | None = None) -> bool:
+        """A Claude Code alert (``quill.sound`` kind) of ``project`` (None: unnamed): shown now,
+        or kept until no session is live."""
         if kind not in ALERT_STATES:
             raise ValueError("unknown alert kind")
+        if project is not None and not isinstance(project, str):
+            raise ValueError("the alert project must be a string")
+        entry = (kind, project or None)
         with self._lock:
             if self._closed:
                 return False
-            if kind not in self._alerts:
-                self._alerts.append(kind)
+            _keep(self._alerts, entry)
             waiting = not self._deliver_alerts()
         if waiting:
             log.info("claude alert %s waits for the current session", kind)
@@ -472,6 +523,7 @@ class SessionManager:
             self._active = hold
             # From here no alert sound may start, and one still playing stops before the microphone opens.
             self._silence()
+            self._on_screen = []
             if not self._ready:
                 hold.loading = True
                 if self._load_error:
@@ -851,6 +903,7 @@ class SessionManager:
         """Show an outcome for ``seconds``; alerts wait until it has been seen."""
         self.indicator.show(state, text, hide_after_s=seconds)
         self._quiet_until = max(self._quiet_until, self.clock() + seconds)
+        self._on_screen = []
 
     def _silence(self) -> None:
         if self.player is None:
@@ -872,9 +925,14 @@ class SessionManager:
         now = self.clock()
         if now < self._quiet_until:
             return False
-        kinds, self._alerts = self._alerts, []
-        kind = sound.PERMISSION if sound.PERMISSION in kinds else kinds[-1]
-        text = ALSO_DONE if kind == sound.PERMISSION and sound.DONE in kinds else ""
+        alerts, self._alerts = self._alerts, []
+        if self._on_screen and now < self._on_screen_until:
+            shown = list(self._on_screen)
+            for entry in alerts:
+                _keep(shown, entry)
+            alerts = shown
+        self._on_screen, self._on_screen_until = list(alerts), now + ALERT_SHOW_S
+        kind, text = alert_text(alerts)
         rang = False
         if self.player is not None and (self._last_ring is None or now - self._last_ring >= self.alert_repeat_s):
             self._last_ring = now
@@ -884,7 +942,8 @@ class SessionManager:
             except Exception as exc:  # noqa: BLE001 - the indicator still shows the alert
                 log.error("alert sound failed (%s)", type(exc).__name__)
         self.indicator.show(ALERT_STATES[kind], text, hide_after_s=ALERT_SHOW_S)
-        log.info("claude alert %s shown (%d waiting, %s)", kind, len(kinds), "sound" if rang else "no sound")
+        log.info("claude alert %s shown (%d listed, %d named, %s)", kind, len(alerts),
+                 sum(1 for _, project in alerts if project), "sound" if rang else "no sound")
         return True
 
     def _visible(self, hold: _Hold) -> bool:

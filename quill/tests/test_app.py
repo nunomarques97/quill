@@ -9,6 +9,9 @@ temporary folder. The spoken words are invented bursts (``w1``, ``w2``...).
 """
 
 import dataclasses
+import io
+import json
+import logging
 import tempfile
 import threading
 import time
@@ -585,6 +588,115 @@ class ClaudeAlertTest(AppCase):
         self.assertFalse(quill.alerts.running)
         self.hold((1,), quill=quill)
         self.assertEqual(self.api.received_text(), "w1.")
+
+    # Project names: invented folders in a temporary folder, the hook run in-process on the fake events.
+
+    def named_setup(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.base = Path(folder.name).resolve()
+        self.alerts_dir = self.base / "local" / "alerts"
+        self.now = [1000.0]
+        self.app = self.make_app(alerts_dir=self.alerts_dir, clock=lambda: self.now[0])
+        return self.app
+
+    def hook(self, project, hook="stop"):
+        cwd = self.base / "projects" / project
+        (cwd / ".git").mkdir(parents=True, exist_ok=True)
+        (cwd / "src").mkdir(exist_ok=True)
+        event = ({"hook_event_name": "Stop", "stop_hook_active": False} if hook == "stop" else
+                 {"hook_event_name": "Notification", "notification_type": "permission_prompt"})
+        data = io.BytesIO(json.dumps({**event, "cwd": str(cwd / "src")}).encode("utf-8"))
+        return N.notify(hook, data.read, {N.ATTENDED_VARIABLE: "1"}, events=self.events,
+                        settings=lambda: (True, "attended"), alerts_dir=self.alerts_dir)
+
+    def test_a_named_alert_shows_its_project_and_no_log_holds_the_name(self):
+        capture = io.StringIO()
+        handler = logging.StreamHandler(capture)
+        handler.setFormatter(logging.Formatter("%(name)s %(levelname)s %(message)s"))
+        quill_log = logging.getLogger("quill")
+        old_level = quill_log.level
+        quill_log.addHandler(handler)
+        quill_log.setLevel(logging.DEBUG)
+        try:
+            quill = self.start(self.named_setup())
+            self.assertTrue(self.alerts_dir.is_dir())
+            self.assertEqual(self.hook("zorblat-kit"), "signalled")
+            wait_for(lambda: self.indicator.last == ("show", CLAUDE_DONE, "zorblat-kit: Claude acabou"),
+                     "the named alert")
+            self.now[0] += S.ALERT_SHOW_S  # the first alert has left the screen
+            self.assertEqual(self.hook("quenta-tree", "permission"), "signalled")
+            wait_for(lambda: self.indicator.last == ("show", CLAUDE_PERMISSION, "quenta-tree: Claude pede permissão"),
+                     "the named permission")
+            quill.stop()
+        finally:
+            quill_log.removeHandler(handler)
+            quill_log.setLevel(old_level)
+        self.assertEqual(self.player.plays, [sound.DONE, sound.PERMISSION])
+        output = capture.getvalue()
+        self.assertIn("claude alert", output)  # the alerts were logged, by reason and count only
+        for private in ("zorblat", "quenta", str(self.base), self.base.name):
+            self.assertNotIn(private, output)
+        self.assertEqual(list(self.alerts_dir.iterdir()), [])
+
+    def test_named_alerts_during_a_hold_are_shown_together_after_it(self):
+        self.start(self.named_setup())
+        self.assertEqual(self.button(True), 1)
+        wait_for(lambda: self.captures.made, "the capture to start")
+        self.assertEqual(self.hook("zorblat-kit"), "signalled")
+        self.assertEqual(self.hook("quenta-tree", "permission"), "signalled")
+        self.assertEqual(self.hook("vellum-app"), "signalled")
+        time.sleep(0.2)
+        self.assertEqual(self.player.plays, [])
+        capture = self.captures.made[-1]
+        wait_for(lambda: self.api.mouse_calls, "the click to focus")
+        capture.push(speech((1,)))
+        self.assertEqual(self.button(False), 1)
+        self.outcomes(1)
+        expected = ("show", CLAUDE_PERMISSION, "zorblat-kit, vellum-app: Claude acabou; quenta-tree: Claude pede permissão")
+        wait_for(lambda: self.indicator.last == expected, "the combined alert")
+        self.assertEqual(self.player.plays, [sound.PERMISSION])
+        self.assertEqual(self.player.plays_while_recording, 0)
+
+    def test_named_alerts_arriving_while_idle_are_all_shown(self):
+        self.start(self.named_setup())
+        names = ["zorblat-kit", "quenta-tree", "vellum-app", "brask-lab", "orrin-ops"]
+        results = []
+        threads = [threading.Thread(target=lambda name=name: results.append(self.hook(name))) for name in names]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(results, ["signalled"] * 5)
+
+        def shown():
+            if len(self.indicator.last or ()) < 3:
+                return False
+            state, text = self.indicator.last[1:3]
+            head, _, phrase = text.partition(": ")
+            return state == CLAUDE_DONE and phrase == "Claude acabou" and sorted(head.split(", ")) == sorted(names)
+        wait_for(shown, "every project in one alert")
+        self.assertEqual(self.player.plays, [sound.DONE])
+        # A permission request after them is added last, and a later finished reply never hides it.
+        self.now[0] += 1
+        self.assertEqual(self.hook("rinn-desk", "permission"), "signalled")
+        wait_for(lambda: self.indicator.last[1] == CLAUDE_PERMISSION
+                 and self.indicator.last[2].endswith("; rinn-desk: Claude pede permissão"), "the permission request")
+        self.now[0] += 1
+        self.assertEqual(self.hook("tavi-notes"), "signalled")
+        wait_for(lambda: "tavi-notes" in self.indicator.last[2], "the later finished reply")
+        self.assertEqual(self.indicator.last[1], CLAUDE_PERMISSION)
+        self.assertTrue(self.indicator.last[2].endswith(", tavi-notes: Claude acabou; rinn-desk: Claude pede permissão"))
+        for name in names:
+            self.assertIn(name, self.indicator.last[2])
+        self.assertEqual(self.player.plays, [sound.DONE])
+        alerts = [call for call in self.indicator.calls if call[0] == "show" and call[1] in S.ALERT_STATES.values()]
+        self.assertFalse(any(call[2] == "" for call in alerts))  # no nameless duplicate
+
+    def test_without_an_alerts_folder_the_alerts_stay_nameless(self):
+        self.start()
+        self.ring()
+        wait_for(lambda: self.indicator.last == ("show", CLAUDE_DONE, ""), "the nameless alert")
 
 
 class SpokenModel(GatedModel):

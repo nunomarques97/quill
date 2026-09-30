@@ -496,7 +496,9 @@ class FakeAlertEvents:
         self.pending: set[str] = set()
         self.closed: list[int] = []
         self.created: list[str] = []
+        self.opened: list[str] = []
         self.fail_create = False
+        self.fail_signal = False
         self._next = 1
         self._condition = threading.Condition()
 
@@ -515,6 +517,25 @@ class FakeAlertEvents:
             if name not in self.names.values():
                 return False
             self.pending.add(name)
+            self._condition.notify_all()
+            return True
+
+    def open_event(self, name: str) -> int | None:
+        """The notifier's handle on an existing event (None when Quill does not listen)."""
+        with self._condition:
+            if name not in self.names.values():
+                return None
+            handle = self._next
+            self._next += 1
+            self.names[handle] = name
+            self.opened.append(name)
+            return handle
+
+    def signal(self, handle: int) -> bool:
+        with self._condition:
+            if self.fail_signal or handle not in self.names:
+                return False
+            self.pending.add(self.names[handle])
             self._condition.notify_all()
             return True
 

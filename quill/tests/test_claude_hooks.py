@@ -162,16 +162,21 @@ class NotifyTest(unittest.TestCase):
         self.events = FakeAlertEvents()
         for name in N.EVENT_NAMES.values():
             self.events.create_event(name)
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.alerts_dir = Path(folder.name)
 
     def run_hook(self, hook: str, event: object, environ=ATTENDED, settings=(True, "attended")) -> str:
         return N.notify(hook, reader(event if isinstance(event, bytes) else encoded(event)), environ,
-                        events=self.events, settings=lambda: settings)
+                        events=self.events, settings=lambda: settings, alerts_dir=self.alerts_dir,
+                        exists=lambda path: False)
 
     def test_signals_the_named_event_of_its_kind(self) -> None:
         self.assertEqual(self.run_hook("stop", STOP), "signalled")
         self.assertEqual(self.events.pending, {N.EVENT_NAMES[sound.DONE]})
-        self.assertEqual(self.run_hook("permission", PERMISSION), "signalled")
+        self.assertEqual(self.run_hook("permission", PERMISSION), "signalled_nameless")  # no cwd: no name
         self.assertEqual(self.events.pending, set(N.EVENT_NAMES.values()))
+        self.assertEqual(self.events.open, list(N.EVENT_NAMES.values()))  # the hook closed its handles
 
     def test_nothing_is_signalled_when_it_must_not_ring(self) -> None:
         cases = (
@@ -189,10 +194,15 @@ class NotifyTest(unittest.TestCase):
             with self.subTest(reason=reason, hook=hook):
                 self.assertEqual(self.run_hook(hook, event, environ, settings), reason)
         self.assertEqual(self.events.pending, set())
+        self.assertEqual(list(self.alerts_dir.iterdir()), [])
 
-    def test_quill_not_running_is_quiet(self) -> None:
-        self.assertEqual(N.notify("stop", reader(encoded(STOP)), ATTENDED, events=FakeAlertEvents(),
-                                  settings=lambda: (True, "attended")), "not_running")
+    def test_quill_not_running_is_quiet_and_writes_nothing(self) -> None:
+        events = FakeAlertEvents()
+        self.assertEqual(N.notify("stop", reader(encoded(STOP)), ATTENDED, events=events,
+                                  settings=lambda: (True, "attended"), alerts_dir=self.alerts_dir,
+                                  exists=lambda path: False), "not_running")
+        self.assertEqual(list(self.alerts_dir.iterdir()), [])
+        self.assertEqual(events.opened, [])
 
     def test_the_message_and_reply_are_never_logged(self) -> None:
         capture = io.StringIO()
@@ -203,12 +213,14 @@ class NotifyTest(unittest.TestCase):
         root.setLevel(logging.DEBUG)
         try:
             self.run_hook("stop", STOP)
-            self.run_hook("permission", PERMISSION)
+            self.run_hook("permission", {**PERMISSION, "cwd": "C:\\Invented\\zorblat-kit"})
             self.run_hook("stop", b'{"message": "' + PRIVATE.encode() + b'"')
         finally:
             root.removeHandler(handler)
             root.setLevel(old_level)
         self.assertNotIn("privado", capture.getvalue())
+        self.assertNotIn("zorblat", capture.getvalue())
+        self.assertNotIn("Invented", capture.getvalue())
 
     def test_main_prints_nothing_and_always_exits_zero(self) -> None:
         out, err = io.StringIO(), io.StringIO()
@@ -224,6 +236,448 @@ class NotifyTest(unittest.TestCase):
         self.assertEqual(called.call_args.args[0], "stop")
         self.assertEqual(interrupted.call_args.args[0], "permission")
         self.assertEqual([call.args[0] for call in no_arguments.call_args_list], ["", ""])
+
+
+class ProjectNameTest(unittest.TestCase):
+    """The project of a hook run, from invented folders in a temporary folder."""
+
+    def setUp(self) -> None:
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = str(Path(folder.name).resolve())
+        self.probes: list[str] = []
+
+    def exists(self, path: str) -> bool:
+        # Only the temporary folder is looked at: nothing above it can change a result.
+        self.probes.append(path)
+        return path.lower().startswith(self.root.lower() + "\\") and os.path.lexists(path)
+
+    def folder(self, *parts: str, git: str | None = None) -> str:
+        path = Path(self.root, *parts)
+        path.mkdir(parents=True, exist_ok=True)
+        if git == "folder":
+            (path / ".git").mkdir()
+        elif git == "file":
+            (path / ".git").write_text("gitdir: C:/Invented/elsewhere\n", "utf-8")
+        return str(path)
+
+    @staticmethod
+    def never_probed(path: str) -> bool:
+        raise AssertionError("this cwd must not be probed on disk")
+
+    def test_the_git_root_names_the_project_from_any_subfolder(self) -> None:
+        self.folder("zorblat-kit", git="folder")
+        cwd = self.folder("zorblat-kit", "src", "deep")
+        self.assertEqual(N.project_name(cwd, self.exists), "zorblat-kit")
+        self.assertEqual(N.project_name(cwd + "\\", self.exists), "zorblat-kit")
+        self.assertEqual(N.project_name(cwd.replace("\\", "/"), self.exists), "zorblat-kit")
+
+    def test_a_git_file_of_a_worktree_counts(self) -> None:
+        self.folder("quenta-tree", git="file")
+        self.assertEqual(N.project_name(self.folder("quenta-tree", "lib"), self.exists), "quenta-tree")
+
+    def test_the_nearest_git_root_wins(self) -> None:
+        self.folder("outer-vell", git="folder")
+        self.folder("outer-vell", "inner-brask", git="folder")
+        cwd = self.folder("outer-vell", "inner-brask", "docs")
+        self.assertEqual(N.project_name(cwd, self.exists), "inner-brask")
+
+    def test_without_git_it_is_the_folder_name(self) -> None:
+        self.assertEqual(N.project_name(self.folder("plain-drift", "notes"), self.exists), "notes")
+        self.assertEqual(N.project_name(self.root + "\\missing-mirel", self.exists), "missing-mirel")
+
+    def test_the_walk_up_is_bounded(self) -> None:
+        cwd = "C:\\" + "\\".join(f"d{index}" for index in range(100))
+        probes: list[str] = []
+
+        def only_the_top(path: str) -> bool:
+            probes.append(path)
+            return path == "C:\\d0\\.git"  # beyond the bound: never reached
+        self.assertEqual(N.project_name(cwd, only_the_top), "d99")
+        self.assertEqual(len(probes), N.MAX_DEPTH)
+
+    def test_unc_and_device_paths_are_never_probed(self) -> None:
+        for cwd in ("\\\\server\\share\\vellum-app", "//server/share/vellum-app/", "\\\\?\\C:\\Invented\\vellum-app",
+                    "\\\\.\\C:\\Invented\\vellum-app", "\\/server\\share\\vellum-app"):
+            with self.subTest(cwd=cwd):
+                self.assertEqual(N.project_name(cwd, self.never_probed), "vellum-app")
+
+    def test_a_relative_cwd_is_not_probed(self) -> None:
+        self.assertEqual(N.project_name("zorblat\\kit", self.never_probed), "kit")
+        self.assertEqual(N.project_name("C:zorblat", self.never_probed), "zorblat")
+
+    def test_no_name(self) -> None:
+        for cwd in (None, 42, ["C:\\Invented"], {"path": "C:\\Invented"}, "", "C:\\", "C:", "C:/", "\\", "/",
+                    "C:\\Invented\\..", "C:\\Invented\x00\\zorblat", "C:\\" + "a" * N.MAX_CWD,
+                    "\\\\server\\share\\", "C:\\\u202e\u200b"):
+            with self.subTest(cwd=repr(cwd)[:40]):
+                self.assertIsNone(N.project_name(cwd, self.never_probed))
+
+    def test_a_probe_error_keeps_the_folder_name(self) -> None:
+        def broken(path: str) -> bool:
+            raise OSError("fake: access denied")
+        self.assertEqual(N.project_name("C:\\Invented\\zorblat-kit", broken), "zorblat-kit")
+
+    def test_names_are_cleaned(self) -> None:
+        cases = {
+            "\u202ezorblat\u200b-kit\u2066": "zorblat-kit",  # bidi overrides and format characters
+            "  zorblat \t\n kit\u2028 ": "zorblat kit",  # whitespace collapsed
+            "zor\x07blat\x1b[1m": "zorblat[1m",  # control characters
+            "x" * 100: "x" * N.MAX_NAME,
+            "\ud800quenta": "quenta",  # a lone surrogate
+            "\ue000\u0378": None,  # private use and unassigned only
+            "\u202e\x00 \t": None,
+        }
+        for raw, expected in cases.items():
+            with self.subTest(raw=repr(raw)[:30]):
+                self.assertEqual(N.clean_name(raw), expected)
+        self.assertIsNone(N.clean_name(7))
+        self.assertEqual(N.project_name("C:\\Invented\\\u202ekit-zorblat", lambda path: False), "kit-zorblat")
+        self.assertEqual(len(N.clean_name("ab " * 40)), N.MAX_NAME - 1)  # a cut never ends with a space
+
+
+class TrackingDict(dict):
+    """A hook input that records which fields are read."""
+
+    read: set[str] = set()
+
+    def get(self, key, default=None):
+        TrackingDict.read.add(key)
+        return super().get(key, default)
+
+    def __getitem__(self, key):
+        TrackingDict.read.add(key)
+        return super().__getitem__(key)
+
+    def __contains__(self, key):
+        TrackingDict.read.add(key)
+        return super().__contains__(key)
+
+    def __iter__(self):
+        TrackingDict.read.add("*")
+        return super().__iter__()
+
+    def keys(self):
+        TrackingDict.read.add("*")
+        return super().keys()
+
+    def items(self):
+        TrackingDict.read.add("*")
+        return super().items()
+
+    def values(self):
+        TrackingDict.read.add("*")
+        return super().values()
+
+
+class RecordTest(unittest.TestCase):
+    """The project record the hook leaves for Quill, in a temporary alerts folder."""
+
+    def setUp(self) -> None:
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.base = Path(folder.name).resolve()
+        self.alerts_dir = self.base / "alerts"
+        self.alerts_dir.mkdir()
+        self.project = self.base / "zorblat-kit"
+        (self.project / ".git").mkdir(parents=True)
+        (self.project / "src").mkdir()
+        self.events = FakeAlertEvents()
+        for name in N.EVENT_NAMES.values():
+            self.events.create_event(name)
+
+    def run_hook(self, hook: str = "stop", cwd: object = None, alerts_dir: Path | None = None) -> str:
+        base = STOP if hook == "stop" else PERMISSION
+        event = {**base, "cwd": str(self.project / "src") if cwd is None else cwd}
+        return N.notify(hook, reader(encoded(event)), ATTENDED, events=self.events,
+                        settings=lambda: (True, "attended"), alerts_dir=alerts_dir or self.alerts_dir)
+
+    def files(self) -> list[str]:
+        return sorted(path.name for path in self.alerts_dir.iterdir())
+
+    def test_one_record_is_written_before_the_event_is_set(self) -> None:
+        seen: list[list[str]] = []
+        original = self.events.signal
+
+        def signal(handle: int) -> bool:
+            seen.append(self.files())
+            return original(handle)
+        self.events.signal = signal
+        before = time.time()
+        self.assertEqual(self.run_hook("permission"), "signalled")
+        files = self.files()
+        self.assertEqual(len(files), 1)
+        self.assertRegex(files[0], r"^alert-[0-9a-f]{32}\.json$")
+        self.assertEqual(seen, [files])  # complete and renamed before the set
+        record = json.loads((self.alerts_dir / files[0]).read_text("ascii"))
+        self.assertEqual(set(record), {"kind", "project", "time"})
+        self.assertEqual((record["kind"], record["project"]), (sound.PERMISSION, "zorblat-kit"))
+        self.assertTrue(before <= record["time"] <= time.time())
+        self.assertLessEqual((self.alerts_dir / files[0]).stat().st_size, N.MAX_RECORD)
+        self.assertEqual(self.events.pending, {N.EVENT_NAMES[sound.PERMISSION]})
+
+    def test_the_hook_reads_only_four_fields(self) -> None:
+        TrackingDict.read = set()
+        loads = json.loads
+        with mock.patch.object(N.json, "loads", side_effect=lambda text: TrackingDict(loads(text))):
+            self.assertEqual(self.run_hook("stop"), "signalled")
+            self.assertEqual(self.run_hook("permission"), "signalled")
+        self.assertEqual(TrackingDict.read, {"hook_event_name", "stop_hook_active", "notification_type", "cwd"})
+
+    def test_no_name_rings_without_a_record(self) -> None:
+        for cwd in ("", "C:\\", 17, "C:\\Invented\x00"):
+            with self.subTest(cwd=repr(cwd)):
+                self.assertEqual(self.run_hook(cwd=cwd), "signalled_nameless")
+        self.assertEqual(self.files(), [])
+        self.assertEqual(self.events.pending, {N.EVENT_NAMES[sound.DONE]})
+
+    def test_a_missing_folder_is_not_created_and_the_alert_still_rings(self) -> None:
+        missing = self.base / "missing"
+        self.assertEqual(self.run_hook(alerts_dir=missing), "signalled_no_record")
+        self.assertFalse(missing.exists())
+        self.assertEqual(self.events.pending, {N.EVENT_NAMES[sound.DONE]})
+
+    def test_a_full_folder_gets_no_more_records(self) -> None:
+        for index in range(N.MAX_PENDING):
+            (self.alerts_dir / f"alert-{index:032x}.json").write_bytes(b"{}")
+        self.assertEqual(self.run_hook(), "signalled_no_record")
+        self.assertEqual(len(self.files()), N.MAX_PENDING)
+        self.assertEqual(self.events.pending, {N.EVENT_NAMES[sound.DONE]})
+
+    def test_a_failed_write_leaves_no_temporary_file(self) -> None:
+        with mock.patch.object(N.os, "replace", side_effect=OSError("fake: disk full")):
+            self.assertEqual(self.run_hook(), "signalled_no_record")
+        self.assertEqual(self.files(), [])
+        self.assertEqual(self.events.pending, {N.EVENT_NAMES[sound.DONE]})
+
+    def test_a_failed_set_is_reported(self) -> None:
+        self.events.fail_signal = True
+        self.assertEqual(self.run_hook(), "signal_failed")
+
+    def test_many_hooks_at_once_each_write_their_own_record(self) -> None:
+        names = [f"brask-{index}" for index in range(8)]
+        for name in names:
+            (self.base / name / ".git").mkdir(parents=True)
+        barrier = threading.Barrier(len(names))
+        reasons: list[str] = []
+
+        def hook(name: str) -> None:
+            barrier.wait()
+            reasons.append(self.run_hook(cwd=str(self.base / name)))
+        threads = [threading.Thread(target=hook, args=(name,)) for name in names]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(10)
+        self.assertEqual(reasons, ["signalled"] * len(names))
+        written = sorted(json.loads((self.alerts_dir / name).read_text("ascii"))["project"] for name in self.files())
+        self.assertEqual(written, sorted(names))
+
+
+class ListenerRecordsTest(unittest.TestCase):
+    """Hook runs and the listener together: fake events, a temporary alerts folder, invented projects."""
+
+    def setUp(self) -> None:
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.base = Path(folder.name).resolve()
+        self.alerts_dir = self.base / "local" / "alerts"
+        self.events = FakeAlertEvents()
+        self.alerts: list[tuple[str, str | None]] = []
+        self.now = [100.0]
+        self.listener = self.make_listener(self.alerts_dir)
+
+    def make_listener(self, alerts_dir: Path | None) -> N.AlertListener:
+        listener = N.AlertListener(lambda kind, project: self.alerts.append((kind, project)), self.events,
+                                   poll_s=0.02, alerts_dir=alerts_dir, clock=lambda: self.now[0])
+        self.addCleanup(listener.stop)
+        return listener
+
+    def project(self, name: str) -> str:
+        path = self.base / "projects" / name
+        (path / ".git").mkdir(parents=True, exist_ok=True)
+        return str(path)
+
+    def run_hook(self, name: str | None, hook: str = "stop") -> str:
+        base = STOP if hook == "stop" else PERMISSION
+        event = {**base, "cwd": self.project(name) if name else ""}
+        return N.notify(hook, reader(encoded(event)), ATTENDED, events=self.events,
+                        settings=lambda: (True, "attended"), alerts_dir=self.alerts_dir)
+
+    def write(self, name: str, content: bytes) -> Path:
+        path = self.alerts_dir / name
+        path.write_bytes(content)
+        return path
+
+    def record(self, kind: str = sound.DONE, project: object = "zorblat-kit", at: float | None = None) -> bytes:
+        return json.dumps({"kind": kind, "project": project, "time": time.time() if at is None else at}).encode()
+
+    def settle(self) -> None:
+        """Let the listener run a few more polls: anything still to come would arrive."""
+        time.sleep(0.15)
+
+    def test_start_creates_the_folder_and_deletes_the_records_left(self) -> None:
+        self.alerts_dir.mkdir(parents=True)
+        self.write("alert-old.json", self.record())
+        self.write("alert-old.tmp", b"{")
+        self.write("notes.txt", b"invented")
+        self.listener.start()
+        self.assertEqual(sorted(path.name for path in self.alerts_dir.iterdir()), ["notes.txt"])
+        self.listener.stop()
+        self.alerts_dir.joinpath("notes.txt").unlink()
+        self.alerts_dir.rmdir()
+        self.listener.start()
+        self.assertTrue(self.alerts_dir.is_dir())
+
+    def test_a_named_alert_is_delivered_once_without_a_nameless_duplicate(self) -> None:
+        self.listener.start()
+        self.assertEqual(self.run_hook("zorblat-kit"), "signalled")
+        wait_for(lambda: self.alerts == [(sound.DONE, "zorblat-kit")], "the named alert")
+        self.assertEqual(self.run_hook("quenta-tree", "permission"), "signalled")
+        wait_for(lambda: len(self.alerts) == 2, "the named permission")
+        self.settle()
+        self.assertEqual(self.alerts, [(sound.DONE, "zorblat-kit"), (sound.PERMISSION, "quenta-tree")])
+        self.assertEqual(list(self.alerts_dir.iterdir()), [])
+
+    def test_five_parallel_hooks_each_deliver_their_name_exactly_once(self) -> None:
+        self.listener.start()
+        names = ["zorblat-kit", "quenta-tree", "vellum-app", "brask-lab", "mirel-docs"]
+        barrier = threading.Barrier(len(names))
+        reasons: list[str] = []
+
+        def hook(name: str) -> None:
+            barrier.wait()
+            reasons.append(self.run_hook(name))
+        threads = [threading.Thread(target=hook, args=(name,)) for name in names]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(10)
+        self.assertEqual(reasons, ["signalled"] * len(names))
+        wait_for(lambda: len(self.alerts) >= len(names), "the five alerts")
+        self.settle()
+        self.assertEqual(sorted(self.alerts), sorted((sound.DONE, name) for name in names))
+        self.assertEqual(list(self.alerts_dir.iterdir()), [])
+
+    def test_mixed_kinds_in_parallel_give_no_nameless_duplicate(self) -> None:
+        self.listener.start()
+        runs = [("zorblat-kit", "stop"), ("quenta-tree", "permission"), ("vellum-app", "stop"),
+                ("brask-lab", "permission")]
+        barrier = threading.Barrier(len(runs))
+
+        def hook(name: str, kind: str) -> None:
+            barrier.wait()
+            self.run_hook(name, kind)
+        threads = [threading.Thread(target=hook, args=run) for run in runs]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(10)
+        wait_for(lambda: len(self.alerts) >= len(runs), "the four alerts")
+        self.settle()
+        kinds = {"stop": sound.DONE, "permission": sound.PERMISSION}
+        self.assertEqual(sorted(self.alerts), sorted((kinds[kind], name) for name, kind in runs))
+
+    def test_a_failed_record_write_still_gives_a_nameless_alert(self) -> None:
+        self.listener.start()
+        with mock.patch.object(N.os, "replace", side_effect=OSError("fake: disk full")):
+            self.assertEqual(self.run_hook("zorblat-kit"), "signalled_no_record")
+        wait_for(lambda: self.alerts == [(sound.DONE, None)], "the nameless alert")
+
+    def test_a_hook_without_a_name_gives_the_nameless_alert(self) -> None:
+        self.listener.start()
+        self.assertEqual(self.run_hook(None, "permission"), "signalled_nameless")
+        wait_for(lambda: self.alerts == [(sound.PERMISSION, None)], "the nameless alert")
+
+    def test_bad_records_are_dropped_without_stopping_the_listener(self) -> None:
+        self.listener.start()
+        now = time.time()
+        bad = {
+            "alert-broken.json": b"{broken",
+            "alert-oversized.json": self.record()[:-1] + b" " * N.MAX_RECORD + b"}",
+            "alert-binary.json": b"\xff\xfe\x00",
+            "alert-list.json": b"[1, 2]",
+            "alert-kind.json": self.record(kind="invented"),
+            "alert-stale.json": self.record(at=now - N.MAX_AGE_S - 30),
+            "alert-future.json": self.record(at=now + N.MAX_AGE_S + 30),
+            "alert-no-time.json": b'{"kind": "done", "project": "zorblat-kit"}',
+            "alert-bool-time.json": b'{"kind": "done", "project": "zorblat-kit", "time": true}',
+            "alert-nameless.json": self.record(project="\u202e\u200b"),
+            "alert-number.json": self.record(project=12),
+        }
+        for name, content in bad.items():
+            self.write(name, content)
+        (self.alerts_dir / "alert-folder.json").mkdir()
+        fresh_temporary = self.write("alert-fresh.tmp", self.record(project="brask-lab"))
+        old_temporary = self.write("alert-old.tmp", b"{")
+        os.utime(old_temporary, (now - N.MAX_AGE_S - 30, now - N.MAX_AGE_S - 30))
+        with self.assertLogs("quill.notify", level="INFO") as logs:
+            self.assertTrue(self.events.set_event(N.EVENT_NAMES[sound.DONE]))
+            wait_for(lambda: self.alerts == [(sound.DONE, None)], "the nameless alert")
+        self.assertEqual(sorted(path.name for path in self.alerts_dir.iterdir()),
+                         ["alert-folder.json", "alert-fresh.tmp"])
+        self.assertTrue(fresh_temporary.exists())
+        self.assertNotIn("zorblat", "\n".join(logs.output))
+        self.assertEqual(self.run_hook("zorblat-kit"), "signalled")
+        wait_for(lambda: self.alerts[-1:] == [(sound.DONE, "zorblat-kit")], "the next named alert")
+
+    def test_names_are_cleaned_again(self) -> None:
+        self.listener.start()
+        self.write("alert-1.json", self.record(project="\u202ezorblat\x07-kit" + "x" * 80))
+        self.assertTrue(self.events.set_event(N.EVENT_NAMES[sound.DONE]))
+        wait_for(lambda: len(self.alerts) == 1, "the alert")
+        self.assertEqual(self.alerts, [(sound.DONE, ("zorblat-kit" + "x" * 80)[:N.MAX_NAME])])
+
+    def test_the_same_project_twice_in_one_wake_is_delivered_once(self) -> None:
+        self.listener.start()
+        self.write("alert-1.json", self.record(project="zorblat-kit"))
+        self.write("alert-2.json", self.record(project="zorblat-kit"))
+        self.write("alert-3.json", self.record(kind=sound.PERMISSION, project="zorblat-kit"))
+        self.assertTrue(self.events.set_event(N.EVENT_NAMES[sound.DONE]))
+        wait_for(lambda: len(self.alerts) == 2, "the alerts")
+        self.settle()
+        self.assertEqual(sorted(self.alerts), [(sound.DONE, "zorblat-kit"), (sound.PERMISSION, "zorblat-kit")])
+
+    def test_a_wake_without_a_record_is_nameless_only_after_the_grace(self) -> None:
+        self.listener.start()
+        self.run_hook("zorblat-kit")
+        wait_for(lambda: self.alerts == [(sound.DONE, "zorblat-kit")], "the named alert")
+        self.now[0] += N.NAMED_GRACE_S - 0.5
+        self.assertTrue(self.events.set_event(N.EVENT_NAMES[sound.DONE]))  # the same hook's set, read early
+        self.settle()
+        self.assertEqual(self.alerts, [(sound.DONE, "zorblat-kit")])
+        self.assertTrue(self.events.set_event(N.EVENT_NAMES[sound.PERMISSION]))  # another kind: not covered
+        wait_for(lambda: self.alerts[-1:] == [(sound.PERMISSION, None)], "the nameless permission")
+        self.now[0] += 1.0
+        self.assertTrue(self.events.set_event(N.EVENT_NAMES[sound.DONE]))
+        wait_for(lambda: self.alerts[-1:] == [(sound.DONE, None)], "the nameless alert after the grace")
+
+    def test_without_a_folder_every_alert_is_nameless(self) -> None:
+        listener = self.make_listener(None)
+        listener.start()
+        self.assertEqual(self.run_hook("zorblat-kit"), "signalled_no_record")  # the hook's folder does not exist
+        wait_for(lambda: self.alerts == [(sound.DONE, None)], "the nameless alert")
+
+    def test_an_unusable_folder_leaves_the_alerts_nameless(self) -> None:
+        self.alerts_dir.parent.mkdir(parents=True)
+        self.alerts_dir.write_bytes(b"not a folder")
+        with self.assertLogs("quill.notify", level="ERROR"):
+            self.listener.start()
+        self.assertTrue(self.listener.running)
+        self.assertTrue(self.events.set_event(N.EVENT_NAMES[sound.DONE]))
+        wait_for(lambda: self.alerts == [(sound.DONE, None)], "the nameless alert")
+
+    def test_a_record_that_cannot_be_deleted_is_delivered_once(self) -> None:
+        self.listener.start()
+        self.write("alert-1.json", self.record(project="zorblat-kit"))
+        with mock.patch.object(N.os, "remove", side_effect=PermissionError("fake: in use")), \
+                self.assertLogs("quill.notify", level="ERROR"):
+            self.assertTrue(self.events.set_event(N.EVENT_NAMES[sound.DONE]))
+            wait_for(lambda: self.alerts == [(sound.DONE, "zorblat-kit")], "the named alert")
+            self.now[0] += 10.0
+            self.assertTrue(self.events.set_event(N.EVENT_NAMES[sound.DONE]))
+            wait_for(lambda: self.alerts[-1:] == [(sound.DONE, None)], "the next wake")
+        self.assertEqual(self.alerts, [(sound.DONE, "zorblat-kit"), (sound.DONE, None)])
 
 
 class HookScriptTest(unittest.TestCase):
@@ -256,8 +710,9 @@ class HookScriptTest(unittest.TestCase):
 class ListenerTest(unittest.TestCase):
     def setUp(self) -> None:
         self.events = FakeAlertEvents()
-        self.alerts: list[str] = []
-        self.listener = N.AlertListener(self.alerts.append, self.events, poll_s=0.02)
+        self.alerts: list[tuple[str, str | None]] = []
+        self.listener = N.AlertListener(lambda kind, project: self.alerts.append((kind, project)), self.events,
+                                        poll_s=0.02)
         self.addCleanup(self.listener.stop)
 
     def ring(self, kind: str) -> None:
@@ -267,9 +722,9 @@ class ListenerTest(unittest.TestCase):
         self.listener.start()
         self.assertEqual(sorted(self.events.open), sorted(N.EVENT_NAMES.values()))
         self.ring(sound.DONE)
-        wait_for(lambda: self.alerts == [sound.DONE], "the done alert")
+        wait_for(lambda: self.alerts == [(sound.DONE, None)], "the done alert")
         self.ring(sound.PERMISSION)
-        wait_for(lambda: self.alerts == [sound.DONE, sound.PERMISSION], "the permission alert")
+        wait_for(lambda: self.alerts == [(sound.DONE, None), (sound.PERMISSION, None)], "the permission alert")
 
     def test_start_stop_start(self) -> None:
         self.listener.start()
@@ -282,7 +737,7 @@ class ListenerTest(unittest.TestCase):
         self.listener.stop()  # twice is harmless
         self.listener.start()
         self.ring(sound.DONE)
-        wait_for(lambda: self.alerts == [sound.DONE], "the alert after a restart")
+        wait_for(lambda: self.alerts == [(sound.DONE, None)], "the alert after a restart")
 
     def test_a_failed_start_leaves_nothing_open(self) -> None:
         created = []
@@ -302,8 +757,8 @@ class ListenerTest(unittest.TestCase):
     def test_a_failing_alert_does_not_stop_the_listener(self) -> None:
         calls = []
 
-        def on_alert(kind: str) -> None:
-            calls.append(kind)
+        def on_alert(kind: str, project: str | None) -> None:
+            calls.append((kind, project))
             if len(calls) == 1:
                 raise ValueError("fake")
         listener = N.AlertListener(on_alert, self.events, poll_s=0.02)
@@ -472,6 +927,25 @@ class InstallTest(InstallerCase):
         self.assertEqual(self.asked, [])
         self.assertEqual(len(self.backups()), 1)
         self.assertIn("already installed", self.output)
+
+    def test_hooks_installed_by_the_previous_version_need_no_reinstall(self) -> None:
+        # Written out by hand as the previous version installed them: the project name needs no new argument.
+        previous = {**OTHER_SETTINGS, "hooks": {
+            **OTHER_SETTINGS["hooks"],
+            "Notification": [{"matcher": "permission_prompt", "hooks": [
+                {"type": "command", "command": self.pythonw, "args": [self.script, "permission"], "timeout": 5}]}],
+        }}
+        previous["hooks"]["Stop"] = [*previous["hooks"]["Stop"], {"hooks": [
+            {"type": "command", "command": self.pythonw, "args": [self.script, "stop"], "timeout": 5}]}]
+        raw = self.write(previous)
+        self.assertEqual(self.run_action("install", "yes"), H.EXIT_OK)
+        self.assertEqual(self.path.read_bytes(), raw)
+        self.assertEqual((self.asked, self.backups()), ([], []))
+        self.assertIn("already installed", self.output)
+        self.assertEqual(H.quill_groups(self.pythonw, self.script), {
+            "Stop": previous["hooks"]["Stop"][-1],
+            "Notification": previous["hooks"]["Notification"][0],
+        })
 
     def test_install_into_a_new_file(self) -> None:
         self.assertEqual(self.run_action("install", "yes"), H.EXIT_OK)

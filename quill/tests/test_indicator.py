@@ -626,6 +626,34 @@ class OffscreenRenderTest(unittest.TestCase):
         self.assertEqual(gdip.live, 0)
         self.assertEqual(cli.own_windows(), 0)
 
+    def test_alert_frames_show_every_project_inside_the_capsule(self) -> None:
+        renderer = render.Renderer()
+        try:
+            measured = {}
+            for stem, view, scale in cli.frame_set():
+                if not stem.startswith("alert-"):
+                    continue
+                lay = renderer.layout(view, scale)
+                words = renderer._measurer(scale, "words")
+                room = lay.capsule[2] - (METRICS.orb_area + METRICS.pad_right) * scale
+                with self.subTest(stem=stem):
+                    self.assertFalse(lay.placeholder)
+                    self.assertLessEqual(len(lay.lines), 2)
+                    for line in lay.lines:
+                        self.assertLessEqual(words(line), room + 0.5)  # nothing drawn past the capsule
+                measured[stem] = " ".join(lay.lines)
+        finally:
+            renderer.close()
+        for pct in (100, 150):
+            self.assertEqual(measured[f"alert-project-done-{pct}"], "nimbus-deck: Claude acabou")
+            self.assertEqual(measured[f"alert-project-permission-{pct}"], "tarvo-kit: Claude pede permissão")
+            mixed = measured[f"alert-projects-mixed-{pct}"]
+            self.assertTrue(all(name in mixed for name in ("nimbus-deck", "orla-notes", "tarvo-kit")))
+            self.assertIn("nimbus-deck-public-documentation-site-archive-x:", measured[f"alert-project-long-name-{pct}"])
+            overflow = measured[f"alert-projects-overflow-{pct}"]
+            self.assertTrue(overflow.startswith("…"))  # the older finished replies give way
+            self.assertTrue(overflow.endswith("tarvo-kit, velo-api: Claude pede permissão"))
+
     def test_png_is_valid(self) -> None:
         from quill.indicator.gdiplus import png_bytes
 
@@ -678,6 +706,12 @@ class CliTest(unittest.TestCase):
         self.assertGreater(len({view.level for view in sequence}), 6)
         self.assertIn("long-text-100", stems)
         self.assertTrue(any(view.reduced_motion for _, view, _ in cli.frame_set()))
+        for stem in ("alert-project-done", "alert-project-permission", "alert-projects-mixed", "alert-projects-overflow"):
+            self.assertIn(f"{stem}-100", stems)
+            self.assertIn(f"{stem}-150", stems)
+        alerts = {stem: view for stem, view, _ in cli.frame_set() if stem.startswith("alert-")}
+        self.assertEqual(alerts["alert-project-done-100"].state, CLAUDE_DONE)
+        self.assertEqual(alerts["alert-projects-mixed-100"].state, CLAUDE_PERMISSION)
 
 
 if __name__ == "__main__":

@@ -5,7 +5,9 @@ Usage: py -3.12 -m quill.indicator --render-frames bench/results/indicator
 
 ``--render-frames`` draws every state at 100 % and 150 % scale, a 12-frame
 listening sequence at varying voice levels, reduced-motion frames, long-text
-cases and a contact sheet (each frame over a light and a dark desktop) into
+cases, the Claude Code alerts with project names (one finished reply, one
+permission request, several projects, a long name and an overflow, with the
+words line the sessions build) and a contact sheet (each frame over a light and a dark desktop) into
 PNG files with GDI+ in memory. It creates no window (it checks that the
 process owns none at the end) and prints the offscreen frame time p50/p95,
 also written to ``timing.json`` next to the frames. The texts are invented.
@@ -34,6 +36,8 @@ from pathlib import Path
 from quill.indicator.render import (CLAUDE_DONE, CLAUDE_PERMISSION, COMMAND, ERROR, LISTENING, LOADING, REVIEWING,
                                     SENT, STATES, TRANSCRIBING, VOICE, VOICE_NONE, VOICE_OPEN, Layout, Renderer,
                                     View)
+from quill.session import ALERT_STATES, alert_text
+from quill.sound import DONE, PERMISSION
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RESULTS_DIR = REPO_ROOT / "local" / "selftest"
@@ -68,6 +72,16 @@ LONG_TEXT = (
 )
 LONG_WORD = "supercalifragilisticexpialidocious-configuration-override-value-without-spaces"
 SEQUENCE_LEVELS = (0.0, 0.12, 0.35, 0.62, 0.9, 1.0, 0.78, 0.5, 0.3, 0.18, 0.06, 0.0)
+# Claude Code alerts waiting together, as (kind, invented project) in arrival order.
+ALERT_SAMPLES = (
+    ("alert-project-done", [(DONE, "nimbus-deck")]),
+    ("alert-project-permission", [(PERMISSION, "tarvo-kit")]),
+    ("alert-projects-mixed", [(DONE, "nimbus-deck"), (PERMISSION, "tarvo-kit"), (DONE, "orla-notes")]),
+    ("alert-project-long-name", [(PERMISSION, "nimbus-deck-public-documentation-site-archive-x")]),
+    ("alert-projects-overflow", [(PERMISSION, "tarvo-kit"), *((DONE, f"nimbus-deck-service-{index:02d}")
+                                                               for index in range(1, 9)),
+                                 (PERMISSION, "velo-api")]),
+)
 
 
 def frame_set() -> list[tuple[str, View, float]]:
@@ -94,6 +108,11 @@ def frame_set() -> list[tuple[str, View, float]]:
         frames.append((f"state-voice_none-unrecognized-{pct}", View(VOICE_NONE, "Comando não reconhecido", 0.0, 0.4),
                        scale))
     frames.append(("long-word-100", View(LISTENING, LONG_WORD, 0.4, 0.5), 1.0))
+    for scale in SCALES:
+        pct = round(scale * 100)
+        for stem, alerts in ALERT_SAMPLES:
+            kind, text = alert_text(list(alerts))
+            frames.append((f"{stem}-{pct}", View(ALERT_STATES[kind], text, 0.0, 0.4), scale))
     return frames
 
 

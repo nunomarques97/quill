@@ -10,15 +10,20 @@ the shortcuts found in the folders of ``[voice_commands] shortcut_dirs``:
   (the MS-SHLLINK format: the link info's local path, or the environment
   variable block), without launching or resolving anything through the
   shell. A file it cannot read has no target.
-- ``match`` compares the spoken project name, and the personal-vocabulary
-  names it stands for (a name, one of its variants, or a close spelling), with
-  the shortcut names, ignoring case, accents, spaces, hyphens and other
-  punctuation, within a bounded edit distance. An exact name beats a longer
-  sibling ("alfa" opens alfa, "alfa public" opens alfa-public). A shortcut is
-  chosen only when one candidate is inside its bound and clearly ahead of the
-  runner-up; otherwise nothing is chosen and up to ``MAX_OPTIONS`` closest
-  names are returned. The same name in two folders is one candidate when both
-  point to the same target, and ambiguous when the targets differ.
+- ``match`` searches the spoken words for a shortcut name: every span of 1 to
+  ``MAX_SPAN_WORDS`` words that does not start or end on a filler word, and
+  the personal-vocabulary names it stands for (a name, one of its variants, or
+  a close spelling), is compared with the shortcut names, ignoring case,
+  accents, spaces, hyphens and other punctuation ("gear lift" is gearlift),
+  also after folding spellings of one sound (``sound_key``: k/c/q, ph/f, y/i,
+  silent h, doubled letters), within an edit distance bounded by the name's
+  length. The longest name said wins over the sibling it contains ("alfa"
+  opens alfa, "alfa public" opens alfa-public); a longer sibling never wins
+  on part of its name. A shortcut is chosen only when one name is said, inside
+  its bound and clearly ahead of any other name on the same words; otherwise
+  nothing is chosen and up to ``MAX_OPTIONS`` close names are returned. The
+  same name in two folders is one candidate when both point to the same
+  target, and ambiguous when the targets differ.
 - ``launch`` opens the chosen shortcut: a shortcut that starts VS Code
   (``Code.exe``) is opened with the shell, as a double click would; a
   shortcut to a folder starts VS Code on that folder with an argument list,
@@ -34,10 +39,11 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import struct
 import subprocess
 import unicodedata
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
 
@@ -56,6 +62,13 @@ TWO_EDITS_CHARS = 9
 FUZZY_LEAD = 2
 # A part of a name this long makes the name a likely option (never a match by itself).
 MIN_PART_CHARS = 4
+# Other names are options up to this many edits outside their bound.
+OPTION_EDITS = 2
+# Spoken words compared with the names, and the words of one span.
+MAX_SPOKEN_WORDS = 30
+MAX_SPAN_WORDS = 4
+# Letters of the word after a hit that, beginning the rest of a longer sibling, make the hit ambiguous.
+SIBLING_PREFIX_CHARS = 3
 
 # Reason codes of a match and a launch.
 MATCHED = "matched"
@@ -88,6 +101,10 @@ VOLUME_ID_AND_LOCAL_BASE_PATH = 0x1
 ENVIRONMENT_BLOCK = 0xA0000001
 ENVIRONMENT_BLOCK_SIZE = 0x314
 FILE_ATTRIBUTE_DIRECTORY = 0x10
+
+_WORDS = re.compile(r"[^\W_]+")
+_SILENT_H = re.compile(r"(?<![cslnt])h")
+_DOUBLED = re.compile(r"(.)\1+")
 
 VSCODE_EXE = "code.exe"
 VSCODE_DIR = "Microsoft VS Code"
@@ -279,6 +296,17 @@ def name_key(text: str) -> str:
     return "".join(ch for ch in decomposed if ch.isalnum() and not unicodedata.combining(ch))
 
 
+def sound_key(text: str) -> str:
+    """``name_key`` with Portuguese and English spellings of one sound merged.
+
+    ``ph`` -> ``f``; ``k`` and ``q`` -> ``c``; ``y`` -> ``i``; a silent ``h``
+    (not in ``ch``, ``sh``, ``lh``, ``nh``, ``th``) dropped; doubled letters collapsed.
+    """
+    key = name_key(text).replace("ph", "f")
+    key = _SILENT_H.sub("", key.replace("k", "c").replace("q", "c").replace("y", "i"))
+    return _DOUBLED.sub(r"\1", key)
+
+
 def name_bound(key: str) -> int:
     if len(key) >= TWO_EDITS_CHARS:
         return 2
@@ -287,29 +315,44 @@ def name_bound(key: str) -> int:
     return 0
 
 
-def spoken_forms(spoken: str, vocabulary: Vocabulary) -> list[str]:
+def spoken_forms(spoken: str, vocabulary: Vocabulary, matcher: Matcher | None = None) -> list[str]:
     """The spoken name and the personal-vocabulary names it stands for."""
     forms = [spoken]
     folded = vocabulary_fold(spoken)
-    names = Vocabulary(names=vocabulary.names)
-    for entry in names.names:
+    for entry in vocabulary.names:
         if folded and any(vocabulary_fold(text) == folded for text in (entry.text, *entry.variants)):
             forms.append(entry.text)
-    matched = Matcher(names).apply(spoken)
+    matched = (matcher or Matcher(Vocabulary(names=vocabulary.names))).apply(spoken)
     if matched != spoken:
         forms.append(matched)
     return list(dict.fromkeys(forms))
 
 
+def spoken_words(spoken: str, filler: Collection[str] = ()) -> list[tuple[str, bool]]:
+    """The words of ``spoken`` (the first ``MAX_SPOKEN_WORDS``), each with whether it is filler.
+
+    A word is filler when it sounds like one of ``filler`` (same ``sound_key``).
+    """
+    sounds = {sound_key(word) for word in filler} - {""}
+    words = [word for word in _WORDS.findall(spoken) if name_key(word)]
+    return [(word, sound_key(word) in sounds) for word in words[:MAX_SPOKEN_WORDS]]
+
+
+def name_spans(words: Sequence[tuple[str, bool]]) -> list[tuple[int, int]]:
+    """Spans (start, end) of 1 to ``MAX_SPAN_WORDS`` contiguous words that start and end on a word
+    that is not filler."""
+    return [(start, end) for start in range(len(words)) if not words[start][1]
+            for end in range(start + 1, min(len(words), start + MAX_SPAN_WORDS) + 1) if not words[end - 1][1]]
+
+
 @dataclass(frozen=True)
 class Candidate:
-    """Shortcuts sharing one name key, and how far the spoken name is from it."""
+    """Shortcuts sharing one name key, and how far the spoken words are from it."""
 
     key: str
     name: str = field(repr=False)
     shortcuts: tuple[Shortcut, ...] = field(repr=False)
     distance: int = 0
-    conflict: bool = False  # same name, different targets
 
 
 @dataclass(frozen=True)
@@ -345,47 +388,103 @@ def _conflict(shortcuts: Sequence[Shortcut], reader: Callable[[Path], LinkTarget
     return len({target.identity for target in targets}) > 1
 
 
-def _options(ranked: Sequence[Candidate], forms: Sequence[str]) -> tuple[str, ...]:
-    """Up to ``MAX_OPTIONS`` closest names: inside the bound, then names that contain the
-    spoken name (or the reverse, "deck" for nimbus-deck), then by edit distance."""
-    def rank(candidate: Candidate) -> tuple[int, int, str]:
+def _options(ranked: Sequence[Candidate], parts: Sequence[str]) -> tuple[str, ...]:
+    """Up to ``MAX_OPTIONS`` closest names: inside the bound, then names that contain a spoken
+    span (or the reverse, "deck" for nimbus-deck), then names a few edits outside their bound."""
+    def group(candidate: Candidate) -> int:
         if candidate.distance <= name_bound(candidate.key):
-            group = 0
-        elif any(len(form) >= MIN_PART_CHARS and form in candidate.key
-                 or len(candidate.key) >= MIN_PART_CHARS and candidate.key in form for form in forms):
-            group = 1
-        else:
-            group = 2
-        return (group, candidate.distance, candidate.name.casefold())
-    return tuple(candidate.name for candidate in sorted(ranked, key=rank)[:MAX_OPTIONS])
+            return 0
+        if any(len(part) >= MIN_PART_CHARS and part in candidate.key
+               or len(candidate.key) >= MIN_PART_CHARS and candidate.key in part for part in parts):
+            return 1
+        return 2 if candidate.distance <= name_bound(candidate.key) + OPTION_EDITS else 3
+    ranks = sorted((group(candidate), candidate.distance, candidate.name.casefold(), candidate.name)
+                   for candidate in ranked)
+    return tuple(name for rank, _, _, name in ranks if rank < 3)[:MAX_OPTIONS]
+
+
+def _contains(outer: tuple[int, int], inner: tuple[int, int]) -> bool:
+    return outer != inner and outer[0] <= inner[0] and inner[1] <= outer[1]
+
+
+def _overlaps(a: tuple[int, int], b: tuple[int, int]) -> bool:
+    return a[0] < b[1] and b[0] < a[1]
 
 
 def match(spoken: str, shortcuts: Sequence[Shortcut], vocabulary: Vocabulary = Vocabulary(), *,
-          reader: Callable[[Path], LinkTarget | None] = read_link) -> Match:
-    """The one shortcut the spoken name clearly means, or the closest names."""
+          reader: Callable[[Path], LinkTarget | None] = read_link, filler: Collection[str] = ()) -> Match:
+    """The one shortcut the spoken words clearly name, or the closest names.
+
+    Every span of ``name_spans`` (and each personal-vocabulary name it stands
+    for) is compared with every shortcut name by ``name_key`` and by
+    ``sound_key``; a span within the name's bound is a hit. A hit inside a
+    longer hit of another name drops ("alfa public" is alfa-public, not alfa).
+    Exactly one name must remain, and it must be clear: two names hit in one
+    utterance are ambiguous, and so is a close (not exact) hit with another
+    name less than ``FUZZY_LEAD`` edits behind on the same words, or a hit
+    followed by a word that begins the rest of a longer sibling ("alfa pub").
+    Filler never starts or ends a span, so filler alone matches nothing.
+    """
     groups = _groups(shortcuts)
     if not groups:
         return Match(NO_SHORTCUTS)
-    forms = [key for key in (name_key(form) for form in spoken_forms(spoken, vocabulary)) if key]
-    if not forms:
+    words = spoken_words(spoken, filler)
+    spans = name_spans(words)
+    if not spans:
         return Match(NO_MATCH)
-    ranked: list[Candidate] = []
-    for key, members in groups.items():
-        cap = max(len(key), max(len(form) for form in forms))
-        found = min(distance(form, key, cap) for form in forms)
-        ranked.append(Candidate(key, members[0].name, tuple(members), found))
-    ranked.sort(key=lambda candidate: (candidate.distance, candidate.name.casefold()))
-    options = _options(ranked, forms)
-    best = ranked[0]
-    runner = ranked[1] if len(ranked) > 1 else None
-    if best.distance > name_bound(best.key):
-        return Match(NO_MATCH, options=options, distance=best.distance, candidates=len(ranked))
-    lead = FUZZY_LEAD if best.distance else 1
-    if runner is not None and runner.distance - best.distance < lead:
-        return Match(AMBIGUOUS, options=options, distance=best.distance, candidates=len(ranked))
+    names_only = Vocabulary(names=vocabulary.names)
+    matcher = Matcher(names_only)
+    span_keys: dict[tuple[int, int], list[tuple[str, str]]] = {}
+    for span in spans:
+        text = " ".join(word for word, _ in words[span[0]:span[1]])
+        forms = (form for form in spoken_forms(text, names_only, matcher) if name_key(form))
+        span_keys[span] = list(dict.fromkeys((name_key(form), sound_key(form)) for form in forms))
+    table: dict[str, dict[tuple[int, int], int]] = {}
+    for key in groups:
+        cap, sound = name_bound(key) + OPTION_EDITS, sound_key(key)
+        table[key] = {span: min(min(distance(form, key, cap), distance(heard, sound, cap)) for form, heard in forms)
+                      for span, forms in span_keys.items()}
+    ranked = sorted((Candidate(key, members[0].name, tuple(members), min(table[key].values()))
+                     for key, members in groups.items()),
+                    key=lambda candidate: (candidate.distance, candidate.name.casefold()))
+    by_key = {candidate.key: candidate for candidate in ranked}
+    parts = [key for forms in span_keys.values() for key, _ in forms]
+    hits = [(key, span, found) for key in groups for span, found in table[key].items() if found <= name_bound(key)]
+    if not hits:
+        return Match(NO_MATCH, options=_options(ranked, parts), distance=ranked[0].distance, candidates=len(ranked))
+    kept = [hit for hit in hits if not any(other[0] != hit[0] and _contains(other[1], hit[1]) for other in hits)]
+    # The closest remaining hit, the longest when several are as close.
+    found, _, start, end, best_key = min((found, start - end, start, end, key) for key, (start, end), found in kept)
+    best, span = by_key[best_key], (start, end)
+    others = sorted({key for key, _, _ in kept if key != best.key}, key=lambda key: by_key[key].name.casefold())
+    if any(key != best.key and not _overlaps(other, span) for key, other, _ in kept):
+        # Another name said elsewhere in the utterance.
+        options = (best.name, *(by_key[key].name for key in others))[:MAX_OPTIONS]
+        return Match(AMBIGUOUS, options=options, distance=found, candidates=len(ranked))
+    # Names whose hits all lie inside this hit ("alfa" in "alfa public") are not its rivals, unless
+    # the hit is a close spelling that looks like the longer name cut short ("alfa publ").
+    covered = {key for key, _, _ in hits
+               if all(_contains(span, other) for hit_key, other, _ in hits if hit_key == key)}
+    if found and any(best.key.startswith(key) for key in covered):
+        heard = [form for form, _ in span_keys[span] if len(form) < len(best.key)]
+        if any(distance(form, best.key[:len(form)], found) < found for form in heard):
+            options = (*(by_key[key].name for key in sorted(covered, key=len)), best.name)[:MAX_OPTIONS]
+            return Match(AMBIGUOUS, options=options, distance=found, candidates=len(ranked))
+    lead = FUZZY_LEAD if found else 1
+    for key in groups:
+        if key != best.key and key not in covered and any(
+                value - found < lead for other, value in table[key].items() if _overlaps(other, span)):
+            return Match(AMBIGUOUS, options=_options(ranked, parts), distance=found, candidates=len(ranked))
+    if span[1] < len(words) and not words[span[1]][1]:
+        following = name_key(words[span[1]][0])[:SIBLING_PREFIX_CHARS]
+        for key in groups:
+            if len(following) >= 2 and key != best.key and key.startswith(best.key) \
+                    and key[len(best.key):].startswith(following):
+                return Match(AMBIGUOUS, options=(best.name, by_key[key].name), distance=found,
+                             candidates=len(ranked))
     if _conflict(best.shortcuts, reader):
-        return Match(AMBIGUOUS, options=(best.name,), distance=best.distance, candidates=len(ranked))
-    return Match(MATCHED, best.shortcuts[0], distance=best.distance, candidates=len(ranked))
+        return Match(AMBIGUOUS, options=(best.name,), distance=found, candidates=len(ranked))
+    return Match(MATCHED, best.shortcuts[0], distance=found, candidates=len(ranked))
 
 
 # ---------------------------------------------------------------- launching

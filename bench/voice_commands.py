@@ -52,8 +52,8 @@ from bench.dataset import PLACEHOLDER, Dataset, DatasetError, Take, load_dataset
 from bench.metrics import percentile_nearest_rank, write_summary
 from bench.settings import REPO_ROOT, RESULTS_DIR, Settings, SettingsError, load_settings
 from quill import shortcuts
-from quill.voice import (OPEN_PROJECT, UNRECOGNIZED, OpenProject, Parser, VoiceCommands, VoiceHints, VoiceOutcome,
-                         normalize)
+from quill.voice import (FILLER, UNRECOGNIZED, OpenProject, Parser, VoiceCommands, VoiceHints, VoiceOutcome,
+                         name_words, normalize)
 from quill.vocabulary import Vocabulary
 from quill.whisper import SessionHints
 
@@ -132,9 +132,9 @@ def recording_names(settings: Settings, rows: Sequence[VoiceRow]) -> dict[str, s
 
 
 def spoken_name(text: str) -> str | None:
-    """The project name the open-project command would read from ``text``."""
-    found = OPEN_PROJECT.match(normalize(text))
-    return found.group("name") if found else None
+    """The words of ``text`` where the open-project command looks for a name (no filler); None when there are none."""
+    words = name_words(text)
+    return " ".join(words) if words else None
 
 
 @dataclass(frozen=True)
@@ -156,7 +156,8 @@ class FixtureCheck:
 
 
 def check_fixture(rows: Sequence[VoiceRow], mapping: dict[str, str], listing: shortcuts.Listing) -> FixtureCheck:
-    """Every expected name must be a listed shortcut; no negative may name one."""
+    """Every expected name must be a listed shortcut; no negative may name one (or come close enough to one
+    to make the command ambiguous)."""
     keys = {shortcuts.name_key(shortcut.name) for shortcut in listing.shortcuts}
     wanted = placeholders(rows)
     named = [p for p in wanted if p in mapping]
@@ -167,9 +168,8 @@ def check_fixture(rows: Sequence[VoiceRow], mapping: dict[str, str], listing: sh
     clear = 0
     for row in negatives:
         name = spoken_name(row.text)
-        if name is None:
-            problems.append(row.id)
-        elif shortcuts.name_key(name) in keys:
+        named_shortcut = shortcuts.match(normalize(row.text), listing.shortcuts, filler=FILLER, reader=lambda path: None)
+        if name is None or named_shortcut.reason in (shortcuts.MATCHED, shortcuts.AMBIGUOUS):
             problems.append(row.id)
         else:
             clear += 1

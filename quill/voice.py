@@ -4,17 +4,22 @@ The transcribed text is normalized (case, accents and punctuation removed,
 spaces collapsed) and offered to the commands of a ``Parser``, a registry: a
 command has a ``name``, ``parse(text)`` that returns an ``Intent`` or None,
 and ``run(intent)`` that returns a ``VoiceOutcome``. The first command that
-recognizes the text runs; a new command is added with ``register`` without
-changing the parser. Text that no command recognizes shows "Comando não
-reconhecido" and does nothing.
+recognizes the text runs, and a command with ``catch_all = True`` is offered
+the text after all the others; a new command is added with ``register``
+without changing the parser. Text that no command recognizes shows "Comando
+não reconhecido" and does nothing.
 
-The first command, ``OpenProject`` ("abre VS Code no <projeto>", also
-"abre o VS Code na <projeto>", "abrir VS Code em <projeto>" and common
-transcriptions of "VS Code" such as "vê esse code" or "Visual Studio Code"),
-lists the shortcuts of ``[voice_commands] shortcut_dirs``, matches the spoken
-name with ``quill.shortcuts.match`` and opens the one clear match with
-``quill.shortcuts.launch``. The indicator shows "A abrir <nome>", or the
-closest names, or the reason nothing was opened.
+The first command, ``OpenProject`` ("abre VS Code no <projeto>"), needs no
+verb: the voice trigger is dedicated to commands, and Whisper often mishears
+the verb. The words of ``FILLER`` (the verb and its mishearings, "VS Code"
+and its transcriptions, "projeto/pasta", prepositions, politeness words and
+short fillers) are ignored, so "vscode no <projeto>", "visual studio code na
+pasta <projeto>" or the name alone all work; filler alone is not a command.
+The command lists the shortcuts of ``[voice_commands] shortcut_dirs``,
+searches the words for a shortcut name with ``quill.shortcuts.match`` and
+opens the one clear match with ``quill.shortcuts.launch``. Two names, a name
+too close to another one, or no name open nothing. The indicator shows
+"A abrir <nome>", or the closest names, or the reason nothing was opened.
 
 While the voice trigger is held, the audio is decoded in European Portuguese
 with its own hints (``voice_hints``, built at every press by ``VoiceHints``):
@@ -99,6 +104,7 @@ class VoiceOutcome:
 
 class Command(Protocol):
     name: str
+    # Optional ``catch_all = True``: the command takes any text, so it is tried after the others.
 
     def parse(self, text: str) -> Intent | None:
         """``text`` is ``normalize``d; an ``Intent`` when this command recognizes it."""
@@ -116,7 +122,7 @@ def failure(reason: str, command: str = "", options: Sequence[str] = (), **extra
 
 
 class Parser:
-    """The registry of voice commands, tried in registration order."""
+    """The registry of voice commands, tried in registration order; catch-all commands last."""
 
     def __init__(self, commands: Sequence[Command] = ()) -> None:
         self._commands: list[Command] = []
@@ -136,7 +142,8 @@ class Parser:
         normalized = normalize(text)
         if not normalized:
             return None
-        for command in self._commands:
+        ordered = sorted(self._commands, key=lambda command: bool(getattr(command, "catch_all", False)))
+        for command in ordered:
             intent = command.parse(normalized)
             if intent is not None:
                 return command, intent
@@ -176,31 +183,46 @@ class VoiceCommands:
 # ---------------------------------------------------------------- open-project
 
 
-# Spoken forms of "VS Code" after ``normalize``: "vs code", "vscode", "v s code",
-# "ve esse code", "vi es code", "bs code", "visual studio code", "vs cod", ...
-_V = r"(?:v|ve|vi|b)"
-_S = r"(?:s|es|esse|ess)"
-_CODE = r"(?:code|codes|cod|codi|coude|coda|cold)"
-VSCODE = rf"(?:{_V}\s?{_S}\s?{_CODE}|visual\s+studio(?:\s+{_CODE})?)"
-OPEN_PROJECT = re.compile(
-    r"^(?:(?:por favor|podes|pode|quero|consegues)\s+)*"
-    r"(?:abre|abrir|abra|abri|abre me)\s+"
-    rf"(?:o\s+|a\s+)?{VSCODE}\s+"
-    r"(?:no|na|nos|nas|num|numa|em|com|para|pra|ao|do|da)\s+"
-    r"(?:(?:o|a)\s+)?(?:(?:projeto|repositorio|repo|pasta)\s+)?"
-    r"(?P<name>.+?)"
-    r"(?:\s+por favor|\s+obrigado|\s+obrigada)?$"
-)
+# Words of the voice trigger that never name a project (after ``normalize``; a word that
+# sounds the same, ``shortcuts.sound_key``, is filler too): the verb and what Whisper hears
+# for it, "VS Code" and its transcriptions, "projeto/pasta/repositório", prepositions and
+# articles, politeness words and short fillers, in Portuguese and in the English Whisper
+# sometimes writes instead.
+OPEN_VERBS = ("abre", "abres", "abrir", "abra", "abri", "abro", "abrem", "abreme", "aps", "abs", "ab", "ap",
+              "open", "opens", "vou", "quero", "queria", "podes", "pode", "podia", "consegues", "preciso", "me")
+VSCODE_WORDS = ("vs", "v", "b", "s", "ve", "vi", "ves", "ver", "bs", "es", "esse", "ess", "vscode", "vscodes",
+                "vscod", "bscode", "code", "codes", "cod", "codi", "coude", "coda", "cold", "coding", "visual",
+                "vizual", "studio", "estudio", "studios")
+PLACE_WORDS = ("projeto", "projetos", "projecto", "project", "projects", "repositorio", "repositorios", "repo",
+               "repository", "pasta", "pastas", "folder")
+LINK_WORDS = ("no", "na", "nos", "nas", "num", "numa", "em", "com", "para", "pra", "ao", "aos", "do", "da", "dos",
+              "das", "de", "o", "a", "os", "as", "um", "uma", "e", "nao", "not", "in", "on", "the", "to", "at",
+              "of", "i")
+COURTESY_WORDS = ("por", "favor", "se", "faz", "faxavor", "obrigado", "obrigada", "please", "eu", "seu", "ah",
+                  "eh", "oh", "hum", "hm", "uh", "ok", "okay", "entao", "pronto", "agora", "la")
+FILLER = frozenset(OPEN_VERBS + VSCODE_WORDS + PLACE_WORDS + LINK_WORDS + COURTESY_WORDS)
+
+
+def name_words(text: str) -> list[str]:
+    """The words of ``text`` (``normalize``d) that are not filler: where a project name can be."""
+    return [word for word, filler in shortcuts.spoken_words(normalize(text), FILLER) if not filler]
 
 
 class OpenProject:
-    """"abre VS Code no <projeto>": open the project-hub shortcut the spoken name clearly means.
+    """Open the project-hub shortcut the spoken name clearly means.
+
+    The voice trigger is dedicated to voice commands, so no verb is needed:
+    any utterance with a word that is not filler (``FILLER``) is searched for
+    a shortcut name (``quill.shortcuts.match`` with the filler words). An
+    utterance of filler only is not this command. It is the catch-all
+    command: the parser offers it the text after every other command.
 
     ``folders`` are the configured shortcut folders; ``vocabulary()`` gives the
     current personal vocabulary; ``launcher`` opens for real (a fake in tests).
     """
 
     name = "open_project"
+    catch_all = True
 
     def __init__(self, folders: Sequence[Path], vocabulary: Callable[[], Vocabulary], launcher: object, *,
                  lister: Callable[[Sequence[Path]], shortcuts.Listing] = shortcuts.list_shortcuts,
@@ -216,17 +238,16 @@ class OpenProject:
         self.clock = clock
 
     def parse(self, text: str) -> Intent | None:
-        found = OPEN_PROJECT.match(text)
-        if found is None:
+        if not name_words(text):
             return None
-        return Intent(self.name, {"project": found.group("name")})
+        return Intent(self.name, {"project": text})
 
     def run(self, intent: Intent) -> VoiceOutcome:
         started = self.clock()
         listing = self.lister(self.folders)
         counts = {"folders": len(self.folders), "folders_failed": listing.folders_failed,
                   "shortcuts": len(listing.shortcuts)}
-        found = self.matcher(intent.args["project"], listing.shortcuts, self.vocabulary())
+        found = self.matcher(intent.args["project"], listing.shortcuts, self.vocabulary(), filler=FILLER)
         matched = self.clock()
         counts["candidates"] = found.candidates
         if found.distance is not None:

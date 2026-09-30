@@ -109,11 +109,12 @@ class OpenProjectParseTest(unittest.TestCase):
     def setUp(self) -> None:
         self.command = OpenProject([], Vocabulary, FakeLauncher())
 
-    def project(self, spoken: str) -> str | None:
+    def project(self, spoken: str) -> list[str] | None:
+        """The words the command searches for a name, or None when the text is not this command."""
         intent = self.command.parse(normalize(spoken))
-        return None if intent is None else intent.args["project"]
+        return None if intent is None else voice.name_words(intent.args["project"])
 
-    def test_spoken_forms(self) -> None:
+    def test_the_verb_and_the_vscode_words_are_not_needed(self) -> None:
         # With the article "o", these forms use "na", "em" or "num": the committed files avoid repeating
         # the private recording script word for word (bench.privacy_guard).
         for spoken in ("abre VS Code no Nimbus Deck", "Abre o VS Code na nimbus deck.", "abrir VS Code em Nimbus-Deck",
@@ -121,15 +122,33 @@ class OpenProjectParseTest(unittest.TestCase):
                        "nimbus deck", "Abre Visual Studio Code no nimbus deck", "abre o visual studio na nimbus deck",
                        "abre o bs code num projeto nimbus deck", "abre VS Cod no nimbus deck, por favor",
                        "podes abrir o VS Code em repositório nimbus deck", "ABRE VS CODE NO NIMBUS DECK!",
-                       "abre o vi es code na nimbus deck", "abre VS Code no o nimbus deck"):
+                       "abre o vi es code na nimbus deck", "abre VS Code no o nimbus deck",
+                       # Without the verb, and with what Whisper hears instead of it.
+                       "vscode no nimbus deck", "a vscode no nimbus deck", "aps code no nimbus deck",
+                       "abs coding nimbus deck", "visual studio code na pasta nimbus deck", "nimbus deck",
+                       "Ah, VS Code no projecto nimbus deck.", "eu o seu studio na nimbus deck",
+                       "studio code em nimbus deck se faz favor", "vscode não nimbus deck",
+                       "open the studio code on project nimbus deck please", "ok, abre-me nimbus deck, obrigado"):
             with self.subTest(spoken=spoken):
-                self.assertEqual(self.project(spoken), "nimbus deck")
+                self.assertEqual(self.project(spoken), ["nimbus", "deck"])
 
-    def test_other_text_is_not_this_command(self) -> None:
-        for spoken in ("abre VS Code", "abre VS Code no", "abre o Chrome na nimbus deck", "fecha VS Code no orla",
-                       "VS Code no orla", "hoje abre VS Code no orla às nove e escrevo", "abre a pasta na orla"):
+    def test_any_other_word_reaches_the_command(self) -> None:
+        # The voice trigger is dedicated: other words are searched too (and match nothing when unrelated).
+        for spoken, words in (("fecha VS Code no orla", ["fecha", "orla"]), ("abre o Chrome na orla", ["chrome", "orla"]),
+                              ("hoje está calor", ["hoje", "esta", "calor"]), ("projeto lontra", ["lontra"])):
+            with self.subTest(spoken=spoken):
+                self.assertEqual(self.project(spoken), words)
+
+    def test_filler_only_or_empty_text_is_not_this_command(self) -> None:
+        for spoken in ("", "  ,. ", "abre VS Code", "abre VS Code no", "a vscode no", "Ah.", "eu o seu",
+                       "abre o Visual Studio Code na pasta, por favor", "aps code", "abs coding", "studio",
+                       "vs codde", "abre o projeto"):
             with self.subTest(spoken=spoken):
                 self.assertIsNone(self.project(spoken))
+
+    def test_filler_words_are_known_by_sound(self) -> None:
+        self.assertEqual(voice.name_words("Abbre o VS Codde na orla"), ["orla"])
+        self.assertEqual(voice.name_words("Nimbus-Deck"), ["nimbus", "deck"])
 
 
 class OpenProjectRunTest(unittest.TestCase):
@@ -245,6 +264,84 @@ class OpenProjectRunTest(unittest.TestCase):
         outcome, _ = self.run_voice("abre VS Code no orla")
         self.assertNotIn("orla", repr(outcome))
         self.assertNotIn("orla", repr(Intent("open_project", {"project": "orla"})))
+
+    def assert_opens(self, spoken: str, name: str) -> None:
+        self.launcher.opened.clear()
+        outcome, _ = self.run_voice(spoken)
+        self.assertEqual((outcome.ok, outcome.reason, outcome.text), (True, SC.OPENED, f"A abrir {name}"), spoken)
+        self.assertEqual(self.launcher.opened, [self.main / f"{name}.lnk"], spoken)
+
+    def assert_opens_nothing(self, spoken: str, reason: str) -> VoiceOutcome:
+        self.launcher.opened.clear()
+        outcome, _ = self.run_voice(spoken)
+        self.assertEqual((outcome.ok, outcome.reason, outcome.state), (False, reason, VOICE_NONE), spoken)
+        self.assertEqual((self.launcher.opened, self.launcher.started), ([], []), spoken)
+        return outcome
+
+    def test_the_name_is_found_without_the_verb(self) -> None:
+        for spoken, name in (("vscode no orla", "orla"), ("a vscode no velinor app", "velinor-app"),
+                             ("Aps code no tarvo kit.", "tarvo-kit"), ("abs coding orla public", "orla-public"),
+                             ("visual studio code na pasta nimbus deck", "nimbus-deck"), ("orla", "orla"),
+                             ("ah, studio code na orla", "orla"), ("eu o seu studio no velinor app", "velinor-app"),
+                             ("I think open the studio code on orla public please", "orla-public"),
+                             ("vscode não nimbus deck público", "nimbus-deck-public")):
+            with self.subTest(spoken=spoken):
+                self.assert_opens(spoken, name)
+
+    def test_a_name_said_in_other_words_and_spellings(self) -> None:
+        write_link(self.main, "gleamport", CODE)
+        write_link(self.main, "phyllo-kit", CODE)
+        for spoken, name in (("vscode no gleam port", "gleamport"),  # a joined name said as two words
+                             ("vscode no tarvo kit", "tarvo-kit"), ("vscode no tarvokit", "tarvo-kit"),
+                             ("vscode no filo kit", "phyllo-kit"), ("vscode no nimbuss dek", "nimbus-deck"),
+                             ("vscode no tarbo quit", "tarvo-kit")):  # a declared spoken variant
+            with self.subTest(spoken=spoken):
+                self.assert_opens(spoken, name)
+
+    def test_siblings_open_exactly_what_is_said(self) -> None:
+        self.assert_opens("vscode no orla", "orla")
+        self.assert_opens("vscode no orla public", "orla-public")
+        self.assert_opens("a vscode nimbus deck", "nimbus-deck")
+        self.assert_opens("a vscode nimbus deck public", "nimbus-deck-public")
+        # A word that begins the longer sibling's rest: neither opens.
+        outcome = self.assert_opens_nothing("vscode no orla pub", SC.AMBIGUOUS)
+        self.assertEqual(outcome.text, "Não sei qual abrir. Parecidos: orla, orla-public")
+
+    def test_two_names_in_one_utterance_open_nothing(self) -> None:
+        for spoken in ("vscode no orla e no tarvo kit", "velinor app ou nimbus deck", "orla tarvo kit"):
+            with self.subTest(spoken=spoken):
+                outcome = self.assert_opens_nothing(spoken, SC.AMBIGUOUS)
+                self.assertTrue(outcome.text.startswith("Não sei qual abrir. Parecidos: "), outcome.text)
+
+    def test_no_clear_name_opens_nothing(self) -> None:
+        for spoken in ("Abre VS Code no projeto lontra.", "Abrir VS Code no girassol.", "girassol",
+                       "hoje está calor na rua e vou almoçar", "vscode no quasar tool"):
+            with self.subTest(spoken=spoken):
+                outcome = self.assert_opens_nothing(spoken, SC.NO_MATCH)
+                self.assertTrue(outcome.text.startswith("Nenhum projeto com esse nome"), outcome.text)
+        for spoken in ("", "abre o VS Code", "a vscode no", "Ah.", "visual studio code na pasta, por favor"):
+            with self.subTest(spoken=spoken):
+                outcome = self.assert_opens_nothing(spoken, voice.UNRECOGNIZED)
+                self.assertEqual(outcome.text, "Comando não reconhecido")
+
+    def test_filler_never_opens_a_shortcut_named_like_filler(self) -> None:
+        for name in ("code", "studio", "vscode", "codes"):
+            write_link(self.main, name, CODE)
+        for spoken in ("", "abre o VS Code", "code", "studio", "visual studio", "vs codde", "abs coding",
+                       "a vscode no projeto", "abre o studio code, por favor"):
+            with self.subTest(spoken=spoken):
+                self.assert_opens_nothing(spoken, voice.UNRECOGNIZED)
+        # Its other names still open.
+        self.assert_opens("vscode no orla", "orla")
+
+    def test_the_catch_all_command_comes_after_other_commands(self) -> None:
+        parser = voice.default_parser(self.folders, lambda: self.vocabulary, self.launcher)
+        dummy = Dummy()
+        parser.register(dummy)
+        command, _ = parser.parse("mostra o relógio orla")
+        self.assertIs(command, dummy)
+        command, intent = parser.parse("orla")
+        self.assertEqual((command.name, intent.command), ("open_project", "open_project"))
 
 
 def word_tokens(text: str) -> int:

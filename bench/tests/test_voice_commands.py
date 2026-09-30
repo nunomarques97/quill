@@ -196,6 +196,26 @@ class ScriptTest(Case):
         self.assertEqual(V.check_fixture(rows, NAMES, with_negative).problems, ("vc-15",))
         partial = {key: value for key, value in NAMES.items() if key != "<projeto-13>"}
         self.assertFalse(V.check_fixture(rows, partial, listing).ok)
+        # A negative that sounds like a shortcut, or comes close enough to make it ambiguous, is a problem too.
+        close = shortcuts.list_shortcuts([Hub(self.root / "close", [*HUB, "girasol"]).folder])
+        self.assertEqual(V.check_fixture(rows, NAMES, close).problems, ("vc-15",))
+
+    def test_spoken_name_is_the_words_that_are_not_filler(self):
+        self.assertEqual(V.spoken_name("Abre VS Code no projeto lontra."), "lontra")
+        self.assertEqual(V.spoken_name("a vscode no Kite-Radar"), "kite radar")
+        self.assertEqual(V.spoken_name("aps code no alfa public, por favor"), "alfa public")
+        for text in ("", "Abre o VS Code.", "abs coding na pasta"):
+            self.assertIsNone(V.spoken_name(text))
+
+    def test_the_verb_is_not_needed_in_the_measured_commands(self):
+        commands = V.MeasuredCommands(self.hub.folders(), Vocabulary())
+        for spoken, name in (("vscode no alfa", "alfa"), ("a vscode no alfa public", "alfa-public"),
+                             ("abs coding ledger legal", "ledger-legal"), ("kite radar", "kite-radar")):
+            with self.subTest(spoken=spoken):
+                self.assertEqual(commands.run(spoken)[1], name)
+        for spoken in ("vscode no girassol", "vscode no ledger leg", "alfa e beacon", "a vscode no"):
+            with self.subTest(spoken=spoken):
+                self.assertIsNone(commands.run(spoken)[1])
 
 
 class ParseTest(unittest.TestCase):
@@ -429,7 +449,7 @@ class MeasureTest(Case):
 
     def test_wrong_ambiguous_and_unrecognized_are_counted(self):
         self.record()
-        texts = {"vc-01": "Fecha tudo agora.",  # unrecognized
+        texts = {"vc-01": "Abre o VS Code, por favor.",  # filler only: unrecognized
                  "vc-02": "Abre VS Code no alfa.",  # the sibling: a wrong shortcut
                  "vc-03": "Abre VS Code no willow."}  # a negative that opens a shortcut: wrong
         code, lines, _, summary_path = self.run_main(texts)

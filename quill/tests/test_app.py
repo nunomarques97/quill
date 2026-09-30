@@ -695,10 +695,13 @@ class VoiceCommandTest(AppCase):
 
     def test_unrecognized_speech_does_nothing(self):
         launcher = FakeLauncher()
-        quill, _ = self.voice_app(launcher)
-        self.assertEqual(self.speak(quill, (5, 6)).reason, "unrecognized")
+        quill, hub = self.voice_app(launcher)
+        self.assertEqual(self.speak(quill, (1, 2, 3, 4)).reason, "unrecognized")  # filler only
         self.assertEqual(self.indicator.last, ("show", VOICE_NONE, "Comando não reconhecido"))
         self.assertEqual((launcher.opened, self.api.received_text()), ([], ""))
+        # The name alone, without the verb, is a command.
+        self.assertEqual(self.speak(quill, (5, 6)).reason, "opened")
+        self.assertEqual((launcher.opened, self.api.received_text()), ([hub / "orla-public.lnk"], ""))
 
     def test_a_reloaded_vocabulary_is_used_by_the_next_command(self):
         launcher = FakeLauncher()

@@ -235,8 +235,10 @@ class MatchTest(unittest.TestCase):
                 self.assertEqual((found.reason, found.shortcut.name, found.distance), (SC.MATCHED, expected, 0))
 
     def test_a_close_spelling_inside_the_bound_opens_when_clearly_ahead(self) -> None:
-        found = self.matched("velinor ap")
+        found = self.matched("velinor apo")
         self.assertEqual((found.reason, found.shortcut.name, found.distance), (SC.MATCHED, "velinor-app", 1))
+        found = self.matched("velinor ap")  # the same sound: exact
+        self.assertEqual((found.reason, found.shortcut.name, found.distance), (SC.MATCHED, "velinor-app", 0))
         found = self.matched("tarvokits")
         self.assertEqual(found.shortcut.name, "tarvo-kit")
 
@@ -307,6 +309,90 @@ class MatchTest(unittest.TestCase):
         found = self.matched("nimbus deck")
         self.assertNotIn("nimbus", repr(found))
         self.assertNotIn("nimbus", repr(found.shortcut))
+
+
+# Invented filler words (the voice command passes quill.voice.FILLER).
+FILL = ("abre", "vs", "code", "studio", "no", "na", "de", "o", "a", "e", "projeto")
+
+
+class SpanMatchTest(unittest.TestCase):
+    def matched(self, spoken: str, items=SIBLINGS, vocabulary=Vocabulary(), filler=FILL) -> SC.Match:
+        return match(spoken, items, vocabulary, reader=lambda path: SAME, filler=filler)
+
+    def opens(self, spoken: str, **options: object) -> str | None:
+        found = self.matched(spoken, **options)
+        return found.shortcut.name if found.ok else None
+
+    def test_sound_key_merges_spellings_of_one_sound(self) -> None:
+        for a, b in (("Phyllo-Kit", "filo cit"), ("qasar", "kasar"), ("Yarrow", "iarow"), ("nimbuss", "nimbus"),
+                     ("Harpa", "arpa"), ("tarvo kit", "tarvokitt")):
+            with self.subTest(a=a):
+                self.assertEqual(SC.sound_key(a), SC.sound_key(b))
+        # The digraphs keep their h.
+        for text in ("chave", "shell", "malha", "vinho", "north"):
+            self.assertIn("h", SC.sound_key(text))
+
+    def test_the_name_is_found_anywhere_in_the_utterance(self) -> None:
+        self.assertEqual(self.opens("hoje quero a orla public amanhã"), "orla-public")
+        self.assertEqual(self.opens("released gear orla"), "orla")
+        self.assertEqual(self.opens("abre o vs code no tarvo kit"), "tarvo-kit")
+        self.assertEqual(self.opens("tárvo-kit"), "tarvo-kit")
+
+    def test_the_longest_name_said_wins_and_a_partial_span_never_opens_the_longer_sibling(self) -> None:
+        self.assertEqual(self.opens("nimbus deck"), "nimbus-deck")
+        self.assertEqual(self.opens("nimbus deck public"), "nimbus-deck-public")
+        self.assertEqual(self.opens("a orla publico"), "orla-public")  # a close full name beats an exact part
+        for spoken in ("orla pub", "orla pu", "nimbus deck publ"):
+            with self.subTest(spoken=spoken):
+                found = self.matched(spoken)
+                self.assertEqual(found.reason, SC.AMBIGUOUS)
+                self.assertIsNone(found.shortcut)
+        self.assertEqual(self.matched("orla pub").options, ("orla", "orla-public"))
+        # An unrelated word after the name is not the sibling.
+        self.assertEqual(self.opens("orla agora"), "orla")
+
+    def test_two_names_in_one_utterance_are_ambiguous(self) -> None:
+        for spoken in ("orla velinor app", "abre a orla e o tarvo kit", "nimbus deck orla public"):
+            with self.subTest(spoken=spoken):
+                found = self.matched(spoken)
+                self.assertEqual((found.reason, found.shortcut), (SC.AMBIGUOUS, None))
+        self.assertEqual(set(self.matched("orla velinor app").options), {"orla", "velinor-app"})
+        # The same name said twice is one name.
+        self.assertEqual(self.opens("orla, orla"), "orla")
+
+    def test_a_close_rival_on_the_same_words_is_ambiguous(self) -> None:
+        items = [shortcut("velinor-app"), shortcut("velinor-abx")]
+        found = match("velinor apz", items, reader=lambda path: SAME)  # one edit and two edits away
+        self.assertEqual(found.reason, SC.AMBIGUOUS)
+        found = match("velinor app", items, reader=lambda path: SAME)  # exact: clearly ahead
+        self.assertEqual(found.shortcut.name, "velinor-app")
+
+    def test_vocabulary_names_and_variants_inside_the_utterance(self) -> None:
+        vocabulary = Vocabulary(names=(Entry("Tarvo-Kit", "name", ("tarbo de quite",)),))
+        self.assertEqual(self.opens("abre o vs code no tarbo de quite", vocabulary=vocabulary), "tarvo-kit")
+        self.assertIsNone(self.opens("abre o vs code no tarbo de quite"))
+
+    def test_filler_alone_never_matches_a_name_like_filler(self) -> None:
+        items = [shortcut("code"), shortcut("studio"), shortcut("vs-code"), shortcut("orla")]
+        for spoken in ("", "vs code", "code", "studio", "abre o vs studio code", "codde", "a studioo", "no no"):
+            with self.subTest(spoken=spoken):
+                found = match(spoken, items, reader=lambda path: SAME, filler=FILL + ("codde",))
+                self.assertIsNone(found.shortcut)
+        self.assertEqual(match("vs code orla", items, reader=lambda path: SAME, filler=FILL).shortcut.name, "orla")
+        # Filler is known by sound: a doubled letter is still filler.
+        self.assertEqual(SC.spoken_words("codde no orla", FILL), [("codde", True), ("no", True), ("orla", False)])
+
+    def test_unrelated_words_open_nothing_and_list_only_near_names(self) -> None:
+        for spoken in ("projeto lontra", "girassol", "hoje está calor na rua"):
+            with self.subTest(spoken=spoken):
+                self.assertEqual(self.matched(spoken).reason, SC.NO_MATCH)
+        self.assertEqual(self.matched("zzzzzzzz").options, ())
+
+    def test_the_words_compared_are_bounded(self) -> None:
+        spoken = " ".join(["zeta"] * SC.MAX_SPOKEN_WORDS + ["orla"])
+        self.assertEqual(self.matched(spoken).reason, SC.NO_MATCH)
+        spans = SC.name_spans(SC.spoken_words("a b c d e f", ()))
+        self.assertTrue(all(1 <= end - start <= SC.MAX_SPAN_WORDS for start, end in spans))
 
 
 # ---------------------------------------------------------------- launching

@@ -208,8 +208,28 @@ model = "large-v3"
 #   [project_context.folders]
 #   "nome-do-projeto" = 'D:\pasta\do\projeto'
 # Here it stays empty.
+# From a project folder that is a Git work tree, Quill builds a context pack
+# (quill.context_pack), locally and read-only: a short summary of what the
+# project is (from its CLAUDE.md, else its README.md) and a list of its own
+# terms (headings and inline code of README, CLAUDE.md and docs/, module,
+# file and class names, and words the project repeats). Only files Git
+# tracks or would track are read: nothing the project's .gitignore excludes,
+# and never .env files, keys, certificates, credential, token or secret
+# files, audio or video, recordings/, local/ or .git/, nor anything behind a
+# link that leaves the folder. Size and file-count limits apply; nothing
+# leaves the PC and project content is never logged.
+# cache is the folder of the cached packs (one JSON file per project,
+# inside the ignored local/ folder only). A pack is built again when a file
+# it read changes, the file list changes, or it is older than max_age_h
+# hours (1-720). A build that takes longer than build_timeout_s seconds
+# (0.5-30) gives no pack, and the dictation goes on without it. Count the
+# pack of each configured project (counts only) with:
+#   py -3.12 -m quill.context_pack --check
 [project_context]
 folders = {}
+cache = "local/context"
+max_age_h = 24
+build_timeout_s = 5.0
 
 # Personal data. Paths are relative to the repository and must stay inside
 # the ignored local/ folder. style is a folder of writing samples:

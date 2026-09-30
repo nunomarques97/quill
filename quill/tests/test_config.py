@@ -445,6 +445,30 @@ class ProjectContextTest(ConfigCase):
         self.rejected("[project_context]\nfolders = ['C:\\\\Invented']\n", "project_context.folders", "Invented")
         self.rejected("[project_context]\nother = 1\n", "project_context.other")
 
+    def test_context_pack_defaults(self) -> None:
+        settings = load_config(None).project_context
+        self.assertEqual(settings.cache_dir, (config.LOCAL_DIR / "context").resolve())
+        self.assertEqual((settings.max_age_h, settings.build_timeout_s), (24, 5.0))
+
+    def test_context_pack_settings_are_read(self) -> None:
+        settings = self.load("[project_context]\ncache = \"local/packs/v1\"\nmax_age_h = 720\n"
+                             "build_timeout_s = 0.5\n").project_context
+        self.assertEqual(settings.cache_dir, (config.LOCAL_DIR / "packs" / "v1").resolve())
+        self.assertEqual((settings.max_age_h, settings.build_timeout_s), (720, 0.5))
+
+    def test_the_context_pack_cache_stays_inside_local(self) -> None:
+        field = "project_context.cache"
+        for bad in ("bench/results/packs", "local", "local/../docs", "C:\\\\Invented\\\\packs", "/invented/packs",
+                    "", "  "):
+            self.rejected(f"[project_context]\ncache = \"{bad}\"\n", field, "Invented", "invented")
+        self.rejected("[project_context]\ncache = 3\n", field)
+
+    def test_context_pack_limits(self) -> None:
+        for bad in ("0", "721", "1.5", "true", "\"24\""):
+            self.rejected(f"[project_context]\nmax_age_h = {bad}\n", "project_context.max_age_h")
+        for bad in ("0.4", "30.5", "true", "\"5\""):
+            self.rejected(f"[project_context]\nbuild_timeout_s = {bad}\n", "project_context.build_timeout_s")
+
     def test_a_folder_in_the_example_is_refused(self) -> None:
         example = self.folder / "example.toml"
         text = config.EXAMPLE_CONFIG.read_text("utf-8").replace(

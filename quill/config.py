@@ -8,7 +8,7 @@ triggers first, so a local binding always wins over an example one (an older
 local file that binds mouse 5 to ``send_claude`` keeps loading).
 The merged result is validated strictly: unknown field names, unsupported key
 or button names, an input bound twice within the same file, a non-loopback Ollama address or a
-personal-data path outside ``local/``, a voice trigger with a mouse button or
+personal-data path or a context-pack cache outside ``local/``, a voice trigger with a mouse button or
 more than one key, a shortcut folder or a project folder that is not an
 absolute path, or a project folder in the committed example raise
 ``ConfigError``. Error messages
@@ -78,6 +78,9 @@ MAX_PATH_TEXT = 260
 # [project_context] folders: how many projects, and how long a project name may be.
 MAX_PROJECT_FOLDERS = 100
 MAX_PROJECT_NAME = 60
+# [project_context]: how old a cached context pack may get, and how long building one may take.
+PACK_AGE_RANGE = (1, 720)  # hours
+PACK_TIMEOUT_RANGE = (0.5, 30.0)  # seconds
 
 # A schema entry whose value is a table of free names (validated by its own reader).
 NAMES_TABLE = "names"
@@ -97,7 +100,7 @@ SCHEMA: dict[str, object] = {
     "claude_alert": {"enabled": None, "sound": None, "filter": None, "speak_project": None, "speech_volume": None,
                      "speech_rate": None},
     "voice_commands": {"shortcut_dirs": None, "model": None},
-    "project_context": {"folders": NAMES_TABLE},
+    "project_context": {"folders": NAMES_TABLE, "cache": None, "max_age_h": None, "build_timeout_s": None},
     "paths": {"vocabulary": None, "corrections": None, "style": None},
     "profiles": {name: {"processes": None, "classes": None, "titles": None} for name in PROFILE_NAMES},
 }
@@ -183,9 +186,15 @@ class VoiceSettings:
 class ProjectContext:
     """``[project_context]``: ``folders`` maps a project name to its absolute local
     folder (only in the ignored ``local/quill.toml``); ``quill.projects`` reads it
-    before the targets of the ``[voice_commands]`` shortcuts."""
+    before the targets of the ``[voice_commands]`` shortcuts. ``quill.context_pack``
+    caches each project's context pack in ``cache_dir`` (inside ``local/``),
+    builds it again when it is older than ``max_age_h`` hours, and gives up a
+    build after ``build_timeout_s`` seconds."""
 
     folders: tuple[tuple[str, Path], ...] = field(default=(), repr=False)
+    cache_dir: Path = LOCAL_DIR / "context"
+    max_age_h: int = 24
+    build_timeout_s: float = 5.0
 
 
 @dataclass(frozen=True)
@@ -462,7 +471,13 @@ def _project_context(data: dict[str, object]) -> ProjectContext:
         if not path.is_absolute():
             raise ConfigError(f"quill config: {here} must be an absolute folder path")
         folders.append((name.strip(), path))
-    return ProjectContext(tuple(folders))
+    return ProjectContext(
+        tuple(folders),
+        cache_dir=_local_path(_get(data, "project_context.cache"), "project_context.cache"),
+        max_age_h=_integer(_get(data, "project_context.max_age_h"), "project_context.max_age_h", PACK_AGE_RANGE),
+        build_timeout_s=_number(_get(data, "project_context.build_timeout_s"), "project_context.build_timeout_s",
+                                PACK_TIMEOUT_RANGE),
+    )
 
 
 def _min_hold(value: object) -> int:

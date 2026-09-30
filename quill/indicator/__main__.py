@@ -31,8 +31,8 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
-from quill.indicator.render import (COMMAND, ERROR, LISTENING, LOADING, SENT, STATES, TRANSCRIBING, Layout,
-                                    Renderer, View)
+from quill.indicator.render import (COMMAND, ERROR, LISTENING, LOADING, REVIEWING, SENT, STATES, TRANSCRIBING,
+                                    Layout, Renderer, View)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RESULTS_DIR = REPO_ROOT / "local" / "selftest"
@@ -51,6 +51,7 @@ SAMPLES = {
     LISTENING: "vamos rever o pull request antes do deploy de amanhã",
     TRANSCRIBING: "vamos rever o pull request antes do deploy de amanhã e depois",
     COMMAND: "põe isto mais formal",
+    REVIEWING: "revi o módulo de pagamentos e encontrei dois problemas no cache",
     SENT: "corrige o teste de integração e corre a suite outra vez",
     ERROR: "Microfone não encontrado",
 }
@@ -229,7 +230,7 @@ def own_windows() -> int:
 
 DEMO_STEPS: tuple[tuple[str, float], ...] = (
     (LOADING, 1.5), (LISTENING, 4.5), (TRANSCRIBING, 1.0), (SENT, 1.5),
-    (COMMAND, 3.0), (TRANSCRIBING, 0.8), (ERROR, 2.0), ("", 1.0),
+    (COMMAND, 3.0), (TRANSCRIBING, 0.8), (REVIEWING, 1.5), (ERROR, 2.0), ("", 1.0),
 )
 
 

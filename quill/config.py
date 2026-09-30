@@ -41,6 +41,7 @@ EDIT_WINDOW_RANGE = (5, 600)
 REWRITE_AUDIO_RANGE = (5.0, 120.0)
 REWRITE_WORDS_RANGE = (10, 1000)
 REWRITE_TIMEOUT_RANGE = (0.5, 30.0)
+UNDO_WINDOW_RANGE = (5, 600)
 
 # Virtual-key codes of the inputs a trigger may use.
 BUTTONS = {"middle": 0x04, "xbutton1": 0x05, "xbutton2": 0x06}
@@ -68,7 +69,8 @@ SCHEMA: dict[str, object] = {
     "ollama": {"url": None, "model": None},
     "cleanup": {"mode": None},
     "corrections": {"key": None, "edit_window_s": None},
-    "autorewrite": {"enabled": None, "min_audio_s": None, "min_words": None, "timeout_s": None},
+    "autorewrite": {"enabled": None, "min_audio_s": None, "min_words": None, "timeout_s": None, "undo_key": None,
+                    "undo_window_s": None},
     "paths": {"vocabulary": None, "corrections": None, "style": None},
     "profiles": {name: {"processes": None, "classes": None, "titles": None} for name in PROFILE_NAMES},
 }
@@ -110,12 +112,16 @@ class ProfileMatcher:
 @dataclass(frozen=True)
 class AutoRewrite:
     """``[autorewrite]``: a dictation longer than ``min_audio_s`` seconds of audio or
-    ``min_words`` words is checked by the local model, which may take ``timeout_s``."""
+    ``min_words`` words is checked by the local model, which may take ``timeout_s``.
+    ``undo_key`` (None when disabled) puts the original text back for
+    ``undo_window_s`` seconds after an automatic rewrite."""
 
     enabled: bool = False
     min_audio_s: float = 15.0
     min_words: int = 40
     timeout_s: float = 4.0
+    undo_key: Input | None = None
+    undo_window_s: int = 30
 
 
 @dataclass(frozen=True)
@@ -271,8 +277,7 @@ def _triggers(data: dict[str, object]) -> tuple[Trigger, ...]:
     return tuple(triggers)
 
 
-def _correction_key(value: object, triggers: tuple[Trigger, ...]) -> Input | None:
-    field = "corrections.key"
+def _correction_key(value: object, triggers: tuple[Trigger, ...], field: str = "corrections.key") -> Input | None:
     if value == "":
         return None
     if not isinstance(value, str) or value not in KEYS:
@@ -280,6 +285,14 @@ def _correction_key(value: object, triggers: tuple[Trigger, ...]) -> Input | Non
     if any(item.kind == "key" and item.vk == KEYS[value] for trigger in triggers for item in trigger.inputs):
         raise ConfigError(f"quill config: {field} is already bound to a trigger")
     return Input("key", value, KEYS[value])
+
+
+def _undo_key(value: object, triggers: tuple[Trigger, ...], correction: Input | None) -> Input | None:
+    field = "autorewrite.undo_key"
+    key = _correction_key(value, triggers, field)
+    if key is not None and correction is not None and key.vk == correction.vk:
+        raise ConfigError(f"quill config: {field} is already the correction key")
+    return key
 
 
 def _edit_window(value: object) -> int:
@@ -296,16 +309,23 @@ def _number(value: object, field: str, bounds: tuple[float, float]) -> float:
     return float(value)
 
 
-def _autorewrite(data: dict[str, object]) -> AutoRewrite:
-    words = _get(data, "autorewrite.min_words")
-    low, high = REWRITE_WORDS_RANGE
-    if not isinstance(words, int) or isinstance(words, bool) or not low <= words <= high:
-        raise ConfigError(f"quill config: autorewrite.min_words must be an integer from {low} to {high}")
+def _integer(value: object, field: str, bounds: tuple[int, int]) -> int:
+    low, high = bounds
+    if not isinstance(value, int) or isinstance(value, bool) or not low <= value <= high:
+        raise ConfigError(f"quill config: {field} must be an integer from {low} to {high}")
+    return value
+
+
+def _autorewrite(data: dict[str, object], triggers: tuple[Trigger, ...], correction: Input | None) -> AutoRewrite:
+    words = _integer(_get(data, "autorewrite.min_words"), "autorewrite.min_words", REWRITE_WORDS_RANGE)
     return AutoRewrite(
         enabled=_bool(_get(data, "autorewrite.enabled"), "autorewrite.enabled"),
         min_audio_s=_number(_get(data, "autorewrite.min_audio_s"), "autorewrite.min_audio_s", REWRITE_AUDIO_RANGE),
         min_words=words,
         timeout_s=_number(_get(data, "autorewrite.timeout_s"), "autorewrite.timeout_s", REWRITE_TIMEOUT_RANGE),
+        undo_key=_undo_key(_get(data, "autorewrite.undo_key"), triggers, correction),
+        undo_window_s=_integer(_get(data, "autorewrite.undo_window_s"), "autorewrite.undo_window_s",
+                               UNDO_WINDOW_RANGE),
     )
 
 
@@ -366,6 +386,7 @@ def _profiles(data: dict[str, object]) -> tuple[ProfileMatcher, ...]:
 def validate(data: dict[str, object]) -> Config:
     _check_fields(data, SCHEMA, "")
     triggers = _triggers(data)
+    correction = _correction_key(_get(data, "corrections.key"), triggers)
     return Config(
         triggers=triggers,
         min_hold_ms=_min_hold(_get(data, "input.min_hold_ms")),
@@ -380,9 +401,9 @@ def validate(data: dict[str, object]) -> Config:
         corrections_path=_local_path(_get(data, "paths.corrections"), "paths.corrections"),
         style_dir=_local_path(_get(data, "paths.style"), "paths.style"),
         profiles=_profiles(data),
-        correction_key=_correction_key(_get(data, "corrections.key"), triggers),
+        correction_key=correction,
         edit_window_s=_edit_window(_get(data, "corrections.edit_window_s")),
-        autorewrite=_autorewrite(data),
+        autorewrite=_autorewrite(data, triggers, correction),
     )
 
 
@@ -407,16 +428,19 @@ def load_config(local: Path | None = LOCAL_CONFIG, example: Path = EXAMPLE_CONFI
         _check_fields(override, SCHEMA, "")
         data = merge(data, override)
         if "key" not in override.get("corrections", {}):
-            data = _free_default_correction_key(data)
+            data = _free_default_key(data, "corrections", "key")
+        if "undo_key" not in override.get("autorewrite", {}):
+            data = _free_default_key(data, "autorewrite", "undo_key", also=("corrections.key",))
     return validate(data)
 
 
-def _free_default_correction_key(data: dict[str, object]) -> dict[str, object]:
-    """The example's correction key gives way to a local trigger bound to the same key."""
-    key = _get(data, "corrections.key")
+def _free_default_key(data: dict[str, object], table: str, name: str, also: tuple[str, ...] = ()) -> dict[str, object]:
+    """An example key gives way to a local trigger (or another ``also`` key) bound to the same key."""
+    key = _get(data, f"{table}.{name}")
     taken = {(item.kind, item.vk) for trigger in _triggers(data) for item in trigger.inputs}
+    taken |= {("key", KEYS.get(other)) for other in (_get(data, field) for field in also) if isinstance(other, str)}
     if isinstance(key, str) and ("key", KEYS.get(key)) in taken:
-        return merge(data, {"corrections": {"key": ""}})
+        return merge(data, {table: {name: ""}})
     return data
 
 

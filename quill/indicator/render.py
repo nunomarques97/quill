@@ -28,15 +28,17 @@ LOADING = "loading"
 LISTENING = "listening"
 TRANSCRIBING = "transcribing"
 COMMAND = "command"
+REVIEWING = "reviewing"
 SENT = "sent"
 ERROR = "error"
-STATES = (LOADING, LISTENING, TRANSCRIBING, COMMAND, SENT, ERROR)
+STATES = (LOADING, LISTENING, TRANSCRIBING, COMMAND, REVIEWING, SENT, ERROR)
 
 LABELS = {
     LOADING: "A carregar",
     LISTENING: "A ouvir",
     TRANSCRIBING: "A transcrever",
     COMMAND: "Modo comando",
+    REVIEWING: "A rever o texto",
     SENT: "Enviado para o Claude Code",
     ERROR: "Erro",
 }
@@ -46,6 +48,7 @@ PLACEHOLDERS = {
     LISTENING: "Pode falar…",
     TRANSCRIBING: "A finalizar o texto…",
     COMMAND: "Diga a instrução…",
+    REVIEWING: "A corrigir palavras mal ouvidas…",
     SENT: "Texto enviado com Enter",
     ERROR: "Não foi possível concluir",
 }
@@ -55,6 +58,7 @@ STATE_COLOURS = {
     LISTENING: 0x4FE3FF,
     TRANSCRIBING: 0xC4A6FF,
     COMMAND: 0xFFC857,
+    REVIEWING: 0xFF8AD8,
     SENT: 0x5CF2A0,
     ERROR: 0xFF9494,
 }
@@ -378,6 +382,12 @@ def _orb(view: View, lay: Layout) -> list[Op]:
         ops.append(Op("ellipse", (cx, cy, 17 * s, 17 * s), {"stroke": Stroke(1.5 * s, Solid(argb(colour, 0.25)))}))
         ops.append(Op("arc", (cx, cy, 17 * s, (330.0 * t) % 360.0 - 90.0, 110.0,
                               Stroke(2.4 * s, Solid(argb(colour, 0.95))))))
+    elif view.state == REVIEWING:
+        # A faint track with two solid arcs sweeping it: the text being read through.
+        ops.append(Op("ellipse", (cx, cy, 19 * s, 19 * s), {"stroke": Stroke(1.2 * s, Solid(argb(colour, 0.3)))}))
+        for offset in (0.0, 180.0):
+            ops.append(Op("arc", (cx, cy, 19 * s, (200.0 * t + offset) % 360.0, 70.0,
+                                  Stroke(2.2 * s, Solid(argb(colour, 0.95))))))
     elif view.state == TRANSCRIBING:
         ops.append(Op("arc", (cx, cy, 15 * s, (140.0 * t) % 360.0, 250.0,
                               Stroke(1.6 * s, Solid(argb(colour, 0.85)), dashed=True))))
@@ -391,7 +401,7 @@ def _orb(view: View, lay: Layout) -> list[Op]:
         ops.append(Op("ellipse", (cx, cy, 18 * s, 18 * s), {"stroke": Stroke(1.6 * s, Solid(argb(colour, 0.7)))}))
     pulse = 0.0 if still or view.state != TRANSCRIBING else 1.5 * math.sin(2 * math.pi * 1.2 * t)
     core = (10.0 + 2.5 * motion_level + pulse) * s
-    if view.state in (SENT, ERROR):
+    if view.state in (SENT, ERROR, REVIEWING):
         core = 12.0 * s
     ops.append(Op("ellipse", (cx, cy, core, core), {"fill": Radial(cx - core * 0.3, cy - core * 0.35, core * 1.6,
                                                                      core * 1.6, argb(0xFFFFFF, 1.0),
@@ -399,6 +409,12 @@ def _orb(view: View, lay: Layout) -> list[Op]:
     if view.state == SENT:
         mark = [(cx - 5.0 * s, cy + 0.2 * s), (cx - 1.5 * s, cy + 3.8 * s), (cx + 5.2 * s, cy - 3.8 * s)]
         ops.append(Op("polyline", (mark, False), {"stroke": Stroke(2.4 * s, Solid(argb(GLYPH_COLOUR, 1.0)))}))
+    elif view.state == REVIEWING:
+        # Three lines of text on the core.
+        for dy, width in ((-3.6, 10.0), (0.0, 10.0), (3.6, 6.0)):
+            y = cy + dy * s
+            ops.append(Op("polyline", ([(cx - 5.0 * s, y), (cx - 5.0 * s + width * s, y)], False),
+                          {"stroke": Stroke(1.8 * s, Solid(argb(GLYPH_COLOUR, 1.0)))}))
     elif view.state == ERROR:
         ops.append(Op("polyline", ([(cx, cy - 6.0 * s), (cx, cy + 1.5 * s)], False),
                       {"stroke": Stroke(2.6 * s, Solid(argb(GLYPH_COLOUR, 1.0)))}))

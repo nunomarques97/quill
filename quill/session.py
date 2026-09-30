@@ -24,7 +24,20 @@ session's own target and, for the send trigger, presses Enter only after a
 successful injection into a Claude Code window. A command session hands
 the final text, the spoken instruction, to ``quill.command.CommandMode``,
 which copies the selection, rewrites it with the local model and types the
-rewrite over it; the indicator shows ``command`` while it listens. A failure (microphone,
+rewrite over it; the indicator shows ``command`` while it listens.
+
+A long dictation (over the ``[autorewrite]`` audio or word threshold) goes,
+after the text pipeline, to the ``rewriter`` (``quill.autorewrite``) while
+the indicator shows ``reviewing`` ("A rever o texto"); a short one never
+calls it, so its path is unchanged. A failure, a timeout or a refusal by the
+content guard types the original text at once and shows a short notice. The
+text is typed with the target's newline policy (Shift+Enter in the Claude
+Code panel, a space elsewhere), and the send trigger presses Enter only
+after all of it is typed. A rewrite typed without Enter is reported to
+``on_typed`` with its original, for the undo key. ``submit`` runs other
+work (the undo key) on the finalizer thread, in order with the sessions.
+
+A failure (microphone,
 engine, target gone, foreground changed, ...) ends that session with the
 ``error`` state and a European Portuguese message; the next session is not
 affected. The capture, the transcription job and the indicator state are
@@ -51,11 +64,12 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from quill import autorewrite
 from quill import command as commands
 from quill import inject
 from quill import focus as focus_reasons
-from quill.indicator.render import COMMAND, ERROR, LISTENING, LOADING, SENT, TRANSCRIBING
-from quill.inject import Target
+from quill.indicator.render import COMMAND, ERROR, LISTENING, LOADING, REVIEWING, SENT, TRANSCRIBING
+from quill.inject import NEWLINE_SPACE, InjectOptions, Target, normalize_text
 from quill.triggers import CANCEL, CONFIRM, START, STOP, Signal
 
 log = logging.getLogger("quill.session")
@@ -109,10 +123,13 @@ MESSAGES = {
     focus_reasons.BUTTON_HELD: "Solte o outro botão do rato e tente de novo",
     focus_reasons.FOCUS_NOT_MOVED: "O campo não recebeu o foco; tente de novo",
     **commands.MESSAGES,
+    **autorewrite.MESSAGES,
 }
 INTERRUPTED = " (escrita interrompida)"
 # Endings where the whole text was typed but something is worth showing.
-TYPED_NOTICES = frozenset({NOT_CLAUDE, ENTER_FAILED, CLEANUP_FALLBACK})
+TYPED_NOTICES = frozenset({NOT_CLAUDE, ENTER_FAILED, CLEANUP_FALLBACK, *autorewrite.MESSAGES})
+# PCM16 mono at 16 kHz: bytes per second of audio.
+AUDIO_BYTES_PER_S = 32_000
 
 ERROR_SHOW_S = 4.0
 SENT_SHOW_S = 1.5
@@ -147,6 +164,13 @@ class Processed:
     claude_code: bool
     # A reason code worth showing although the text was typed (CLEANUP_FALLBACK).
     notice: str | None = None
+    # Context of the automatic rewrite: words kept verbatim, the project read from
+    # the window title, and the profile its layout follows (None: ``profile``).
+    keep: tuple[str, ...] = field(default=(), repr=False)
+    project: str = field(default="", repr=False)
+    rewrite_profile: str | None = None
+    # How line breaks are typed (``quill.inject`` newline policy).
+    newline: str = NEWLINE_SPACE
 
 
 class TextPipeline(Protocol):
@@ -162,6 +186,8 @@ class Outcome:
     reason: str
     typed: int = 0
     release_to_typed_s: float | None = None
+    rewrite: str | None = None  # the automatic rewrite's reason code, when it was asked
+    notice: str | None = None  # a notice shown with a text that was typed (for example after Enter)
 
 
 @dataclass(eq=False)
@@ -180,6 +206,8 @@ class _Hold:
     handle: object | None = None
     released_at: float = 0.0
     ended: bool = False
+    audio_bytes: int = 0
+    reviewing: bool = False
 
 
 _STOP = object()
@@ -214,17 +242,21 @@ class SessionManager:
     a ``quill.focus.ClickToFocus``; ``injector`` a ``quill.inject.Injector``;
     ``indicator`` a ``quill.indicator.Indicator``; ``pipeline(raw, target)``
     returns a ``Processed``; ``command`` is a ``quill.command.CommandMode``
-    (None: the command trigger only says it is unavailable). ``on_session_start`` runs when a hold starts
-    recording and ``on_typed(target, text)`` after a successful injection
-    (manual-edit detection and the correction key); ``housekeeping`` runs
-    on the finalizer thread about every ``poll_s``.
+    (None: the command trigger only says it is unavailable); ``rewriter`` is a
+    ``quill.autorewrite.AutoRewriter`` (None: no automatic rewrite).
+    ``on_session_start`` runs when a hold starts recording and
+    ``on_typed(target, text, original, newline)`` after a successful
+    injection (manual-edit detection, the correction key and the undo key):
+    ``text`` as typed, and ``original`` the text a rewrite replaced, as it
+    would be typed (None when there is no rewrite to undo); ``housekeeping``
+    runs on the finalizer thread about every ``poll_s``.
     """
 
     def __init__(self, *, transcriber: object, capture_factory: Callable[[Callable[[bytes], None]], object],
                  focus: object, injector: object, indicator: object, pipeline: TextPipeline,
-                 command: object | None = None,
+                 command: object | None = None, rewriter: object | None = None,
                  on_session_start: Callable[[], None] | None = None,
-                 on_typed: Callable[[Target, str], None] | None = None,
+                 on_typed: Callable[[Target, str, str | None, str], None] | None = None,
                  housekeeping: Callable[[], None] | None = None,
                  clock: Callable[[], float] = time.perf_counter,
                  final_timeout_s: float = FINAL_TIMEOUT_S, poll_s: float = POLL_S) -> None:
@@ -235,6 +267,7 @@ class SessionManager:
         self.indicator = _SafeIndicator(indicator)
         self.pipeline = pipeline
         self.command = command
+        self.rewriter = rewriter
         self.on_session_start = on_session_start
         self.on_typed = on_typed
         self.housekeeping = housekeeping
@@ -299,6 +332,26 @@ class SessionManager:
             log.error("session finalizer did not stop in time")
         with self._lock:
             self._thread = None
+
+    def submit(self, job: Callable[[], None]) -> bool:
+        """Run ``job`` on the finalizer thread after the sessions released before it; False when stopped."""
+        with self._lock:
+            if self._closed or self._thread is None:
+                return False
+            jobs = self._jobs
+        jobs.put(job)
+        return True
+
+    def notify(self, state: str | None, text: str = "", hide_after_s: float = ERROR_SHOW_S) -> bool:
+        """Show ``state`` with ``text`` (None: hide) unless a session is live: its words stay on screen."""
+        with self._lock:
+            if self._live or self._active is not None:
+                return False
+            if state is None:
+                self.indicator.hide()
+            else:
+                self.indicator.show(state, text, hide_after_s=hide_after_s)
+            return True
 
     # ------------------------------------------------------------ signals (hook worker thread)
 
@@ -440,6 +493,7 @@ class SessionManager:
     # ------------------------------------------------------------ callbacks (capture and engine threads)
 
     def _on_audio(self, hold: _Hold, pcm: bytes) -> None:
+        hold.audio_bytes += len(pcm)
         asr = hold.asr
         if asr is not None:
             asr.feed(pcm)
@@ -466,9 +520,20 @@ class SessionManager:
                 item = None
             if item is _STOP:
                 break
-            if item is not None:
+            if isinstance(item, _Hold):
                 self._finalize(item)
+            elif item is not None:
+                self._run_job(item)
             self._housekeeping()
+
+    def _run_job(self, job: Callable[[], None]) -> None:
+        if self._closed:
+            log.info("queued job skipped: Quill is stopping")
+            return
+        try:
+            job()
+        except Exception as exc:  # noqa: BLE001
+            log.error("queued job failed (%s)", type(exc).__name__)
 
     def _housekeeping(self) -> None:
         if self.housekeeping is None:
@@ -499,21 +564,34 @@ class SessionManager:
             if not processed.text.strip():
                 self._fail(hold, NO_SPEECH)
                 return
+            text, original, rewrite = processed.text, None, None
+            pipeline_at = self.clock()
+            if self.rewriter is not None and self._wants_rewrite(hold, processed):
+                rewrite = self._rewrite(hold, processed)
+                if rewrite.rewritten:
+                    text, original = rewrite.text, processed.text
             text_at = self.clock()
-            typed = self.injector.inject(processed.text, hold.target)
+            typed = self.injector.inject(text, hold.target, InjectOptions(newline=processed.newline))
             if not typed.ok:
                 self._fail(hold, typed.reason, typed=typed.typed)
                 return
             typed_at = self.clock()
             latency = typed_at - hold.released_at
-            log.info("session %d: typed (%s profile); release to typed %.0f ms (engine %.0f ms, text %.0f ms, "
-                     "typing %.0f ms)", hold.number, processed.profile, latency * 1000,
-                     (engine_at - hold.released_at) * 1000, (text_at - engine_at) * 1000, (typed_at - text_at) * 1000)
+            log.info("session %d: typed (%s profile%s); release to typed %.0f ms (engine %.0f ms, text %.0f ms, "
+                     "%styping %.0f ms)", hold.number, processed.profile,
+                     f", rewrite {rewrite.reason}" if rewrite is not None else "", latency * 1000,
+                     (engine_at - hold.released_at) * 1000, (pipeline_at - engine_at) * 1000,
+                     f"rewrite {(text_at - pipeline_at) * 1000:.0f} ms, " if rewrite is not None else "",
+                     (typed_at - text_at) * 1000)
+            enter = hold.action == SEND_CLAUDE and processed.claude_code
             if self.on_typed is not None:
+                # A rewrite can be undone only when no Enter follows it.
+                undo = normalize_text(original, processed.newline) if original is not None and not enter else None
                 try:
-                    self.on_typed(hold.target, processed.text)
+                    self.on_typed(hold.target, normalize_text(text, processed.newline), undo, processed.newline)
                 except Exception as exc:  # noqa: BLE001
                     log.error("typed hook failed (%s)", type(exc).__name__)
+            notice = rewrite.reason if rewrite is not None and rewrite.message else processed.notice
             reason = TYPED
             if hold.action == SEND_CLAUDE:
                 if not processed.claude_code:
@@ -522,12 +600,40 @@ class SessionManager:
                     reason = SENT_ENTER
                 else:
                     reason = ENTER_FAILED
-            elif processed.notice:
-                reason = processed.notice
-            self._end(hold, reason, typed=typed.typed, latency=latency)
+            elif notice:
+                reason = notice
+            self._end(hold, reason, typed=typed.typed, latency=latency,
+                      rewrite=rewrite.reason if rewrite is not None else None, notice=notice)
         except Exception as exc:  # noqa: BLE001 - the message may not carry text: log the type only
             log.error("session %d: finalization failed (%s)", hold.number, type(exc).__name__)
             self._fail(hold, INTERNAL_ERROR)
+
+    def _wants_rewrite(self, hold: _Hold, processed: Processed) -> bool:
+        try:
+            return bool(self.rewriter.wants(processed.text, hold.audio_bytes / AUDIO_BYTES_PER_S))
+        except Exception as exc:  # noqa: BLE001 - a broken rewriter never holds up a dictation
+            log.error("session %d: rewrite check failed (%s)", hold.number, type(exc).__name__)
+            return False
+
+    def _rewrite(self, hold: _Hold, processed: Processed) -> autorewrite.AutoRewrite:
+        """The automatic rewrite of a long dictation; the original text on every failure."""
+        with self._lock:
+            hold.reviewing = True
+            if self._visible(hold):
+                self.indicator.show(REVIEWING, hold.live_text)
+        try:
+            result = self.rewriter.rewrite(processed.text, audio_s=hold.audio_bytes / AUDIO_BYTES_PER_S,
+                                           profile=processed.rewrite_profile or processed.profile,
+                                           keep=processed.keep, project=processed.project)
+            if not isinstance(result.text, str) or not result.text.strip():
+                raise ValueError("empty rewrite result")
+            return result
+        except Exception as exc:  # noqa: BLE001 - never lose the dictation: type the original
+            log.error("session %d: rewrite failed (%s)", hold.number, type(exc).__name__)
+            return autorewrite.AutoRewrite(processed.text, processed.text, autorewrite.FAILED, type(exc).__name__)
+        finally:
+            with self._lock:
+                hold.reviewing = False
 
     def _finalize_command(self, hold: _Hold, instruction: str, engine_at: float) -> None:
         outcome = self.command.run(instruction, hold.target)
@@ -579,16 +685,18 @@ class SessionManager:
                 if self._active is hold:
                     hold.error = reason
 
-    def _end(self, hold: _Hold, reason: str, typed: int = 0, latency: float | None = None) -> None:
+    def _end(self, hold: _Hold, reason: str, typed: int = 0, latency: float | None = None,
+             rewrite: str | None = None, notice: str | None = None) -> None:
         with self._lock:
             if hold.ended:
                 return
             hold.ended = True
+            hold.reviewing = False
             if hold in self._live:
                 self._live.remove(hold)
             if self._visible(hold):
-                self._show_outcome(hold, reason, typed)
-            self.outcomes.append(Outcome(hold.number, hold.action, reason, typed, latency))
+                self._show_outcome(hold, reason, typed, notice)
+            self.outcomes.append(Outcome(hold.number, hold.action, reason, typed, latency, rewrite, notice))
 
     def _record(self, hold: _Hold, reason: str) -> None:
         with self._lock:
@@ -607,16 +715,19 @@ class SessionManager:
         """No newer session is live (capturing or finalizing)."""
         return all(other.number <= hold.number for other in self._live)
 
-    def _show_outcome(self, hold: _Hold, reason: str, typed: int) -> None:
+    def _show_outcome(self, hold: _Hold, reason: str, typed: int, notice: str | None = None) -> None:
         if reason in (TYPED, CANCELLED, commands.REWRITTEN):
             older = self._live[-1] if self._live else None
             if older is not None:
                 # An older session is still being finalized: show it again.
-                self.indicator.show(TRANSCRIBING, older.live_text)
+                self.indicator.show(REVIEWING if older.reviewing else TRANSCRIBING, older.live_text)
             else:
                 self.indicator.hide()
         elif reason == SENT_ENTER:
-            self.indicator.show(SENT, hide_after_s=SENT_SHOW_S)
+            if notice:
+                self.indicator.show(SENT, message(notice), hide_after_s=ERROR_SHOW_S)
+            else:
+                self.indicator.show(SENT, hide_after_s=SENT_SHOW_S)
         else:
             interrupted = 0 if reason in TYPED_NOTICES else typed
             self.indicator.show(ERROR, message(reason, interrupted), hide_after_s=ERROR_SHOW_S)

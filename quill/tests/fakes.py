@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable
 
-from quill.inject import Injector, Target
+from quill.inject import VK_BACK, Injector, Target
 from quill.win32 import INTEGRITY_MEDIUM, VK_RETURN, VK_SHIFT, WH_KEYBOARD_LL, WH_MOUSE_LL, KeyEvent, MouseEvent
 
 TARGET = Target(hwnd=100, pid=7)
@@ -171,6 +171,9 @@ class FakeWin32:
     def events(self) -> list[KeyEvent]:
         return [event for call in self.calls for event in call]
 
+    def backspaces(self) -> int:
+        return sum(1 for event in self.events if event.vk == VK_BACK and not event.is_keyup)
+
     def enter_presses(self) -> list[bool]:
         """For each Enter key-down sent: whether Shift was down at the time."""
         presses: list[bool] = []
@@ -183,7 +186,7 @@ class FakeWin32:
         return presses
 
     def received_text(self) -> str:
-        """Text a window gets from the recorded events (Shift+Enter as a newline)."""
+        """Text a window gets from the recorded events (Shift+Enter as a newline, Backspace removes one)."""
         units: list[int] = []
         shift = False
         for event in self.events:
@@ -196,6 +199,10 @@ class FakeWin32:
                 if not shift:
                     raise AssertionError("bare Enter sent")
                 units.append(0x0A)
+            elif event.vk == VK_BACK and not event.is_keyup:
+                if not units:
+                    raise AssertionError("Backspace with nothing typed")
+                units.pop()
         return b"".join(unit.to_bytes(2, "little") for unit in units).decode("utf-16-le")
 
 

@@ -20,6 +20,9 @@ the Whisper hints and the matcher change from that dictation on, and an
 invalid file keeps the previous vocabulary. Sessions are run by
 ``quill.session.SessionManager``. Command mode (``quill.command``) rewrites
 the selection with the local Ollama model when the command trigger is bound.
+A long dictation is rewritten by the local model (``quill.autorewrite``)
+when ``[autorewrite]`` is on, and the undo key (``quill.edits.RewriteUndo``)
+puts the original back while the rewrite is provably untouched.
 Learning from corrections is wired too:
 the correction key and manual-edit detection (``quill.corrections``,
 ``quill.edits``) see the key events of the hooks in memory only.
@@ -46,15 +49,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from quill import startup
+from quill.autorewrite import AutoRewriter, project_hint
 from quill.cleanup import Cleanup
-from quill.command import COMMAND_TIMEOUT_S, CommandMode, CommandRewriter
+from quill.command import COMMAND_TIMEOUT_S, CommandMode, CommandRewriter, is_terminal
 from quill.config import LOCAL_CONFIG, REPO_ROOT, Config, ConfigError, load_config
 from quill.corrections import CorrectionKey, CorrectionStore, Dictation, Learner, new_dictation_id
-from quill.edits import EditTracker, KeyTranslator, ManualEdits
+from quill.edits import EditTracker, KeyTranslator, ManualEdits, RewriteUndo, UndoOutcome
 from quill.focus import ClickToFocus
 from quill.hooks import TriggerHooks, monotonic_ms, real_hooks
-from quill.indicator.render import LOADING
-from quill.inject import Injector, Target
+from quill.indicator.render import ERROR, LOADING
+from quill.inject import NEWLINE_SHIFT_ENTER, NEWLINE_SPACE, Injector, Target
 from quill.profiles import CLAUDE_CODE, Profiles, StyleError, WindowInfo, apply_profile, load_style_samples, style_prompt, window_info
 from quill.session import CLEANUP_FALLBACK, Processed, SessionManager
 from quill.streaming import StreamingTranscriber, options_for
@@ -73,6 +77,8 @@ INSTANCE_NAME = "Local\\Quill.Dictation.Instance"
 STOP_EVENT_NAME = "Local\\Quill.Dictation.Stop"
 LOAD_WAIT_S = 0.1
 WARMUP_S = 1.0
+# The profile of an editor window: the project hint and the one-paragraph layout of a terminal's rewrite.
+EDITOR_PROFILE = "vscode"
 
 EXIT_OK = 0
 EXIT_FAILED = 1
@@ -264,7 +270,12 @@ class TextPipeline:
 
     The same stages, in the same order, as ``bench.pipeline`` measures. The
     target window's profile is chosen once per session (``describe``); it
-    also tells the send trigger whether the target is Claude Code.
+    also tells the send trigger whether the target is Claude Code, and the
+    automatic rewrite its context (the words to keep, the project in the
+    title of an editor window) and layout. Claude Code outside a terminal
+    (the VS Code panel) takes line breaks as Shift+Enter; in a terminal,
+    which may take Shift+Enter as Enter, line breaks are typed as spaces and
+    the rewrite keeps one paragraph (the ``vscode`` layout, same style).
     ``use_vocabulary`` swaps the words to keep and the matcher at once; a
     call already running finishes with the ones it started with.
     """
@@ -284,7 +295,8 @@ class TextPipeline:
 
     def use_vocabulary(self, vocabulary: Vocabulary) -> None:
         self._lexicon = (tuple(hint_list(vocabulary, (), self.generic_terms)),
-                         Matcher(vocabulary, (), self.generic_terms))
+                         Matcher(vocabulary, (), self.generic_terms),
+                         tuple(entry.text for entry in vocabulary.names))
 
     @property
     def keep(self) -> tuple[str, ...]:
@@ -309,7 +321,7 @@ class TextPipeline:
             log.warning("target window not described (%s)", type(exc).__name__)
             info = None
         profile = self.profiles.select(info)
-        keep, matcher = self._lexicon  # one vocabulary for the whole text
+        keep, matcher, names = self._lexicon  # one vocabulary for the whole text
         notice = None
         if self.config.cleanup_mode == "llm":
             cleanup = Cleanup("llm", client=self.client, model=self.config.ollama_model, keep=keep,
@@ -325,7 +337,13 @@ class TextPipeline:
         if self.learner is not None:
             text = self.learner.apply(text)
         text = apply_profile(text, profile, keep)
-        return Processed(text, profile, profile == CLAUDE_CODE, notice)
+        terminal = is_terminal(info)
+        newline, rewrite_profile = NEWLINE_SPACE, profile
+        if profile == CLAUDE_CODE:
+            newline, rewrite_profile = (NEWLINE_SPACE, EDITOR_PROFILE) if terminal else (NEWLINE_SHIFT_ENTER, profile)
+        project = project_hint(info, names) if profile in (CLAUDE_CODE, EDITOR_PROFILE) else ""
+        return Processed(text, profile, profile == CLAUDE_CODE, notice, keep=keep, project=project,
+                         rewrite_profile=rewrite_profile, newline=newline)
 
 
 # ---------------------------------------------------------------- parts and app
@@ -344,6 +362,7 @@ class Parts:
     layout: object | None = None  # keyboard layout for manual-edit detection; None disables it
     client: object | None = None  # local Ollama client (llm cleanup)
     command_client: object | None = None  # local Ollama client of command mode; None disables it
+    rewrite_client: object | None = None  # local Ollama client of the automatic rewrite; None disables it
     vocabulary: Vocabulary = field(default_factory=Vocabulary)
     generic_terms: Sequence[str] = ()
     vocabulary_file: VocabularyFile | None = None  # read again before each dictation; None: never reloaded
@@ -375,25 +394,35 @@ class QuillApp:
                                        terms=lambda: self.pipeline.keep)
             self.command = CommandMode(api, self.injector, rewriter, lambda target: window_info(api, target.hwnd),
                                        **parts.command_options)
+        self.rewriter: AutoRewriter | None = None
+        if config.autorewrite.enabled and parts.rewrite_client is not None:
+            self.rewriter = AutoRewriter(parts.rewrite_client, config.ollama_model, config.autorewrite)
         self.correction_key = CorrectionKey(self.learner, self._read_selection, api.foreground_window)
         self.edits: ManualEdits | None = None
+        undo_key = config.autorewrite.undo_key
         if parts.layout is not None:
             ignore = frozenset(item.vk for trigger in config.triggers for item in trigger.inputs if item.kind == KEY)
-            if config.correction_key is not None:
-                ignore |= {config.correction_key.vk}
+            for key in (config.correction_key, undo_key):
+                if key is not None:
+                    ignore |= {key.vk}
             self.edits = ManualEdits(self.learner, KeyTranslator(parts.layout, ignore),
                                      EditTracker(config.edit_window_s), api.foreground_window)
+        # Without the manual-edit tracker nothing proves a rewrite untouched: the undo key then refuses.
+        self.undo = RewriteUndo(self.injector, self.edits.tracker if self.edits is not None else None,
+                                api.foreground_window, config.autorewrite.undo_window_s,
+                                clock=self.edits.clock if self.edits is not None else time.monotonic)
         self.sessions = SessionManager(
             transcriber=self.transcriber, capture_factory=parts.capture_factory, focus=self.focus,
             injector=self.injector, indicator=parts.indicator, pipeline=self.pipeline, command=self.command,
-            on_session_start=self._session_started, on_typed=self._typed, housekeeping=self._housekeeping,
-            clock=parts.clock,
+            rewriter=self.rewriter, on_session_start=self._session_started, on_typed=self._typed,
+            housekeeping=self._housekeeping, clock=parts.clock,
         )
         self.hooks: TriggerHooks | None = None
         self._loader: threading.Thread | None = None
         self._stopping = threading.Event()
         self._correction_down = False
         self._correction_thread: threading.Thread | None = None
+        self._undo_down = False
         self.running = False
 
     # ------------------------------------------------------------ lifecycle
@@ -421,8 +450,9 @@ class QuillApp:
         except BaseException:
             self.stop()
             raise
-        log.info("Quill started (engine %s, cleanup %s, indicator %s, command mode %s)", self.config.engine_model,
-                 self.config.cleanup_mode, self.config.indicator_position, "on" if self.command else "off")
+        log.info("Quill started (engine %s, cleanup %s, indicator %s, command mode %s, automatic rewrite %s)",
+                 self.config.engine_model, self.config.cleanup_mode, self.config.indicator_position,
+                 "on" if self.command else "off", "on" if self.rewriter else "off")
 
     def _wait_loaded(self, started: float) -> None:
         while not self.transcriber.ready.wait(LOAD_WAIT_S):
@@ -440,6 +470,8 @@ class QuillApp:
     def stop(self) -> None:
         """Remove the hooks first, then release the engine, the sessions, the indicator and the lock."""
         self._stopping.set()
+        self.undo.forget()
+        self._undo_down = False
         steps = (
             ("hooks", self._stop_hooks),
             ("engine", self.transcriber.stop),
@@ -498,6 +530,7 @@ class QuillApp:
     # ------------------------------------------------------------ learning (hook worker and session threads)
 
     def _session_started(self) -> None:
+        self.undo.forget()  # a new text is coming: the last rewrite is no longer the last text
         if self.edits is not None:
             self.edits.stop()
         self._refresh_vocabulary()
@@ -516,11 +549,35 @@ class QuillApp:
         log.info("vocabulary reloaded (%d names, %d terms, %d variants)", counts["names"], counts["terms"],
                  counts["variants"])
 
-    def _typed(self, target: Target, text: str) -> None:
+    def _typed(self, target: Target, text: str, original: str | None = None, newline: str = NEWLINE_SPACE) -> None:
+        """A text was typed (``original``: the text a rewrite replaced, when it may be undone)."""
+        dictation = self._follow(target, text)
+        if original is None:
+            self.undo.forget()
+        else:
+            self.undo.remember(dictation, original, target, newline)
+
+    def _follow(self, target: Target, text: str) -> Dictation:
+        """The correction key and the manual-edit tracker work on ``text`` from now on."""
         dictation = Dictation(new_dictation_id(), text, target.hwnd, self.parts.wall_clock())
         self.correction_key.remember(dictation)
         if self.edits is not None:
             self.edits.typed(dictation)
+        return dictation
+
+    def _press_undo_key(self) -> None:
+        if not self.sessions.submit(self._undo):
+            log.info("undo key: Quill is stopping")
+
+    def _undo(self) -> None:
+        """On the session thread, in order with the dictations: put the original back or say why not."""
+        outcome: UndoOutcome = self.undo.undo()
+        log.info("undo key: %s", outcome.reason)
+        if outcome.ok:
+            self._follow(outcome.target, outcome.original)  # learning starts again from the original
+            self.sessions.notify(None)
+        else:
+            self.sessions.notify(ERROR, outcome.message or "")
 
     def _housekeeping(self) -> None:
         if self.edits is not None:
@@ -534,6 +591,14 @@ class QuillApp:
             elif not event.is_injected and not self._correction_down:
                 self._correction_down = True
                 self._press_correction_key()
+            return
+        undo = self.config.autorewrite.undo_key
+        if undo is not None and event.kind == KEY and event.vk == undo.vk:
+            if not event.down:
+                self._undo_down = False
+            elif not event.is_injected and not self._undo_down:
+                self._undo_down = True
+                self._press_undo_key()
             return
         if self.edits is not None:
             self.edits.on_input(event)
@@ -592,6 +657,8 @@ def real_parts(config: Config) -> Parts:
         client=OllamaClient(config.ollama_url) if config.cleanup_mode == "llm" else None,
         command_client=(OllamaClient(config.ollama_url, timeout_s=COMMAND_TIMEOUT_S)
                         if config.trigger("command").enabled else None),
+        rewrite_client=(OllamaClient(config.ollama_url, timeout_s=config.autorewrite.timeout_s)
+                        if config.autorewrite.enabled else None),
         vocabulary=source.vocabulary,
         generic_terms=terms,
         vocabulary_file=source,

@@ -89,44 +89,68 @@ A F14 fica para um botão do Streamlabs. Enquanto o Quill está ligado, a F8 dei
 
     Para cada correção, escolha se a aprova ou apaga.
 
+## Ditados longos: revisão automática e tecla de desfazer
+
+Quando fala mais de 15 segundos (ou diz mais de 40 palavras), o Quill pede ao modelo local (Ollama) que reveja o texto antes de o escrever. Ele corrige palavras mal ouvidas a partir do contexto (o tipo de janela, o projeto aberto no VS Code e o seu vocabulário) e não tira nenhuma informação. Demora mais 1 a 3 segundos. Os ditados curtos são escritos como sempre, sem esta revisão.
+
+17. Dite um texto longo como de costume. Depois de largar, o indicador mostra "A rever o texto" e a seguir o texto revisto é escrito.
+18. No Claude Code na barra lateral do VS Code, um pedido com vários passos pode ficar em várias linhas (entre linhas o Quill usa Shift+Enter, nunca Enter). Com o botão 5, o Enter que envia só é carregado depois de o texto todo estar escrito. No terminal, o texto fica num só parágrafo.
+19. Se preferir o texto tal como o disse, carregue em F17 logo a seguir. O Quill apaga o texto revisto e escreve o original no mesmo sítio. Só funciona nos 30 segundos seguintes, na mesma janela, antes de carregar em Enter e se não tiver mexido no texto (o cursor tem de estar no fim dele). Caso contrário, nada muda e o indicador diz porquê, por exemplo "O texto foi editado; a reescrita ficou".
+
+A F17 não existe na maioria dos teclados: atribua-a a um botão do Streamlabs, como a F13 e a F14. Para usar outra tecla, escreva em `local\quill.toml` (não pode ser uma tecla de ditado, envio ou comando, nem a F16 da correção):
+
+```
+[autorewrite]
+undo_key = "f18"
+```
+
+Se o Ollama estiver desligado, demorar mais de 4 segundos ou a revisão perder alguma informação, o Quill escreve logo o texto original e o indicador avisa. Para desligar a revisão automática, escreva em `local\quill.toml`:
+
+```
+[autorewrite]
+enabled = false
+```
+
+Depois de mudar o ficheiro, desligue e volte a ligar o Quill.
+
 ## Acrescentar palavras ao vocabulário
 
 O vocabulário pessoal fica em `local\vocabulary.toml`, que nunca vai para o Git. Serve para nomes de projeto e termos técnicos que o Quill ouve mal (por exemplo, termos de trading).
 
-17. Abra o Terminal do Windows na pasta do Quill e acrescente o termo, escrito como quer que apareça no texto (com as maiúsculas certas):
+20. Abra o Terminal do Windows na pasta do Quill e acrescente o termo, escrito como quer que apareça no texto (com as maiúsculas certas):
 
     ```
     py -3.12 -m quill.vocabulary --add "take profit"
     ```
 
     Pode acrescentar vários de uma vez: `--add "Bybit" --add "funding rate"`.
-18. Para um nome de projeto, use `--add-name` em vez de `--add`:
+21. Para um nome de projeto, use `--add-name` em vez de `--add`:
 
     ```
     py -3.12 -m quill.vocabulary --add-name "nome-do-projeto"
     ```
 
-19. Se o Quill escrever sempre a mesma coisa errada no lugar de um termo, ensine essa forma: primeiro o termo certo, depois o que o Quill escreve.
+22. Se o Quill escrever sempre a mesma coisa errada no lugar de um termo, ensine essa forma: primeiro o termo certo, depois o que o Quill escreve.
 
     ```
     py -3.12 -m quill.vocabulary --add-variant "take profit" "teique profit"
     ```
 
-20. Leia a resposta. Mostra só contagens: quantos entraram (`added`), quantos já lá estavam (`already listed`) e quantas dicas cabem no Whisper (`hints ... fit the prompt, ... dropped`). Se aparecer um erro, o ficheiro ficou igual e a mensagem diz qual o campo com problema. Um termo repetido (mesmo com outras maiúsculas ou acentos) não é acrescentado de novo.
-21. Não é preciso desligar o Quill: o vocabulário novo é usado a partir do ditado seguinte. Se o ficheiro ficar inválido (por exemplo, depois de o editar à mão), o Quill continua com o vocabulário anterior e escreve o aviso em `local\logs\quill.log`. Para confirmar que o ficheiro está bem: `py -3.12 -m quill.vocabulary --check`.
+23. Leia a resposta. Mostra só contagens: quantos entraram (`added`), quantos já lá estavam (`already listed`) e quantas dicas cabem no Whisper (`hints ... fit the prompt, ... dropped`). Se aparecer um erro, o ficheiro ficou igual e a mensagem diz qual o campo com problema. Um termo repetido (mesmo com outras maiúsculas ou acentos) não é acrescentado de novo.
+24. Não é preciso desligar o Quill: o vocabulário novo é usado a partir do ditado seguinte. Se o ficheiro ficar inválido (por exemplo, depois de o editar à mão), o Quill continua com o vocabulário anterior e escreve o aviso em `local\logs\quill.log`. Para confirmar que o ficheiro está bem: `py -3.12 -m quill.vocabulary --check`.
 
-O Whisper recebe as dicas por esta ordem: nomes de projeto, a lista de termos técnicos genéricos do Quill e depois os seus termos. O espaço é pequeno e hoje já está cheio com os nomes e a lista genérica, por isso os seus termos aparecem como `dropped`. Mesmo assim contam: depois do reconhecimento, uma palavra muito parecida com um termo passa a ter a grafia certa. Se o Quill escrever um termo de forma muito diferente, use o passo 19 com essa forma.
+O Whisper recebe as dicas por esta ordem: nomes de projeto, a lista de termos técnicos genéricos do Quill e depois os seus termos. O espaço é pequeno e hoje já está cheio com os nomes e a lista genérica, por isso os seus termos aparecem como `dropped`. Mesmo assim contam: depois do reconhecimento, uma palavra muito parecida com um termo passa a ter a grafia certa. Se o Quill escrever um termo de forma muito diferente, use o passo 22 com essa forma.
 
 ## Arrancar com o Windows
 
-22. Para o Quill arrancar sozinho quando entra no Windows, corra uma vez:
+25. Para o Quill arrancar sozinho quando entra no Windows, corra uma vez:
 
     ```
     .venv\Scripts\python -m quill --install-startup
     ```
 
     Para deixar de arrancar com o Windows: `.venv\Scripts\python -m quill --remove-startup`. Se mudar a pasta do Quill de sítio, corra de novo o `--install-startup`.
-23. Quando arranca com o Windows não há janela do Terminal. Para o desligar: `.venv\Scripts\python -m quill --stop`.
+26. Quando arranca com o Windows não há janela do Terminal. Para o desligar: `.venv\Scripts\python -m quill --stop`.
 
 ## Se algo correr mal
 
@@ -137,6 +161,9 @@ O indicador mostra "Erro" com a causa e o ditado seguinte funciona normalmente:
 - "A janela ativa mudou; o texto não foi escrito": não mude de janela até o texto aparecer.
 - "Janela de administrador: não é possível escrever": o Quill não escreve em janelas abertas como administrador.
 - "Ollama indisponível: texto limpo pelas regras": o texto foi escrito na mesma, limpo pelas regras.
+- "Ollama indisponível; ficou o texto original", "A reescrita demorou demais; ficou o texto original" ou "Reescrita recusada; ficou o texto original": o ditado longo foi escrito sem a revisão automática, tal como o disse.
+- "Não há reescrita para desfazer", "Outra janela ativa; a reescrita ficou", "Já carregou em Enter; a reescrita ficou" e parecidos: a F17 não mudou nada, pelo motivo indicado.
+- "A reposição foi interrompida; verifique o texto": a F17 parou a meio (por exemplo, mudou de janela); confirme o texto no campo.
 - "Selecione o texto antes de dar a instrução": o modo comando precisa de texto selecionado.
 - "Ollama indisponível; a seleção ficou igual": abra o Ollama e repita a instrução.
 

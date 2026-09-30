@@ -65,6 +65,7 @@ class ExampleTest(ConfigCase):
         rewrite = load_config(None).autorewrite
         self.assertEqual((rewrite.enabled, rewrite.min_audio_s, rewrite.min_words, rewrite.timeout_s),
                          (True, 15.0, 40, 4.0))
+        self.assertEqual((rewrite.undo_key.name, rewrite.undo_key.vk, rewrite.undo_window_s), ("f17", 0x80, 30))
 
     def test_action_for_maps_inputs_to_actions(self) -> None:
         settings = load_config(None)
@@ -209,10 +210,37 @@ class RejectTest(ConfigCase):
             ("timeout_s = 0", "autorewrite.timeout_s"),
             ("timeout_s = 60", "autorewrite.timeout_s"),
             ("undo = 1", "autorewrite.undo"),
+            ('undo_key = "f25"', "autorewrite.undo_key"),
+            ('undo_key = "F17"', "autorewrite.undo_key"),
+            ("undo_key = 17", "autorewrite.undo_key"),
+            ('undo_key = "f13"', "autorewrite.undo_key"),  # a trigger key
+            ('undo_key = "f16"', "autorewrite.undo_key"),  # the correction key
+            ("undo_window_s = 2", "autorewrite.undo_window_s"),
+            ("undo_window_s = 700", "autorewrite.undo_window_s"),
+            ("undo_window_s = 30.5", "autorewrite.undo_window_s"),
+            ("undo_window_s = true", "autorewrite.undo_window_s"),
         ):
             with self.subTest(text=text):
                 message = self.rejected(f"[autorewrite]\n{text}\n", field)
                 self.assertTrue(message.isascii())
+        self.assertIn("correction key", self.rejected('[autorewrite]\nundo_key = "f16"\n', "autorewrite.undo_key"))
+
+    def test_undo_key_values(self) -> None:
+        rewrite = self.load('[autorewrite]\nundo_key = "f18"\nundo_window_s = 60\n').autorewrite
+        self.assertEqual((rewrite.undo_key.name, rewrite.undo_window_s), ("f18", 60))
+        self.assertIsNone(self.load('[autorewrite]\nundo_key = ""\n').autorewrite.undo_key)
+        # The correction key's key is free for the undo key once the correction key moves or is off.
+        moved = self.load('[corrections]\nkey = ""\n[autorewrite]\nundo_key = "f16"\n')
+        self.assertEqual((moved.correction_key, moved.autorewrite.undo_key.name), (None, "f16"))
+
+    def test_the_example_undo_key_gives_way_to_a_local_trigger_or_correction_key(self) -> None:
+        taken = self.load('[triggers.command]\nkeys = ["f17"]\n')
+        self.assertIsNone(taken.autorewrite.undo_key)
+        self.assertEqual(taken.correction_key.name, "f16")
+        moved = self.load('[corrections]\nkey = "f17"\n')
+        self.assertEqual((moved.correction_key.name, moved.autorewrite.undo_key), ("f17", None))
+        # A local undo key is never silently dropped.
+        self.rejected('[triggers.command]\nkeys = ["f18"]\n[autorewrite]\nundo_key = "f18"\n', "autorewrite.undo_key")
 
     def test_microphone_value_never_appears_in_errors(self) -> None:
         self.rejected("[audio]\nmicrophone = \"Invented Mic\\u0007Name\"\n", "audio.microphone", "Invented")

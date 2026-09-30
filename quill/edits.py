@@ -24,6 +24,15 @@ replacements; only those are kept.
 Keystrokes are never logged or stored: the mirror lives in memory only,
 its fields are hidden from ``repr`` and logs name reasons and counts.
 
+``RewriteUndo`` is the undo key of the automatic rewrite
+(``quill.autorewrite``): it puts the original text back in place of the last
+rewrite only when the tracker proves the rewritten span is untouched with the
+caret at its end, in the same foreground window, before Enter and within
+its time window. It removes the span with Backspace, one per character as
+typed (a line break or an accented letter is one), and types the original;
+both are Quill's marked input, which the tracker never mirrors. In any doubt
+it changes nothing and gives the reason.
+
 ``KeyTranslator`` turns hook events (``quill.triggers.InputEvent``) into
 edit keys. Characters come from the keyboard layout of the foreground window
 (``Win32Layout``: ToUnicodeEx with the flag that leaves the keyboard state
@@ -43,6 +52,7 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from quill.corrections import Dictation, Learner
+from quill.inject import NEWLINE_SPACE, InjectOptions, Target
 from quill.triggers import BUTTON, InputEvent
 from quill.win32 import QUILL_EXTRA_INFO
 
@@ -68,6 +78,11 @@ UNKNOWN = "unknown_key"
 OUTSIDE = "outside_span"
 TOO_LONG = "too_long"
 ABANDON = frozenset({CLICK, PASTE, UNDO, FOCUS, INJECTED, UNKNOWN})
+# Why a typed span is not intact (``EditTracker.intact``), besides the reasons above.
+WINDOW_OVER = "window over"
+EDITED = "edited"
+CARET_MOVED = "caret_moved"
+NOT_FOLLOWED = "not_followed"
 
 DEFAULT_WINDOW_S = 30.0
 # The mirror may grow to this many characters beyond the typed text.
@@ -128,10 +143,27 @@ class EditTracker:
         self._text: list[str] = []
         self._caret = 0
         self._started = 0.0
+        self._ended: tuple[str, str] | None = None  # (dictation id, reason) of the last span followed
 
     @property
     def tracking(self) -> bool:
         return self._dictation is not None
+
+    def intact(self, dictation: Dictation, now: float) -> str:
+        """'' when ``dictation`` is followed, unchanged, with the caret at its end; otherwise why not."""
+        with self._lock:
+            current = self._dictation
+            if current is not None and current.id == dictation.id:
+                if now - self._started >= self.window_s:
+                    return WINDOW_OVER
+                if "".join(self._text) != current.text:
+                    return EDITED
+                if self._caret != len(self._text):
+                    return CARET_MOVED
+                return ""
+            if self._ended is not None and self._ended[0] == dictation.id:
+                return self._ended[1]
+            return NOT_FOLLOWED
 
     def start(self, dictation: Dictation, now: float) -> EditOutcome | None:
         """Follow a newly typed text; the previous one is finished first (and returned)."""
@@ -152,7 +184,7 @@ class EditTracker:
         """Finish when the window is over."""
         with self._lock:
             if self._dictation is not None and now - self._started >= self.window_s:
-                return self._finish("window over")
+                return self._finish(WINDOW_OVER)
             return None
 
     def abandon(self, reason: str) -> None:
@@ -166,7 +198,7 @@ class EditTracker:
             if dictation is None:
                 return None
             if now - self._started >= self.window_s:
-                return self._finish("window over")  # this key came too late: not mirrored
+                return self._finish(WINDOW_OVER)  # this key came too late: not mirrored
             if foreground != dictation.target:
                 self._abandon(FOCUS)
                 return None
@@ -236,6 +268,7 @@ class EditTracker:
     def _abandon(self, reason: str) -> None:
         if self._dictation is not None:
             log.info("manual-edit tracking abandoned: %s", reason)
+            self._ended = (self._dictation.id, reason)
         self._dictation = None
         self._text = []
         self.last_reason = reason
@@ -248,6 +281,8 @@ class EditTracker:
         self._dictation = None
         self._text = []
         self.last_reason = reason
+        self._ended = (dictation.id, EDITED if edited != dictation.text and reason not in (ENTER, WINDOW_OVER)
+                       else reason)
         if edited == dictation.text:
             return None
         log.info("manual-edit tracking finished (%s) with changes", reason)
@@ -438,3 +473,162 @@ class ManualEdits:
     def _learn(self, outcome: EditOutcome | None) -> None:
         if outcome is not None:
             self.learner.learn(outcome.dictation, outcome.edited, partial=False, source="manual edit")
+
+
+# ---------------------------------------------------------------- undo of an automatic rewrite
+
+# Outcomes of the undo key (reason codes; logged).
+UNDONE = "undo_done"
+UNDO_NOTHING = "undo_nothing"
+UNDO_OTHER_WINDOW = "undo_other_window"
+UNDO_EXPIRED = "undo_expired"
+UNDO_ENTERED = "undo_entered"
+UNDO_EDITED = "undo_edited"
+UNDO_CARET = "undo_caret_moved"
+UNDO_CLICKED = "undo_clicked"
+UNDO_UNSURE = "undo_unsure"
+UNDO_FAILED = "undo_failed"
+
+# What the indicator says when nothing was undone (European Portuguese).
+UNDO_MESSAGES = {
+    UNDO_NOTHING: "Não há reescrita para desfazer",
+    UNDO_OTHER_WINDOW: "Outra janela ativa; a reescrita ficou",
+    UNDO_EXPIRED: "Passou o tempo para desfazer; a reescrita ficou",
+    UNDO_ENTERED: "Já carregou em Enter; a reescrita ficou",
+    UNDO_EDITED: "O texto foi editado; a reescrita ficou",
+    UNDO_CARET: "O cursor saiu do fim do texto; a reescrita ficou",
+    UNDO_CLICKED: "Houve um clique; a reescrita ficou",
+    UNDO_UNSURE: "Não consigo confirmar o texto; a reescrita ficou",
+    UNDO_FAILED: "A reposição foi interrompida; verifique o texto",
+}
+
+# Tracker reasons -> undo outcomes; any other reason is an edit.
+_UNDO_REASONS = {
+    ENTER: UNDO_ENTERED,
+    WINDOW_OVER: UNDO_EXPIRED,
+    FOCUS: UNDO_OTHER_WINDOW,
+    CLICK: UNDO_CLICKED,
+    CARET_MOVED: UNDO_CARET,
+    NOT_FOLLOWED: UNDO_UNSURE,
+    "stopped": UNDO_UNSURE,
+    "next dictation": UNDO_UNSURE,
+    "finished": UNDO_UNSURE,
+}
+
+
+def countable(text: str) -> bool:
+    """Whether each character of ``text`` is one Backspace in an editor.
+
+    Line breaks and precomposed accented letters are; a combining mark, a
+    joiner, a variation selector or a character outside the Basic
+    Multilingual Plane may not be, so a text with one is never erased.
+    """
+    if unicodedata.normalize("NFC", text) != text:
+        return False
+    for ch in text:
+        if ord(ch) > 0xFFFF or unicodedata.combining(ch) or unicodedata.category(ch) in ("Mn", "Mc", "Me", "Cf"):
+            return False
+        if ch != "\n" and unicodedata.category(ch) == "Cc":
+            return False
+    return True
+
+
+@dataclass(frozen=True)
+class _Rewrite:
+    dictation: Dictation  # the rewrite, as typed
+    original: str = field(repr=False)  # the original text, as it will be typed
+    target: Target
+    newline: str
+    at: float
+
+
+@dataclass(frozen=True)
+class UndoOutcome:
+    reason: str
+    target: Target | None = None
+    original: str = field(default="", repr=False)  # typed in place of the rewrite (UNDONE only)
+    erased: int = 0
+    typed: int = 0
+
+    @property
+    def ok(self) -> bool:
+        return self.reason == UNDONE
+
+    @property
+    def message(self) -> str | None:
+        return UNDO_MESSAGES.get(self.reason)
+
+
+class RewriteUndo:
+    """The last automatic rewrite and its undo; thread-safe.
+
+    ``injector`` is a ``quill.inject.Injector``; ``tracker`` the manual-edit
+    tracker the rewrite was given to (None: nothing can be proven, nothing is
+    undone); ``clock`` must be the tracker's clock.
+    """
+
+    def __init__(self, injector: object, tracker: EditTracker | None, foreground: Callable[[], int],
+                 window_s: float, clock: Callable[[], float] = time.monotonic) -> None:
+        self.injector = injector
+        self.tracker = tracker
+        self.foreground = foreground
+        self.window_s = window_s
+        self.clock = clock
+        self._lock = threading.Lock()
+        self._record: _Rewrite | None = None
+
+    def remember(self, dictation: Dictation, original: str, target: Target, newline: str = NEWLINE_SPACE) -> bool:
+        """A rewrite was typed as ``dictation.text`` in place of ``original`` (both as typed)."""
+        if not countable(dictation.text):
+            log.info("rewrite undo unavailable: the typed text has characters an editor may count differently")
+            self.forget()
+            return False
+        with self._lock:
+            self._record = _Rewrite(dictation, original, target, newline, self.clock())
+        return True
+
+    def forget(self) -> None:
+        with self._lock:
+            self._record = None
+
+    @property
+    def pending(self) -> bool:
+        return self._record is not None
+
+    def _drop(self, record: _Rewrite) -> None:
+        with self._lock:
+            if self._record is record:
+                self._record = None
+
+    def undo(self) -> UndoOutcome:
+        with self._lock:
+            record = self._record
+        if record is None:
+            return UndoOutcome(UNDO_NOTHING)
+        now = self.clock()
+        if now - record.at >= self.window_s:
+            self._drop(record)
+            return UndoOutcome(UNDO_EXPIRED, record.target)
+        if self.foreground() != record.target.hwnd:
+            return UndoOutcome(UNDO_OTHER_WINDOW, record.target)  # kept: the window may come back
+        if self.tracker is None:
+            self._drop(record)
+            return UndoOutcome(UNDO_UNSURE, record.target)
+        problem = self.tracker.intact(record.dictation, now)
+        if problem:
+            self._drop(record)
+            return UndoOutcome(_UNDO_REASONS.get(problem, UNDO_EDITED), record.target)
+        self._drop(record)  # at most one undo per rewrite
+        count = len(record.dictation.text)
+        erased = self.injector.erase(count, record.target)
+        if not erased.ok:
+            self.tracker.abandon("undo interrupted")
+            log.warning("rewrite undo: erase stopped (%s, %d of %d)", erased.reason, erased.typed, count)
+            return UndoOutcome(UNDO_FAILED, record.target, erased=erased.typed)
+        typed = self.injector.inject(record.original, record.target, InjectOptions(newline=record.newline))
+        if not typed.ok:
+            self.tracker.abandon("undo interrupted")
+            log.warning("rewrite undo: typing stopped (%s, %d of %d)", typed.reason, typed.typed, typed.total)
+            return UndoOutcome(UNDO_FAILED, record.target, erased=count, typed=typed.typed)
+        log.info("rewrite undone (%d characters erased, %d typed)", count, typed.typed)
+        return UndoOutcome(UNDONE, record.target, record.original, count, typed.typed)

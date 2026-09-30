@@ -80,11 +80,23 @@ edit_window_s = 30
 # than timeout_s types the original text. Shorter dictations never call the
 # model. On by default since its measurement on the real dictation set (no
 # content word lost, clean WER not worse): see docs/research/FASE2.md.
+# The indicator shows "A rever o texto" while the model works. In the Claude
+# Code panel of VS Code a rewrite may use several lines (typed as Shift+Enter);
+# in a terminal it stays one paragraph, because a terminal may take Shift+Enter
+# as Enter.
+# undo_key puts the original text back in place of the last rewrite, for
+# undo_window_s seconds, only in the same window, before Enter, and while the
+# rewritten text is untouched with the cursor at its end (it needs the manual
+# edit tracking of [corrections]); otherwise it changes nothing and the
+# indicator says why. The key is not swallowed; it may not be a trigger key or
+# the correction key; "" disables it.
 [autorewrite]
 enabled = true
 min_audio_s = 15
 min_words = 40
 timeout_s = 4
+undo_key = "f17"
+undo_window_s = 30
 
 # Personal data. Paths are relative to the repository and must stay inside
 # the ignored local/ folder. style is a folder of writing samples:

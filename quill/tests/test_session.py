@@ -11,10 +11,11 @@ import time
 import unittest
 from types import SimpleNamespace
 
+from quill import autorewrite as R
 from quill import inject
 from quill import session as S
 from quill.focus import CLICKED, NO_WINDOW, FocusResult
-from quill.indicator.render import ERROR, LISTENING, LOADING, SENT, TRANSCRIBING
+from quill.indicator.render import ERROR, LISTENING, LOADING, REVIEWING, SENT, TRANSCRIBING
 from quill.inject import InjectResult, Target
 from quill.session import Processed, SessionManager
 from quill.tests.fakes import FakeCaptures, FakeClock, FakeIndicator
@@ -110,8 +111,10 @@ class FakeInjector:
         self.results = []  # reasons to return, in order; empty: ok
         self.enter_reason = inject.OK
         self.enter_error = None
+        self.options = []  # the InjectOptions of each inject call
 
-    def inject(self, text, target):
+    def inject(self, text, target, options=None):
+        self.options.append(options)
         self.clock.now += 0.1
         reason = self.results.pop(0) if self.results else inject.OK
         if reason == inject.OK:
@@ -137,7 +140,39 @@ class FakePipeline:
         if self.error is not None:
             raise self.error
         claude = target == CLAUDE
-        return Processed(raw.strip().capitalize() + ".", "claude-code" if claude else "default", claude, self.notice)
+        return Processed(raw.strip().capitalize() + ".", "claude-code" if claude else "default", claude, self.notice,
+                         keep=("Invented",), project="projeto", rewrite_profile="vscode" if claude else None,
+                         newline=inject.NEWLINE_SHIFT_ENTER if claude else inject.NEWLINE_SPACE)
+
+
+class FakeRewriter:
+    """``quill.autorewrite.AutoRewriter`` stand-in: long means ``min_words`` words or ``min_audio_s``."""
+
+    def __init__(self, min_words=6, min_audio_s=15.0):
+        self.min_words = min_words
+        self.min_audio_s = min_audio_s
+        self.asked = []  # (text, audio_s) of each wants call
+        self.calls = []  # keyword arguments of each rewrite call
+        self.reason = R.REWRITTEN
+        self.reply = None  # the rewritten text; None: the input in upper case
+        self.error = None
+        self.gate = None  # a threading.Event the rewrite waits for
+        self.started = threading.Event()
+
+    def wants(self, text, audio_s):
+        self.asked.append((text, audio_s))
+        return len(text.split()) >= self.min_words or audio_s >= self.min_audio_s
+
+    def rewrite(self, text, *, audio_s, profile="default", keep=(), project=""):
+        self.calls.append({"text": text, "audio_s": audio_s, "profile": profile, "keep": keep, "project": project})
+        self.started.set()
+        if self.gate is not None:
+            self.gate.wait(5)
+        if self.error is not None:
+            raise self.error
+        if self.reason == R.REWRITTEN:
+            return R.AutoRewrite(self.reply or text.upper(), text, R.REWRITTEN)
+        return R.AutoRewrite(text, text, self.reason)
 
 
 class SessionCase(unittest.TestCase):
@@ -149,18 +184,27 @@ class SessionCase(unittest.TestCase):
         self.injector = FakeInjector(self.clock)
         self.indicator = FakeIndicator()
         self.pipeline = FakePipeline()
+        self.rewriter = self.make_rewriter()
         self.started = 0
         self.typed_hook = []
+        self.undoable = []  # (original, newline) of each on_typed call
         self.manager = SessionManager(
             transcriber=self.transcriber, capture_factory=self.captures, focus=self.focus, injector=self.injector,
-            indicator=self.indicator, pipeline=self.pipeline, on_session_start=self._started,
-            on_typed=lambda target, text: self.typed_hook.append((target, text)), clock=self.clock,
+            indicator=self.indicator, pipeline=self.pipeline, rewriter=self.rewriter, on_session_start=self._started,
+            on_typed=self._typed, clock=self.clock,
             final_timeout_s=5.0, poll_s=0.05)
         self.manager.start()
         self.addCleanup(self.manager.stop)
 
+    def make_rewriter(self):
+        return None
+
     def _started(self):
         self.started += 1
+
+    def _typed(self, target, text, original=None, newline=inject.NEWLINE_SPACE):
+        self.typed_hook.append((target, text))
+        self.undoable.append((original, newline))
 
     def ready(self):
         self.manager.loaded()
@@ -525,6 +569,253 @@ class SendClaudeTest(SessionCase):
         self.assertEqual(len(self.injector.typed), 2)
         self.assertEqual(self.indicator.last, ("show", ERROR, S.MESSAGES[S.ENTER_FAILED]))
 
+
+LONG = "um dois três quatro cinco seis sete"  # 7 words: long for FakeRewriter
+LONG_TYPED = "Um dois três quatro cinco seis sete."
+
+
+def wait_until(condition, what):
+    deadline = time.monotonic() + 5
+    while not condition():
+        if time.monotonic() > deadline:
+            raise AssertionError(f"timed out waiting for {what}")
+        time.sleep(0.005)
+
+
+class RewriteTest(SessionCase):
+    """The automatic rewrite of long dictations, with a fake rewriter."""
+
+    def setUp(self):
+        super().setUp()
+        self.ready()
+
+    def make_rewriter(self):
+        return FakeRewriter()
+
+    def hold_long(self, partial="um dois"):
+        """A long hold whose rewrite waits for ``self.rewriter.gate``; returns once the rewrite started."""
+        self.rewriter.gate = threading.Event()
+        self.press()
+        self.captures.made[-1].push(PCM)
+        self.transcriber.sessions[-1].partial(partial)
+        self.release()
+        self.transcriber.sessions[-1].handle.resolve(LONG)
+        self.assertTrue(self.rewriter.started.wait(5))
+
+    def test_short_dictation_never_asks_the_rewriter(self):
+        self.dictate("frase curta")
+        outcome = self.wait_outcomes(1)[0]
+        self.assertEqual((outcome.reason, outcome.rewrite), (S.TYPED, None))
+        self.assertEqual(self.rewriter.calls, [])
+        self.assertEqual(self.rewriter.asked, [("Frase curta.", 0.1)])  # the audio length in seconds
+        self.assertEqual(self.injector.typed, [("Frase curta.", TARGET)])
+        self.assertNotIn(REVIEWING, self.indicator.states)
+        self.assertEqual(self.undoable, [(None, inject.NEWLINE_SPACE)])
+        self.assertAlmostEqual(outcome.release_to_typed_s, 0.1)  # the same path as without a rewriter
+        self.assertEqual(self.indicator.last, ("hide",))
+
+    def test_long_dictation_is_rewritten_while_the_indicator_says_so(self):
+        self.hold_long()
+        self.assertEqual(self.indicator.last, ("show", REVIEWING, "um dois"))
+        self.assertEqual(self.injector.typed, [])
+        self.rewriter.gate.set()
+        outcome = self.wait_outcomes(1)[0]
+        self.assertEqual((outcome.reason, outcome.rewrite), (S.TYPED, R.REWRITTEN))
+        self.assertEqual(self.injector.typed, [(LONG_TYPED.upper(), TARGET)])
+        self.assertEqual(self.rewriter.calls, [{"text": LONG_TYPED, "audio_s": 0.1, "profile": "default",
+                                                "keep": ("Invented",), "project": "projeto"}])
+        self.assertEqual(self.typed_hook, [(TARGET, LONG_TYPED.upper())])
+        self.assertEqual(self.undoable, [(LONG_TYPED, inject.NEWLINE_SPACE)])
+        self.assertEqual(self.indicator.last, ("hide",))
+        self.assert_released()
+
+    def test_long_audio_alone_is_enough(self):
+        self.press()
+        for _ in range(160):  # 16 s of audio
+            self.captures.made[0].push(PCM)
+        self.release()
+        self.transcriber.sessions[0].handle.resolve("frase curta")
+        self.assertEqual(self.wait_outcomes(1)[0].rewrite, R.REWRITTEN)
+        self.assertAlmostEqual(self.rewriter.calls[0]["audio_s"], 16.0)
+
+    def test_failure_timeout_or_refusal_types_the_original_with_a_notice(self):
+        for number, reason in enumerate((R.FAILED, R.TIMEOUT, R.REFUSED), start=1):
+            self.rewriter.reason = reason
+            self.dictate(LONG)
+            outcome = self.wait_outcomes(number)[-1]
+            self.assertEqual((outcome.reason, outcome.rewrite, outcome.notice), (reason, reason, reason))
+            self.assertEqual(self.injector.typed[-1], (LONG_TYPED, TARGET))
+            self.assertEqual(self.indicator.last, ("show", ERROR, R.MESSAGES[reason]))
+            self.assertEqual(self.undoable[-1], (None, inject.NEWLINE_SPACE))
+        self.assert_released()
+
+    def test_unchanged_text_is_typed_without_a_notice(self):
+        self.rewriter.reason = R.UNCHANGED
+        self.dictate(LONG)
+        outcome = self.wait_outcomes(1)[0]
+        self.assertEqual((outcome.reason, outcome.rewrite, outcome.notice), (S.TYPED, R.UNCHANGED, None))
+        self.assertEqual(self.undoable, [(None, inject.NEWLINE_SPACE)])
+        self.assertEqual(self.indicator.last, ("hide",))
+
+    def test_a_raising_or_broken_rewriter_types_the_original(self):
+        self.rewriter.error = RuntimeError("fake")
+        with self.assertLogs("quill.session", level="ERROR"):
+            self.dictate(LONG)
+            outcome = self.wait_outcomes(1)[0]
+        self.assertEqual(outcome.reason, R.FAILED)
+        self.assertEqual(self.injector.typed, [(LONG_TYPED, TARGET)])
+        self.rewriter.error = None
+        self.rewriter.reply = "   "  # an empty rewrite is never typed
+        with self.assertLogs("quill.session", level="ERROR"):
+            self.dictate(LONG)
+            self.assertEqual(self.wait_outcomes(2)[-1].reason, R.FAILED)
+        self.assertEqual(self.injector.typed[-1], (LONG_TYPED, TARGET))
+        self.rewriter.wants = lambda text, audio_s: 1 / 0
+        with self.assertLogs("quill.session", level="ERROR"):
+            self.dictate(LONG)
+            self.assertEqual(self.wait_outcomes(3)[-1].reason, S.TYPED)
+        self.assertEqual(self.injector.typed[-1], (LONG_TYPED, TARGET))
+        self.assert_released()
+
+    def test_typing_failure_after_a_rewrite_is_the_typing_error(self):
+        self.injector.results = [inject.FOREGROUND_CHANGED]
+        self.dictate(LONG)
+        self.assertEqual(self.wait_outcomes(1)[0].reason, inject.FOREGROUND_CHANGED)
+        self.assertEqual(self.typed_hook, [])
+        self.assert_released()
+
+    def test_a_newer_session_during_a_rewrite_keeps_its_words_and_the_order(self):
+        self.focus.targets = [TARGET, OTHER]
+        self.hold_long()
+        self.assertEqual(self.indicator.last[:2], ("show", REVIEWING))
+        self.press()  # records at once while the first one is being rewritten
+        self.assertEqual(self.indicator.last, ("show", LISTENING, ""))
+        self.captures.made[1].push(PCM)
+        self.transcriber.sessions[1].partial("segunda")
+        self.release()
+        self.assertEqual(self.indicator.last, ("show", TRANSCRIBING, "segunda"))
+        self.transcriber.sessions[1].handle.resolve("segunda frase")
+        time.sleep(0.05)
+        self.assertEqual(self.injector.typed, [])  # typed only after the older one
+        self.rewriter.gate.set()
+        outcomes = self.wait_outcomes(2)
+        self.assertEqual([(o.session, o.reason) for o in outcomes], [(1, S.TYPED), (2, S.TYPED)])
+        self.assertEqual(self.injector.typed, [(LONG_TYPED.upper(), TARGET), ("Segunda frase.", OTHER)])
+        self.assertEqual(self.indicator.states.count(REVIEWING), 1)  # never over the newer session's words
+        self.assertEqual(self.indicator.last, ("hide",))
+        self.assert_released()
+
+    def test_older_rewrite_is_shown_again_when_the_newer_session_ends_first(self):
+        self.hold_long()
+        self.manager.handle(signal(START))
+        self.assertEqual(self.indicator.last, ("show", LISTENING, ""))
+        self.manager.handle(signal(CANCEL, reason="short_hold"))  # the newer one ends first
+        wait_until(lambda: self.indicator.last == ("show", REVIEWING, "um dois"), "the rewrite shown again")
+        self.rewriter.gate.set()
+        self.wait_outcomes(2)
+        self.assertEqual(self.indicator.last, ("hide",))
+        self.assert_released()
+
+    def test_stop_during_a_rewrite_still_types_once_and_releases(self):
+        self.hold_long()
+        stopper = threading.Thread(target=self.manager.stop)
+        stopper.start()
+        self.rewriter.gate.set()
+        stopper.join(5)
+        self.assertFalse(stopper.is_alive())
+        self.assertEqual(len(self.injector.typed), 1)
+        self.assertEqual(self.manager.outcomes[-1].rewrite, R.REWRITTEN)
+        self.assert_released()
+
+
+class JobTest(SessionCase):
+    """Work queued on the finalizer thread (the undo key) and indicator notices."""
+
+    def setUp(self):
+        super().setUp()
+        self.ready()
+
+    def test_a_job_runs_after_the_sessions_released_before_it(self):
+        order = []
+        self.press()
+        self.captures.made[0].push(PCM)
+        self.release()
+        self.assertTrue(self.manager.submit(lambda: order.append(("job", len(self.injector.typed)))))
+        time.sleep(0.05)
+        self.assertEqual(order, [])  # waits for the session
+        self.transcriber.sessions[0].handle.resolve()
+        wait_until(lambda: order, "the job")
+        self.assertEqual(order, [("job", 1)])
+
+    def test_a_failing_job_is_logged_and_the_next_session_works(self):
+        with self.assertLogs("quill.session", level="ERROR"):
+            self.manager.submit(lambda: 1 / 0)
+            self.dictate()
+            self.wait_outcomes(1)
+        self.assertEqual(self.manager.outcomes[0].reason, S.TYPED)
+
+    def test_no_job_after_stop(self):
+        self.manager.stop()
+        self.assertFalse(self.manager.submit(lambda: None))
+
+    def test_notify_never_covers_a_live_session(self):
+        self.assertTrue(self.manager.notify(ERROR, "aviso"))
+        self.assertEqual(self.indicator.last, ("show", ERROR, "aviso"))
+        self.assertTrue(self.manager.notify(None))
+        self.assertEqual(self.indicator.last, ("hide",))
+        self.press()
+        self.assertFalse(self.manager.notify(ERROR, "aviso"))
+        self.assertEqual(self.indicator.last, ("show", LISTENING, ""))
+        self.release()
+        self.assertFalse(self.manager.notify(None))  # still finalizing
+        self.transcriber.sessions[0].handle.resolve()
+        self.wait_outcomes(1)
+        self.assertTrue(self.manager.notify(ERROR, "aviso"))
+
+
+class RewriteClaudeTest(SessionCase):
+    def setUp(self):
+        super().setUp()
+        self.ready()
+        self.focus.targets = [CLAUDE]
+
+    def make_rewriter(self):
+        return FakeRewriter()
+
+    def test_send_claude_types_the_lines_with_shift_enter_then_one_enter(self):
+        self.rewriter.reply = "Um dois três.\nQuatro cinco seis sete."
+        self.dictate(LONG, action="send_claude")
+        outcome = self.wait_outcomes(1)[0]
+        self.assertEqual((outcome.reason, outcome.rewrite), (S.SENT_ENTER, R.REWRITTEN))
+        self.assertEqual(self.injector.typed, [("Um dois três.\nQuatro cinco seis sete.", CLAUDE)])
+        self.assertEqual(self.injector.options[-1].newline, inject.NEWLINE_SHIFT_ENTER)
+        self.assertEqual(self.injector.enters, [CLAUDE])  # once, after the whole text
+        self.assertEqual(self.rewriter.calls[0]["profile"], "vscode")  # the pipeline's rewrite profile
+        self.assertEqual(self.undoable, [(None, inject.NEWLINE_SHIFT_ENTER)])  # after Enter: nothing to undo
+        self.assertEqual(self.indicator.last, ("show", SENT, ""))
+
+    def test_dictation_into_claude_code_keeps_the_lines_and_may_be_undone(self):
+        self.rewriter.reply = "Um dois três.\nQuatro cinco seis sete."
+        self.dictate(LONG)
+        self.assertEqual(self.wait_outcomes(1)[0].reason, S.TYPED)
+        self.assertEqual(self.injector.enters, [])
+        self.assertEqual(self.typed_hook, [(CLAUDE, "Um dois três.\nQuatro cinco seis sete.")])
+        self.assertEqual(self.undoable, [(LONG_TYPED, inject.NEWLINE_SHIFT_ENTER)])
+
+    def test_send_claude_with_a_failed_rewrite_sends_the_original_and_says_so(self):
+        self.rewriter.reason = R.TIMEOUT
+        self.dictate(LONG, action="send_claude")
+        outcome = self.wait_outcomes(1)[0]
+        self.assertEqual((outcome.reason, outcome.notice), (S.SENT_ENTER, R.TIMEOUT))
+        self.assertEqual(self.injector.typed, [(LONG_TYPED, CLAUDE)])
+        self.assertEqual(self.injector.enters, [CLAUDE])
+        self.assertEqual(self.indicator.last, ("show", SENT, R.MESSAGES[R.TIMEOUT]))
+
+    def test_no_enter_when_the_rewrite_is_not_typed(self):
+        self.injector.results = [inject.TARGET_GONE]
+        self.dictate(LONG, action="send_claude")
+        self.assertEqual(self.wait_outcomes(1)[0].reason, inject.TARGET_GONE)
+        self.assertEqual(self.injector.enters, [])
 
 class HelpersTest(unittest.TestCase):
     def test_voice_level(self):

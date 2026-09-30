@@ -17,14 +17,17 @@ from pathlib import Path
 from unittest import mock
 
 from quill import app as A
+from quill import autorewrite as R
 from quill import inject
 from quill import session as S
 from quill import startup
 from quill import vocabulary as V
 from quill.config import EXAMPLE_CONFIG, load_config
 from quill.corrections import CorrectionStore
-from quill.indicator.render import ERROR, LISTENING, LOADING, SENT
-from quill.ollama import OllamaError
+from quill.edits import UNDO_EDITED, UNDO_ENTERED, UNDO_EXPIRED, UNDO_MESSAGES, UNDO_NOTHING, UNDO_OTHER_WINDOW, \
+    UNDO_UNSURE
+from quill.indicator.render import ERROR, LISTENING, LOADING, REVIEWING, SENT
+from quill.ollama import ChatReply, OllamaError
 from quill.tests.fakes import (
     OTHER_HWND,
     TARGET,
@@ -36,9 +39,11 @@ from quill.tests.fakes import (
     FakeRegistry,
     FakeWin32,
 )
+from quill.tests.test_edits import FakeLayout
 from quill.tests.test_streaming import FakeModel, speech
 from quill.win32 import (
     INTEGRITY_MEDIUM,
+    LLKHF_INJECTED,
     VK_RCONTROL,
     VK_XBUTTON1,
     VK_XBUTTON2,
@@ -528,6 +533,257 @@ class CorrectionKeyTest(AppCase):
             self.assertTrue(saved.wait(WAIT_S), "timed out waiting for the learned correction")
         stored = CorrectionStore(self.config.corrections_path).load()
         self.assertEqual([(e.source, e.target) for e in stored.entries], [("w2", "w9")])
+
+
+WORDS = tuple(range(1, 13))  # 12 invented words: long once min_words is 10
+SPOKEN = "w1 w2 w3 w4 w5 w6 w7 w8 w9 w10 w11 w12."
+REWRITTEN = "W1 w2 w3 w4 w5 w6, w7 w8 w9 w10 w11 w12."  # what the guard accepts: capital and comma
+F17 = 0x80  # the example's undo key
+VK_A = 0x41
+VK_RETURN = 0x0D
+
+
+class RewriteOllama:
+    """A local Ollama stand-in for the automatic rewrite: a reply, an error or a wait."""
+
+    def __init__(self, reply=REWRITTEN):
+        self.reply = reply
+        self.error = None
+        self.gate = None  # threading.Event the reply waits for
+        self.entered = threading.Event()
+        self.calls = []  # (system prompt, user message, timeout_s)
+
+    def installed(self, timeout_s=None):
+        return ["qwen3:8b"]
+
+    def chat(self, model, system, user, max_tokens=None, timeout_s=None):
+        self.calls.append((system, user, timeout_s))
+        self.entered.set()
+        if self.gate is not None:
+            self.gate.wait(WAIT_S)
+        if self.error is not None:
+            raise self.error
+        return ChatReply(self.reply)
+
+
+class RewriteCase(AppCase):
+    def setUp(self):
+        super().setUp()
+        self.ollama = RewriteOllama()
+        self.app = self.rewriting_app()
+
+    def rewriting_app(self, **changes):
+        rewrite = dataclasses.replace(self.config.autorewrite, min_words=10, **changes)
+        return self.make_app(self.make_config(autorewrite=rewrite), rewrite_client=self.ollama, layout=FakeLayout())
+
+    def press_undo(self, quill=None):
+        quill = quill or self.app
+        shown = len(self.indicator.calls)
+        self.assertEqual(self.key(True, F17), 0)  # never swallowed
+        self.key(False, F17)
+        wait_for(lambda: len(self.indicator.calls) > shown, "the undo outcome on the indicator")
+        return self.indicator.last
+
+    def refused(self, reason):
+        return ("show", ERROR, UNDO_MESSAGES[reason])
+
+
+class RewriteAppTest(RewriteCase):
+    def test_short_dictation_never_calls_ollama(self):
+        self.start()
+        self.hold((1, 2, 3))
+        outcome = self.app.sessions.outcomes[-1]
+        self.assertEqual((outcome.reason, outcome.rewrite), (S.TYPED, None))
+        self.assertEqual(self.ollama.calls, [])
+        self.assertEqual(self.api.received_text(), "w1 w2 w3.")
+        self.assertNotIn(REVIEWING, self.indicator.states)
+
+    def test_long_dictation_is_rewritten_with_the_indicator_state(self):
+        with self.assertLogs("quill", level="INFO") as logs:
+            self.start()
+            self.hold(WORDS)
+        outcome = self.app.sessions.outcomes[-1]
+        self.assertEqual((outcome.reason, outcome.rewrite), (S.TYPED, R.REWRITTEN))
+        self.assertEqual(self.api.received_text(), REWRITTEN)
+        self.assertIn(REVIEWING, self.indicator.states)
+        self.assertEqual(self.indicator.last, ("hide",))
+        system, user, timeout = self.ollama.calls[0]
+        self.assertIn(SPOKEN, user)
+        self.assertEqual(timeout, self.config.autorewrite.timeout_s)
+        text = "\n".join(logs.output)
+        self.assertIn("automatic rewrite on", text)
+        self.assertNotRegex(text.casefold(), r"\bw[0-9]")  # never the spoken, rewritten or original words
+
+    def test_ollama_down_timeout_or_refusal_types_the_original_at_once(self):
+        self.start()
+        cases = ((OllamaError("Ollama unreachable: URLError"), REWRITTEN, R.FAILED),
+                 (TimeoutError("timed out"), REWRITTEN, R.TIMEOUT),
+                 (None, "W1 w2 w3.", R.REFUSED))  # words lost: the guard refuses
+        typed = ""
+        for number, (error, reply, reason) in enumerate(cases, start=1):
+            with self.subTest(reason):
+                self.ollama.error, self.ollama.reply = error, reply
+                self.hold(WORDS)
+                outcome = self.app.sessions.outcomes[-1]
+                self.assertEqual((outcome.reason, outcome.rewrite), (reason, reason))
+                typed += SPOKEN
+                self.assertEqual(self.api.received_text(), typed)
+                self.assertEqual(self.indicator.last, ("show", ERROR, R.MESSAGES[reason]))
+                self.assertEqual(len(self.ollama.calls), number)
+        # Nothing to undo after the original was typed.
+        self.assertEqual(self.press_undo(), self.refused(UNDO_NOTHING))
+
+    def test_a_dictation_during_a_rewrite_waits_and_types_in_order(self):
+        self.ollama.gate = threading.Event()
+        self.start()
+        self.hold(WORDS, wait=False)
+        self.assertTrue(self.ollama.entered.wait(WAIT_S))
+        wait_for(lambda: REVIEWING in self.indicator.states, "the reviewing state")
+        self.hold((1, 2), wait=False)
+        time.sleep(0.05)
+        self.assertEqual(self.api.received_text(), "")  # nothing typed before the older rewrite
+        self.assertEqual(len(self.app.sessions.outcomes), 0)
+        self.ollama.gate.set()
+        outcomes = self.outcomes(2)
+        self.assertEqual([o.reason for o in outcomes], [S.TYPED, S.TYPED])
+        self.assertEqual(self.api.received_text(), REWRITTEN + "w1 w2.")
+        self.assertEqual(self.indicator.last, ("hide",))
+        self.assertEqual(len(self.ollama.calls), 1)
+
+    def test_start_stop_start_with_the_rewrite_and_undo(self):
+        self.start()
+        self.hold(WORDS)
+        self.assertEqual(self.api.received_text(), REWRITTEN)
+        self.app.stop()
+        self.assertFalse(self.app.undo.pending)  # stop forgets the rewrite
+        self.start()
+        self.assertEqual(self.press_undo(), self.refused(UNDO_NOTHING))
+        self.hold(WORDS)
+        self.assertEqual(self.api.received_text(), REWRITTEN * 2)
+        self.assertEqual(self.press_undo(), ("hide",))
+        self.assertEqual(self.api.received_text(), REWRITTEN + SPOKEN)
+        self.app.stop()
+        self.app.stop()
+        self.assertEqual(self.kernel.objects, {})
+
+
+class ClaudeRewriteTest(RewriteCase):
+    LINES = "- W1 w2 w3 w4 w5 w6.\n- W7 w8 w9 w10 w11 w12."
+
+    def setUp(self):
+        super().setUp()
+        self.ollama.reply = self.LINES
+        self.api.under_pointer = CLAUDE_HWND
+        self.api.foreground = CLAUDE_HWND
+
+    def test_send_in_the_claude_code_panel_types_lines_with_shift_enter_then_one_enter(self):
+        self.api.images[CLAUDE_PID] = "C:\\Invented\\Code.exe"
+        self.api.titles[CLAUDE_HWND] = "invented - Visual Studio Code [Claude Code]"
+        self.start()
+        self.hold(WORDS, which=XBUTTON2)
+        outcome = self.app.sessions.outcomes[-1]
+        self.assertEqual((outcome.reason, outcome.rewrite), (S.SENT_ENTER, R.REWRITTEN))
+        self.assertEqual(self.api.enter_presses(), [True, False])  # Shift+Enter inside, one Enter at the end
+        self.assertEqual(self.api.events[-2].vk, VK_RETURN)  # the Enter comes after the whole text
+        self.assertIn("own line", self.ollama.calls[0][0])  # the Claude Code layout
+        self.assertEqual(self.press_undo(), self.refused(UNDO_NOTHING))  # sent with Enter: never undone
+
+    def test_the_terminal_gets_one_paragraph_and_no_line_breaks(self):
+        self.ollama.reply = REWRITTEN
+        self.start()
+        self.hold(WORDS, which=XBUTTON2)
+        self.assertEqual(self.app.sessions.outcomes[-1].reason, S.SENT_ENTER)
+        self.assertEqual(self.api.enter_presses(), [False])
+        self.assertNotIn("own line", self.ollama.calls[0][0])
+        self.assertIn("one paragraph", self.ollama.calls[0][0])
+
+    def test_undo_in_the_claude_code_panel_counts_line_breaks(self):
+        self.api.images[CLAUDE_PID] = "C:\\Invented\\Code.exe"
+        self.api.titles[CLAUDE_HWND] = "invented - Visual Studio Code [Claude Code]"
+        self.start()
+        self.hold(WORDS)
+        self.assertEqual(self.app.sessions.outcomes[-1].reason, S.TYPED)
+        self.assertEqual(self.api.received_text(), self.LINES)
+        self.assertEqual(self.press_undo(), ("hide",))
+        self.assertEqual(self.api.backspaces(), len(self.LINES))
+        self.assertEqual(self.api.received_text(), SPOKEN)
+
+
+class UndoKeyTest(RewriteCase):
+    def setUp(self):
+        super().setUp()
+        self.start()
+        self.hold(WORDS)
+        self.assertEqual(self.api.received_text(), REWRITTEN)
+
+    def test_undo_restores_the_original_and_learning_uses_it(self):
+        calls = len(self.api.calls)
+        self.assertEqual(self.press_undo(), ("hide",))
+        self.assertEqual(self.api.received_text(), SPOKEN)
+        self.assertEqual(self.api.backspaces(), len(REWRITTEN))
+        self.assertTrue(all(event.vk != VK_RETURN for call in self.api.calls[calls:] for event in call))
+        self.assertEqual(self.app.correction_key.last.text, SPOKEN)  # the correction key works on the original
+        self.assertEqual(self.app.edits.tracker._dictation.text, SPOKEN)
+        # A second press has nothing left to undo.
+        self.assertEqual(self.press_undo(), self.refused(UNDO_NOTHING))
+        self.assertEqual(self.api.received_text(), SPOKEN)
+
+    def test_refused_after_a_manual_edit(self):
+        self.key(True, VK_A)
+        self.key(False, VK_A)
+        self.assertEqual(self.press_undo(), self.refused(UNDO_EDITED))
+        self.assertEqual(self.api.backspaces(), 0)
+
+    def test_refused_in_another_window(self):
+        self.api.foreground = OTHER_HWND
+        self.assertEqual(self.press_undo(), self.refused(UNDO_OTHER_WINDOW))
+        self.assertEqual(self.api.backspaces(), 0)
+
+    def test_refused_after_enter(self):
+        self.key(True, VK_RETURN)
+        self.key(False, VK_RETURN)
+        self.assertEqual(self.press_undo(), self.refused(UNDO_ENTERED))
+        self.assertEqual(self.api.backspaces(), 0)
+
+    def test_refused_after_the_time_window(self):
+        later = time.monotonic() + self.config.autorewrite.undo_window_s
+        with mock.patch.object(self.app.undo, "clock", lambda: later):
+            self.assertEqual(self.press_undo(), self.refused(UNDO_EXPIRED))
+        self.assertEqual(self.api.backspaces(), 0)
+
+    def test_a_new_dictation_forgets_the_rewrite(self):
+        self.hold((1,))
+        self.assertEqual(self.press_undo(), self.refused(UNDO_NOTHING))
+        self.assertEqual(self.api.backspaces(), 0)
+
+    def test_an_injected_undo_key_is_ignored(self):
+        shown = len(self.indicator.calls)
+        self.hooks.key(WM_KEYDOWN, F17, flags=LLKHF_INJECTED)
+        time.sleep(0.05)
+        self.assertEqual(len(self.indicator.calls), shown)
+        self.assertTrue(self.app.undo.pending)
+
+
+class UndoWithoutTrackingTest(RewriteCase):
+    def rewriting_app(self, **changes):
+        rewrite = dataclasses.replace(self.config.autorewrite, min_words=10, **changes)
+        return self.make_app(self.make_config(autorewrite=rewrite), rewrite_client=self.ollama)  # no layout
+
+    def test_without_the_manual_edit_tracker_nothing_is_undone(self):
+        self.start()
+        self.hold(WORDS)
+        self.assertEqual(self.press_undo(), self.refused(UNDO_UNSURE))
+        self.assertEqual(self.api.received_text(), REWRITTEN)
+
+
+class RewriteOffTest(RewriteCase):
+    def test_disabled_rewrite_never_calls_ollama(self):
+        quill = self.rewriting_app(enabled=False)
+        self.assertIsNone(quill.rewriter)
+        self.start(quill)
+        self.hold(WORDS, quill=quill)
+        self.assertEqual(self.ollama.calls, [])
+        self.assertEqual(self.api.received_text(), SPOKEN)
 
 
 class WarmModelTest(unittest.TestCase):

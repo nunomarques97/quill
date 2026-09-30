@@ -21,6 +21,8 @@ injector:
 
 Enter is only ever pressed by ``press_enter``, a separate call used by the
 send-to-Claude trigger after a successful injection; ``inject`` never calls it.
+``erase`` presses Backspace a given number of times with the same checks; the
+undo key of the automatic rewrite uses it to remove the rewrite it typed.
 """
 
 from __future__ import annotations
@@ -42,6 +44,9 @@ from quill.win32 import (
     VK_SHIFT,
     KeyEvent,
 )
+
+VK_BACK = 0x08
+SCAN_BACK = 0x0E
 
 # Modifiers that must be up for press_enter: Shift+Enter is a line break and
 # Ctrl/Alt/Windows+Enter are shortcuts, never the plain Enter that sends.
@@ -266,6 +271,38 @@ class Injector:
             log.warning("clipboard changed while typing (not by Quill)")
         log.info("typed %d characters", typed)
         return InjectResult(OK, typed, total, clipboard_changed=changed)
+
+    def erase(self, count: int, target: Target | None, options: InjectOptions | None = None) -> InjectResult:
+        """Press Backspace ``count`` times in ``target``, in bursts checked like ``inject``.
+
+        ``typed`` counts the Backspaces fully sent, so a caller knows how much
+        was removed when it stops half way.
+        """
+        if count < 0:
+            raise ValueError("count must not be negative")
+        options = options or InjectOptions()
+        problem = self._preflight(target)
+        if problem is not None:
+            return self._fail(problem[0], 0, count, problem[1])
+        press = [KeyEvent(VK_BACK, SCAN_BACK, 0), KeyEvent(VK_BACK, SCAN_BACK, KEYEVENTF_KEYUP)]
+        erased = 0
+        while erased < count:
+            if erased:
+                self.sleep(options.burst_pause_s)
+            if not self._wait_modifiers(options.modifier_wait_s):
+                return self._fail(MODIFIER_HELD, erased, count, "Ctrl, Alt or Windows key held")
+            problem = self._target_problem(target)
+            if problem is not None:
+                return self._fail(problem[0], erased, count, problem[1])
+            burst = min(options.chunk_chars, count - erased)
+            events = press * burst
+            sent = self.api.send_input(events)
+            if sent != len(events):
+                detail = f"SendInput inserted {sent} of {len(events)} events (error {self.api.last_error()})"
+                return self._fail(SENDINPUT_FAILED, erased + sent // 2, count, detail)
+            erased += burst
+        log.info("erased %d characters", erased)
+        return InjectResult(OK, erased, count)
 
     def press_enter(self, target: Target | None) -> InjectResult:
         """Press one plain Enter in ``target`` (send-to-Claude trigger only).

@@ -4,7 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from quill import edits
+from quill import edits, inject
+from quill.tests import fakes
 from quill.corrections import CorrectionStore, Dictation, Learner
 from quill.edits import (
     BACKSPACE,
@@ -20,11 +21,13 @@ from quill.edits import (
     EditTracker,
     KeyTranslator,
     ManualEdits,
+    RewriteUndo,
     compose,
 )
-from quill.tests.fakes import OTHER_HWND, TARGET, FakeClock
+from quill.inject import NEWLINE_SHIFT_ENTER, InjectOptions
+from quill.tests.fakes import OTHER_HWND, TARGET, FakeClock, FakeWin32
 from quill.triggers import BUTTON, KEY, InputEvent
-from quill.win32 import QUILL_EXTRA_INFO
+from quill.win32 import QUILL_EXTRA_INFO, VK_CONTROL
 
 HWND = TARGET.hwnd
 
@@ -166,6 +169,231 @@ class WindowTest(unittest.TestCase):
         self.assertIsNone(tracker.key(ch("x"), HWND, 0.0))
         self.assertIsNone(tracker.finish())
         self.assertIsNone(tracker.poll(100.0))
+
+
+class IntactTest(unittest.TestCase):
+    """``EditTracker.intact``: proof that a typed span is untouched with the caret at its end."""
+
+    def test_untouched_span(self):
+        tracker = EditTracker(window_s=10.0)
+        dictation = typed("olá mundo")
+        tracker.start(dictation, 100.0)
+        self.assertEqual(tracker.intact(dictation, 101.0), "")
+
+    def test_edits_caret_and_window(self):
+        cases = {
+            edits.EDITED: [ch("x")],
+            edits.CARET_MOVED: [k(LEFT)],
+            "retyped": [k(BACKSPACE), ch("o")],  # the same text again: intact
+        }
+        for name, keys in cases.items():
+            with self.subTest(name):
+                tracker = EditTracker(window_s=10.0)
+                dictation = typed("olá mundo")
+                tracker.start(dictation, 100.0)
+                for key in keys:
+                    tracker.key(key, HWND, 101.0)
+                self.assertEqual(tracker.intact(dictation, 102.0), "" if name == "retyped" else name)
+        tracker = EditTracker(window_s=10.0)
+        dictation = typed("olá")
+        tracker.start(dictation, 100.0)
+        self.assertEqual(tracker.intact(dictation, 110.0), edits.WINDOW_OVER)
+
+    def test_a_finished_or_abandoned_span_says_why(self):
+        for reason, keys in ((ENTER, [k(ENTER)]), (edits.CLICK, [k(edits.CLICK)]), (edits.EDITED, [ch("x"), k(ENTER)]),
+                             (edits.OUTSIDE, [k(RIGHT)])):
+            with self.subTest(reason):
+                tracker = EditTracker()
+                dictation = typed("abc")
+                tracker.start(dictation, 0.0)
+                for key in keys:
+                    tracker.key(key, HWND, 1.0)
+                expected = ENTER if reason == edits.EDITED and keys[-1].kind == ENTER else reason
+                self.assertEqual(tracker.intact(dictation, 2.0), expected)
+        tracker = EditTracker()
+        dictation = typed("abc")
+        tracker.start(dictation, 0.0)
+        tracker.key(ch("x"), OTHER_HWND, 1.0)
+        self.assertEqual(tracker.intact(dictation, 2.0), edits.FOCUS)
+        tracker.start(dictation, 3.0)
+        tracker.key(ch("x"), HWND, 4.0)
+        tracker.finish()  # edited, then finished (next dictation, stop)
+        self.assertEqual(tracker.intact(dictation, 5.0), edits.EDITED)
+
+    def test_another_dictation_is_not_followed(self):
+        tracker = EditTracker()
+        self.assertEqual(tracker.intact(typed("abc"), 0.0), edits.NOT_FOLLOWED)
+        tracker.start(typed("abc"), 0.0)
+        tracker.start(typed("def", "d2"), 1.0)
+        self.assertNotEqual(tracker.intact(typed("abc"), 2.0), "")
+        self.assertEqual(tracker.intact(typed("abc", "d9"), 2.0), edits.NOT_FOLLOWED)
+
+
+class CountableTest(unittest.TestCase):
+    def test_line_breaks_and_precomposed_accents_count_as_one(self):
+        self.assertTrue(edits.countable("Olá, coração!\n- ação à noite"))
+
+    def test_characters_an_editor_may_count_differently(self):
+        for text in ("café", "a‍b", "\U0001F600", "a\tb", "a­b", "️"):
+            with self.subTest(text=repr(text)):
+                self.assertFalse(edits.countable(text))
+
+
+class UndoCase(unittest.TestCase):
+    """``RewriteUndo`` with a real injector on the fake Win32 layer and a real tracker."""
+
+    REWRITE = "Olá, coração!\nNova linha com mais umas palavras."  # longer than one burst
+    ORIGINAL = "ola coraçao nova linha com mais umas palavras"
+
+    def setUp(self):
+        self.api = FakeWin32()
+        self.clock = FakeClock()
+        self.clock.now = 1000.0
+        self.injector = fakes.injector(self.api)
+        self.tracker = EditTracker(window_s=30.0)
+        self.undo = RewriteUndo(self.injector, self.tracker, self.api.foreground_window, 20.0, clock=self.clock)
+        self.dictation = self.type_rewrite()
+
+    def type_rewrite(self, text=None, dictation_id="d1"):
+        text = text or self.REWRITE
+        self.assertTrue(self.injector.inject(text, TARGET, InjectOptions(newline=NEWLINE_SHIFT_ENTER)).ok)
+        dictation = Dictation(dictation_id, text, TARGET.hwnd, 0.0)
+        self.tracker.start(dictation, self.clock())
+        self.assertTrue(self.undo.remember(dictation, self.ORIGINAL, TARGET, NEWLINE_SHIFT_ENTER))
+        return dictation
+
+
+class UndoTest(UndoCase):
+    def test_undo_erases_the_rewrite_and_types_the_original(self):
+        self.assertEqual(self.api.received_text(), self.REWRITE)
+        with self.assertLogs("quill", "INFO") as logs:
+            outcome = self.undo.undo()
+        self.assertTrue(outcome.ok)
+        self.assertIsNone(outcome.message)
+        self.assertEqual((outcome.erased, outcome.original, outcome.target), (len(self.REWRITE), self.ORIGINAL, TARGET))
+        self.assertEqual(self.api.backspaces(), len(self.REWRITE))  # the line break and each accent: one each
+        self.assertEqual(self.api.received_text(), self.ORIGINAL)
+        self.assertEqual(self.api.enter_presses(), [True])  # the rewrite's line break: Shift+Enter, never Enter
+        text = "".join(logs.output)
+        for word in ("coração", "linha", "ola"):
+            self.assertNotIn(word, text)
+        self.assertNotIn(self.ORIGINAL, repr(outcome))
+        # One undo per rewrite.
+        self.assertEqual(self.undo.undo().reason, edits.UNDO_NOTHING)
+
+    def test_nothing_to_undo(self):
+        self.undo.forget()
+        outcome = self.undo.undo()
+        self.assertEqual(outcome.reason, edits.UNDO_NOTHING)
+        self.assertEqual(outcome.message, "Não há reescrita para desfazer")
+
+    def assert_refused(self, reason, keep=False):
+        calls = len(self.api.calls)
+        outcome = self.undo.undo()
+        self.assertEqual(outcome.reason, reason)
+        self.assertIn(outcome.message, edits.UNDO_MESSAGES.values())
+        self.assertEqual(len(self.api.calls), calls)  # nothing sent
+        self.assertEqual(self.api.received_text(), self.REWRITE)
+        self.assertEqual(self.undo.pending, keep)
+
+    def test_refused_after_an_edit(self):
+        self.tracker.key(ch("x"), TARGET.hwnd, self.clock())
+        self.assert_refused(edits.UNDO_EDITED)
+
+    def test_refused_after_the_caret_moved(self):
+        self.tracker.key(k(LEFT), TARGET.hwnd, self.clock())
+        self.assert_refused(edits.UNDO_CARET)
+
+    def test_refused_after_enter(self):
+        self.tracker.key(k(ENTER), TARGET.hwnd, self.clock())
+        self.assert_refused(edits.UNDO_ENTERED)
+
+    def test_refused_after_a_click(self):
+        self.tracker.key(k(edits.CLICK), TARGET.hwnd, self.clock())
+        self.assert_refused(edits.UNDO_CLICKED)
+
+    def test_refused_in_another_window_but_kept_for_when_it_comes_back(self):
+        self.api.foreground = OTHER_HWND
+        self.assert_refused(edits.UNDO_OTHER_WINDOW, keep=True)
+        self.api.foreground = TARGET.hwnd
+        self.assertTrue(self.undo.undo().ok)
+
+    def test_refused_after_a_key_in_another_window(self):
+        self.tracker.key(ch("x"), OTHER_HWND, self.clock())
+        self.assert_refused(edits.UNDO_OTHER_WINDOW)
+
+    def test_refused_after_the_time_window(self):
+        self.clock.now += 20.0
+        self.assert_refused(edits.UNDO_EXPIRED)
+
+    def test_refused_after_the_tracker_window(self):
+        self.undo.window_s = 60.0
+        self.clock.now += 30.0
+        self.assert_refused(edits.UNDO_EXPIRED)
+
+    def test_refused_when_the_tracker_follows_something_else(self):
+        self.tracker.start(Dictation("d2", "outro", TARGET.hwnd, 0.0), self.clock())
+        self.assert_refused(edits.UNDO_UNSURE)
+
+    def test_refused_without_a_tracker(self):
+        undo = RewriteUndo(self.injector, None, self.api.foreground_window, 20.0, clock=self.clock)
+        undo.remember(self.dictation, self.ORIGINAL, TARGET, NEWLINE_SHIFT_ENTER)
+        self.undo = undo
+        self.assert_refused(edits.UNDO_UNSURE)
+
+    def test_uncountable_text_is_never_erased(self):
+        dictation = Dictation("d3", "café bom", TARGET.hwnd, 0.0)
+        self.assertFalse(self.undo.remember(dictation, "cafe bom", TARGET))
+        self.assertEqual(self.undo.undo().reason, edits.UNDO_NOTHING)
+
+    def test_target_gone_while_erasing_stops_and_says_so(self):
+        self.api.after_send = lambda index: self.api.windows.pop(TARGET.hwnd, None)
+        outcome = self.undo.undo()
+        self.assertEqual(outcome.reason, edits.UNDO_FAILED)
+        self.assertEqual(outcome.message, "A reposição foi interrompida; verifique o texto")
+        self.assertFalse(self.tracker.tracking)
+        self.assertLess(outcome.erased, len(self.REWRITE))
+
+    def test_modifier_held_while_erasing_stops(self):
+        self.api.keys_down.add(VK_CONTROL)  # Ctrl+Backspace would delete a word
+        outcome = self.undo.undo()
+        self.assertEqual((outcome.reason, outcome.erased), (edits.UNDO_FAILED, 0))
+        self.assertEqual(self.api.received_text(), self.REWRITE)
+
+    def test_typing_the_original_interrupted_stops_and_says_so(self):
+        calls = len(self.api.calls)
+        erase_calls = -(-len(self.REWRITE) // InjectOptions().chunk_chars)
+
+        def change_focus(index):
+            if index == calls + erase_calls - 1:  # the last Backspace burst
+                self.api.foreground = OTHER_HWND
+
+        self.api.after_send = change_focus
+        outcome = self.undo.undo()
+        self.assertEqual((outcome.reason, outcome.erased), (edits.UNDO_FAILED, len(self.REWRITE)))
+        self.assertFalse(self.tracker.tracking)
+
+
+class EraseTest(unittest.TestCase):
+    def test_erase_sends_backspace_in_checked_bursts(self):
+        api = FakeWin32()
+        injector = fakes.injector(api)
+        injector.inject("abcdefghij", TARGET)
+        result = injector.erase(7, TARGET, InjectOptions(chunk_chars=3))
+        self.assertEqual((result.reason, result.typed, result.total), (inject.OK, 7, 7))
+        self.assertEqual(api.received_text(), "abc")
+        self.assertEqual([len(call) for call in api.calls[1:]], [6, 6, 2])
+        self.assertEqual(injector.erase(0, TARGET).typed, 0)
+        with self.assertRaises(ValueError):
+            injector.erase(-1, TARGET)
+
+    def test_erase_refuses_a_gone_or_other_target(self):
+        api = FakeWin32()
+        injector = fakes.injector(api)
+        self.assertEqual(injector.erase(3, None).reason, inject.NO_TARGET)
+        api.foreground = OTHER_HWND
+        self.assertEqual(injector.erase(3, TARGET).reason, inject.FOREGROUND_CHANGED)
+        self.assertEqual(api.calls, [])
 
 
 class FakeLayout:

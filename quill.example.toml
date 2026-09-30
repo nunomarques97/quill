@@ -98,6 +98,24 @@ timeout_s = 4
 undo_key = "f17"
 undo_window_s = 30
 
+# Alert when Claude Code (the VS Code panel or the terminal) finishes its reply
+# and waits for you, or asks for a permission: a short sound and the indicator
+# state "Claude Code terminou" or "Claude Code pede permissão". It needs the
+# Claude Code hooks, added only by the manual command (it shows the exact
+# change and asks before writing):
+#   py -3.12 -m quill.claude_hooks --install
+# While a dictation or a command is recording, the alert waits until that
+# session ends, so the sound never reaches the microphone; alerts close
+# together ring once. filter chooses which Claude Code sessions ring:
+#   "attended" (default): only sessions someone is using (Claude Code marks
+#     them); claude -p, the Agent SDK and automated runs never ring;
+#   "unless-headless": also a Claude Code that does not mark its sessions;
+#   "all": every session, headless ones too.
+[claude_alert]
+enabled = true
+sound = true
+filter = "attended"
+
 # Personal data. Paths are relative to the repository and must stay inside
 # the ignored local/ folder. style is a folder of writing samples:
 # <profile>.txt (for example whatsapp.txt), or default.txt for every profile

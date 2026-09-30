@@ -23,6 +23,7 @@ import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 
+from quill.notify import DEFAULT_FILTER, FILTERS
 from quill.whisper import DEFAULT_MODEL, PRECISE_MODEL
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -71,6 +72,7 @@ SCHEMA: dict[str, object] = {
     "corrections": {"key": None, "edit_window_s": None},
     "autorewrite": {"enabled": None, "min_audio_s": None, "min_words": None, "timeout_s": None, "undo_key": None,
                     "undo_window_s": None},
+    "claude_alert": {"enabled": None, "sound": None, "filter": None},
     "paths": {"vocabulary": None, "corrections": None, "style": None},
     "profiles": {name: {"processes": None, "classes": None, "titles": None} for name in PROFILE_NAMES},
 }
@@ -125,6 +127,17 @@ class AutoRewrite:
 
 
 @dataclass(frozen=True)
+class ClaudeAlert:
+    """``[claude_alert]``: the alert when Claude Code finishes a reply or asks for a
+    permission (``quill.notify``). ``sound`` plays a short sound with it;
+    ``filter`` chooses which Claude Code sessions ring (``quill.notify.FILTERS``)."""
+
+    enabled: bool = True
+    sound: bool = True
+    filter: str = DEFAULT_FILTER
+
+
+@dataclass(frozen=True)
 class Config:
     triggers: tuple[Trigger, ...]
     min_hold_ms: int
@@ -144,6 +157,7 @@ class Config:
     correction_key: Input | None = None
     edit_window_s: int = 30
     autorewrite: AutoRewrite = AutoRewrite()
+    claude_alert: ClaudeAlert = ClaudeAlert()
 
     def trigger(self, action: str) -> Trigger:
         for trigger in self.triggers:
@@ -329,6 +343,14 @@ def _autorewrite(data: dict[str, object], triggers: tuple[Trigger, ...], correct
     )
 
 
+def _claude_alert(data: dict[str, object]) -> ClaudeAlert:
+    return ClaudeAlert(
+        enabled=_bool(_get(data, "claude_alert.enabled"), "claude_alert.enabled"),
+        sound=_bool(_get(data, "claude_alert.sound"), "claude_alert.sound"),
+        filter=_choice(_get(data, "claude_alert.filter"), "claude_alert.filter", FILTERS),
+    )
+
+
 def _min_hold(value: object) -> int:
     low, high = MIN_HOLD_RANGE
     if not isinstance(value, int) or isinstance(value, bool) or not low <= value <= high:
@@ -404,6 +426,7 @@ def validate(data: dict[str, object]) -> Config:
         correction_key=correction,
         edit_window_s=_edit_window(_get(data, "corrections.edit_window_s")),
         autorewrite=_autorewrite(data, triggers, correction),
+        claude_alert=_claude_alert(data),
     )
 
 

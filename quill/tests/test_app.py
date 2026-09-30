@@ -17,25 +17,29 @@ from pathlib import Path
 from unittest import mock
 
 from quill import app as A
+from quill import notify as N
 from quill import autorewrite as R
 from quill import inject
 from quill import session as S
+from quill import sound
 from quill import startup
 from quill import vocabulary as V
-from quill.config import EXAMPLE_CONFIG, load_config
+from quill.config import EXAMPLE_CONFIG, ClaudeAlert, load_config
 from quill.corrections import CorrectionStore
 from quill.edits import UNDO_EDITED, UNDO_ENTERED, UNDO_EXPIRED, UNDO_MESSAGES, UNDO_NOTHING, UNDO_OTHER_WINDOW, \
     UNDO_UNSURE
-from quill.indicator.render import ERROR, LISTENING, LOADING, REVIEWING, SENT
+from quill.indicator.render import CLAUDE_DONE, CLAUDE_PERMISSION, ERROR, LISTENING, LOADING, REVIEWING, SENT
 from quill.ollama import ChatReply, OllamaError
 from quill.tests.fakes import (
     OTHER_HWND,
     TARGET,
+    FakeAlertEvents,
     FakeCaptures,
     FakeClock,
     FakeHooks,
     FakeIndicator,
     FakeKernel,
+    FakePlayer,
     FakeRegistry,
     FakeWin32,
 )
@@ -428,6 +432,81 @@ class LifecycleTest(AppCase):
         self.assertFalse(quill.running)
         self.assertEqual(self.kernel.objects, {})
         self.assertEqual(self.indicator.stops, 1)
+
+
+class ClaudeAlertTest(AppCase):
+    """The Claude Code alert listener inside the app, on fake named events and a fake player."""
+
+    def setUp(self):
+        self.events = FakeAlertEvents()
+        super().setUp()
+
+    def make_app(self, config=None, client=None, kernel=None, **parts):
+        self.player = FakePlayer(recording=lambda: bool(self.captures.open))
+        parts.setdefault("alert_events", self.events)
+        parts.setdefault("player", self.player)
+        return super().make_app(config, client, kernel, **parts)
+
+    def alert_config(self, **changes):
+        return self.make_config(claude_alert=ClaudeAlert(**changes))
+
+    def ring(self, kind=sound.DONE):
+        self.assertTrue(self.events.set_event(N.EVENT_NAMES[kind]))
+
+    def test_start_stop_start_with_the_listener(self):
+        self.start()
+        self.assertEqual(sorted(self.events.open), sorted(N.EVENT_NAMES.values()))
+        self.ring()
+        wait_for(lambda: self.player.plays == [sound.DONE], "the alert sound")
+        wait_for(lambda: self.indicator.last == ("show", CLAUDE_DONE, ""), "the alert state")
+        self.app.stop()
+        self.assertEqual(self.events.open, [])
+        self.assertFalse(self.events.set_event(N.EVENT_NAMES[sound.DONE]))
+        self.start()
+        self.ring(sound.PERMISSION)
+        wait_for(lambda: self.player.plays == [sound.DONE, sound.PERMISSION], "the alert after a restart")
+        self.hold((1,))
+        self.assertEqual(self.api.received_text(), "w1.")
+        self.app.stop()
+        self.assertEqual(self.events.open, [])
+
+    def test_an_alert_during_a_hold_rings_after_it(self):
+        self.start()
+        self.assertEqual(self.button(True), 1)
+        wait_for(lambda: self.captures.made, "the capture to start")
+        self.ring()
+        self.ring()
+        time.sleep(0.2)
+        self.assertEqual(self.player.plays, [])
+        capture = self.captures.made[-1]
+        wait_for(lambda: self.api.mouse_calls, "the click to focus")
+        capture.push(speech((1,)))
+        self.assertEqual(self.button(False), 1)
+        self.outcomes(1)
+        wait_for(lambda: self.player.plays == [sound.DONE], "the deferred alert")
+        self.assertEqual(self.player.plays_while_recording, 0)
+        self.assertEqual(self.api.received_text(), "w1.")
+
+    def test_disabled_alert_creates_no_event(self):
+        quill = self.make_app(self.alert_config(enabled=False))
+        self.start(quill)
+        self.assertIsNone(quill.alerts)
+        self.assertEqual(self.events.created, [])
+
+    def test_sound_off_shows_the_alert_silently(self):
+        quill = self.make_app(self.alert_config(sound=False))
+        self.start(quill)
+        self.ring(sound.PERMISSION)
+        wait_for(lambda: self.indicator.last == ("show", CLAUDE_PERMISSION, ""), "the alert state")
+        self.assertEqual(self.player.plays, [])
+
+    def test_a_listener_that_cannot_start_leaves_quill_working(self):
+        self.events.fail_create = True
+        with self.assertLogs("quill.app", level="ERROR"):
+            quill = self.start(self.make_app())
+        self.assertFalse(quill.alerts.running)
+        self.hold((1,), quill=quill)
+        self.assertEqual(self.api.received_text(), "w1.")
 
 
 class VocabularyReloadTest(AppCase):

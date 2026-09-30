@@ -141,16 +141,72 @@ O vocabulário pessoal fica em `local\vocabulary.toml`, que nunca vai para o Git
 
 O Whisper recebe as dicas por esta ordem: nomes de projeto, a lista de termos técnicos genéricos do Quill e depois os seus termos. O espaço é pequeno e hoje já está cheio com os nomes e a lista genérica, por isso os seus termos aparecem como `dropped`. Mesmo assim contam: depois do reconhecimento, uma palavra muito parecida com um termo passa a ter a grafia certa. Se o Quill escrever um termo de forma muito diferente, use o passo 22 com essa forma.
 
+## Aviso quando o Claude Code termina
+
+Quando o Claude Code (no painel do VS Code ou no terminal) acaba a resposta e fica à sua espera, o Quill toca um som curto e o indicador mostra "Claude Code terminou". Quando o Claude Code pede uma permissão, toca outro som e o indicador mostra "Claude Code pede permissão". Não avisa a meio da resposta (quando o Claude Code usa ferramentas ou escreve texto intermédio). Se estiver a ditar, o aviso espera que o ditado acabe, para o som nunca entrar no microfone; vários avisos seguidos tocam uma só vez. As execuções automáticas do Claude Code (`claude -p`, o Agent SDK e as execuções automáticas neste PC) não tocam. O aviso não usa a rede: o Claude Code avisa o Quill dentro do próprio PC.
+
+Instalar (uma vez):
+
+25. Abra o Terminal do Windows na pasta do Quill e veja a alteração que vai ser feita nas definições do Claude Code. Este comando não escreve nada:
+
+    ```
+    py -3.12 -m quill.claude_hooks --show
+    ```
+
+26. Instale:
+
+    ```
+    py -3.12 -m quill.claude_hooks --install
+    ```
+
+    Mostra a mesma alteração e pergunta se a quer escrever. Escreva `yes` e carregue em Enter. As suas outras definições e hooks do Claude Code ficam iguais, e o ficheiro anterior fica guardado ao lado (`settings.json.bak-quill-...`). Se o aviso já estiver instalado, nada muda. Se mudar a pasta do Quill de sítio, corra de novo este comando.
+27. Feche e volte a abrir o Claude Code (a janela do VS Code e o terminal), para ele ler a alteração. Se o Quill já estava ligado antes desta versão, desligue-o e volte a ligá-lo.
+
+Testar:
+
+28. Para ouvir os dois sons, um de cada vez:
+
+    ```
+    py -3.12 -m quill.sound --play-sound
+    ```
+
+29. Com o Quill ligado, no painel do Claude Code do VS Code, peça uma coisa curta (por exemplo "diz olá"). Quando a resposta acabar, ouve o primeiro som e o indicador mostra "Claude Code terminou" durante uns segundos.
+30. Repita no Claude Code do terminal.
+31. Peça uma coisa que precise de autorização (por exemplo, correr um comando que ainda não autorizou). Ouve o segundo som e o indicador mostra "Claude Code pede permissão".
+32. Peça uma resposta mais longa e, enquanto ela é escrita, segure o botão de ditado e fale. O som só toca depois de largar o botão e o texto ser escrito.
+
+Se não ouvir nada: confirme que o Quill está ligado, que os sons do Windows estão ligados (Definições > Sistema > Som > Mais definições de som > separador Sons: "Asterisco" e "Exclamação") e, no Claude Code, escreva `/hooks` para ver as duas entradas do Quill (Stop e Notification).
+
+Para deixar só o indicador, sem som, ou desligar o aviso, escreva em `local\quill.toml` e depois desligue e volte a ligar o Quill:
+
+```
+[claude_alert]
+sound = false
+enabled = true
+```
+
+Limites do filtro das execuções automáticas: o Quill usa uma indicação que o Claude Code dá a cada hook (`CLAUDE_CODE_SESSION_ATTENDED`: `1` quando alguém está a usar a sessão, `0` quando é automática). Foi confirmada na versão do Claude Code instalada neste PC. Uma versão que não dê esta indicação nunca toca; nesse caso use `filter = "unless-headless"` em `[claude_alert]` (toca sempre, menos quando a indicação diz que a sessão é automática). Um `claude -p` que corra à mão também não toca, porque também é automático. Com `filter = "all"` toca em todas as sessões, também nas automáticas.
+
+Remover:
+
+33. Na pasta do Quill:
+
+    ```
+    py -3.12 -m quill.claude_hooks --remove
+    ```
+
+    Mostra o que sai, escreva `yes` e carregue em Enter. Só saem as entradas do Quill; as outras definições ficam. Feche e volte a abrir o Claude Code.
+
 ## Arrancar com o Windows
 
-25. Para o Quill arrancar sozinho quando entra no Windows, corra uma vez:
+34. Para o Quill arrancar sozinho quando entra no Windows, corra uma vez:
 
     ```
     .venv\Scripts\python -m quill --install-startup
     ```
 
     Para deixar de arrancar com o Windows: `.venv\Scripts\python -m quill --remove-startup`. Se mudar a pasta do Quill de sítio, corra de novo o `--install-startup`.
-26. Quando arranca com o Windows não há janela do Terminal. Para o desligar: `.venv\Scripts\python -m quill --stop`.
+35. Quando arranca com o Windows não há janela do Terminal. Para o desligar: `.venv\Scripts\python -m quill --stop`.
 
 ## Se algo correr mal
 

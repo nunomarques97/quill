@@ -67,6 +67,10 @@ class ExampleTest(ConfigCase):
                          (True, 15.0, 40, 4.0))
         self.assertEqual((rewrite.undo_key.name, rewrite.undo_key.vk, rewrite.undo_window_s), ("f17", 0x80, 30))
 
+    def test_claude_alert_defaults(self) -> None:
+        alert = load_config(None).claude_alert
+        self.assertEqual((alert.enabled, alert.sound, alert.filter), (True, True, "attended"))
+
     def test_action_for_maps_inputs_to_actions(self) -> None:
         settings = load_config(None)
         self.assertEqual(settings.action_for("button", 0x05), "dictation")
@@ -224,6 +228,21 @@ class RejectTest(ConfigCase):
                 message = self.rejected(f"[autorewrite]\n{text}\n", field)
                 self.assertTrue(message.isascii())
         self.assertIn("correction key", self.rejected('[autorewrite]\nundo_key = "f16"\n', "autorewrite.undo_key"))
+
+    def test_claude_alert_values(self) -> None:
+        alert = self.load('[claude_alert]\nenabled = false\nsound = false\nfilter = "unless-headless"\n').claude_alert
+        self.assertEqual((alert.enabled, alert.sound, alert.filter), (False, False, "unless-headless"))
+        self.assertEqual(self.load('[claude_alert]\nfilter = "all"\n').claude_alert.filter, "all")
+        for text, field in (
+            ("enabled = 1", "claude_alert.enabled"),
+            ('sound = "yes"', "claude_alert.sound"),
+            ('filter = "headless"', "claude_alert.filter"),
+            ('filter = "Attended"', "claude_alert.filter"),
+            ("filter = 1", "claude_alert.filter"),
+            ("volume = 3", "claude_alert.volume"),
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(self.rejected(f"[claude_alert]\n{text}\n", field).isascii())
 
     def test_undo_key_values(self) -> None:
         rewrite = self.load('[autorewrite]\nundo_key = "f18"\nundo_window_s = 60\n').autorewrite

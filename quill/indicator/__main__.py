@@ -31,8 +31,8 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
-from quill.indicator.render import (COMMAND, ERROR, LISTENING, LOADING, REVIEWING, SENT, STATES, TRANSCRIBING,
-                                    Layout, Renderer, View)
+from quill.indicator.render import (CLAUDE_DONE, CLAUDE_PERMISSION, COMMAND, ERROR, LISTENING, LOADING, REVIEWING,
+                                    SENT, STATES, TRANSCRIBING, Layout, Renderer, View)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RESULTS_DIR = REPO_ROOT / "local" / "selftest"
@@ -54,6 +54,8 @@ SAMPLES = {
     REVIEWING: "revi o módulo de pagamentos e encontrei dois problemas no cache",
     SENT: "corrige o teste de integração e corre a suite outra vez",
     ERROR: "Microfone não encontrado",
+    CLAUDE_DONE: "",
+    CLAUDE_PERMISSION: "",
 }
 LONG_TEXT = (
     "hoje de manhã revi o módulo de pagamentos e encontrei dois problemas no cache, o primeiro é que o "
@@ -80,6 +82,7 @@ def frame_set() -> list[tuple[str, View, float]]:
     frames.append(("reduced-listening-100", View(LISTENING, SAMPLES[LISTENING], 0.6, 1.3, True), 1.0))
     frames.append(("reduced-command-100", View(COMMAND, SAMPLES[COMMAND], 0.35, 1.3, True), 1.0))
     frames.append(("reduced-loading-150", View(LOADING, "", 0.0, 1.3, True), 1.5))
+    frames.append(("reduced-claude_permission-150", View(CLAUDE_PERMISSION, "", 0.0, 1.3, True), 1.5))
     frames.append(("long-word-100", View(LISTENING, LONG_WORD, 0.4, 0.5), 1.0))
     return frames
 

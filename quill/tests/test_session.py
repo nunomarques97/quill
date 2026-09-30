@@ -15,10 +15,11 @@ from quill import autorewrite as R
 from quill import inject
 from quill import session as S
 from quill.focus import CLICKED, NO_WINDOW, FocusResult
-from quill.indicator.render import ERROR, LISTENING, LOADING, REVIEWING, SENT, TRANSCRIBING
+from quill.indicator.render import (CLAUDE_DONE, CLAUDE_PERMISSION, ERROR, LISTENING, LOADING, REVIEWING, SENT,
+                                    TRANSCRIBING)
 from quill.inject import InjectResult, Target
 from quill.session import Processed, SessionManager
-from quill.tests.fakes import FakeCaptures, FakeClock, FakeIndicator
+from quill.tests.fakes import FakeCaptures, FakeClock, FakeIndicator, FakePlayer
 from quill.triggers import CANCEL, CONFIRM, START, STOP, Signal
 
 TARGET = Target(hwnd=100, pid=7)
@@ -185,18 +186,22 @@ class SessionCase(unittest.TestCase):
         self.indicator = FakeIndicator()
         self.pipeline = FakePipeline()
         self.rewriter = self.make_rewriter()
+        self.player = self.make_player()
         self.started = 0
         self.typed_hook = []
         self.undoable = []  # (original, newline) of each on_typed call
         self.manager = SessionManager(
             transcriber=self.transcriber, capture_factory=self.captures, focus=self.focus, injector=self.injector,
             indicator=self.indicator, pipeline=self.pipeline, rewriter=self.rewriter, on_session_start=self._started,
-            on_typed=self._typed, clock=self.clock,
+            on_typed=self._typed, player=self.player, clock=self.clock,
             final_timeout_s=5.0, poll_s=0.05)
         self.manager.start()
         self.addCleanup(self.manager.stop)
 
     def make_rewriter(self):
+        return None
+
+    def make_player(self):
         return None
 
     def _started(self):
@@ -816,6 +821,149 @@ class RewriteClaudeTest(SessionCase):
         self.dictate(LONG, action="send_claude")
         self.assertEqual(self.wait_outcomes(1)[0].reason, inject.TARGET_GONE)
         self.assertEqual(self.injector.enters, [])
+
+class AlertTest(SessionCase):
+    """Claude Code alerts: shown and rung only when no session needs the screen or the microphone."""
+
+    def make_player(self):
+        return FakePlayer(recording=lambda: bool(self.captures.open))
+
+    def setUp(self):
+        super().setUp()
+        self.ready()
+
+    def wait_shown(self, state, count=1):
+        deadline = time.monotonic() + 5
+        while self.indicator.states.count(state) < count:
+            if time.monotonic() > deadline:
+                self.fail(f"{state} not shown {count} time(s): {self.indicator.states}")
+            time.sleep(0.005)
+
+    def test_an_alert_while_idle_shows_and_rings_at_once(self):
+        with self.assertLogs("quill.session", level="INFO") as logs:
+            self.assertTrue(self.manager.alert(S.sound.DONE))
+        self.assertEqual(self.indicator.last, ("show", CLAUDE_DONE, ""))
+        self.assertEqual(self.player.plays, [S.sound.DONE])
+        self.assertTrue(self.manager.alert(S.sound.PERMISSION) and self.player.plays == [S.sound.DONE])
+        self.assertEqual(self.indicator.last, ("show", CLAUDE_PERMISSION, ""))
+        self.assertNotIn("texto", "\n".join(logs.output))
+
+    def test_an_alert_during_a_recording_waits_until_the_session_ends(self):
+        self.press()
+        self.captures.made[0].push(PCM)
+        self.assertTrue(self.manager.alert(S.sound.DONE))
+        self.assertEqual((self.player.plays, self.indicator.last), ([], ("show", LISTENING, "")))
+        self.release()
+        # Still finalizing: the transcript is not typed yet, so the alert keeps waiting.
+        time.sleep(0.15)
+        self.assertEqual(self.player.plays, [])
+        self.assertNotIn(CLAUDE_DONE, self.indicator.states)
+        self.transcriber.sessions[0].handle.resolve()
+        self.wait_outcomes(1)
+        self.wait_shown(CLAUDE_DONE)
+        self.assertEqual(self.indicator.last, ("show", CLAUDE_DONE, ""))
+        self.assertEqual(self.player.plays, [S.sound.DONE])
+        self.assertEqual(self.player.plays_while_recording, 0)
+        self.assertEqual(self.injector.typed, [("Texto inventado de teste.", TARGET)])
+
+    def test_alerts_kept_together_show_once_and_ring_once(self):
+        self.press()
+        for kind in (S.sound.DONE, S.sound.DONE, S.sound.PERMISSION, S.sound.DONE, S.sound.PERMISSION):
+            self.manager.alert(kind)
+        self.release()
+        self.transcriber.sessions[0].handle.resolve()
+        self.wait_outcomes(1)
+        self.wait_shown(CLAUDE_PERMISSION)
+        time.sleep(0.15)  # several finalizer polls: nothing more is shown
+        shown = [call for call in self.indicator.calls if call[0] == "show" and call[1] in S.ALERT_STATES.values()]
+        self.assertEqual(shown, [("show", CLAUDE_PERMISSION, S.ALSO_DONE)])
+        self.assertEqual(self.player.plays, [S.sound.PERMISSION])
+
+    def test_a_press_stops_the_sound_before_the_microphone_opens(self):
+        self.manager.alert(S.sound.DONE)
+        self.assertTrue(self.player.playing)
+        playing_at_start = []
+        self.captures.on_start = lambda capture: playing_at_start.append(self.player.playing)
+        self.press()
+        self.assertEqual(playing_at_start, [False])
+        self.assertGreaterEqual(self.player.stops, 1)
+
+    def test_alerts_close_together_ring_once(self):
+        self.manager.alert(S.sound.DONE)
+        self.clock.now += S.ALERT_REPEAT_S - 1
+        self.manager.alert(S.sound.DONE)
+        self.manager.alert(S.sound.PERMISSION)
+        self.assertEqual(self.player.plays, [S.sound.DONE])
+        self.assertEqual(self.indicator.last, ("show", CLAUDE_PERMISSION, ""))
+        self.clock.now += 1
+        self.manager.alert(S.sound.PERMISSION)
+        self.assertEqual(self.player.plays, [S.sound.DONE, S.sound.PERMISSION])
+
+    def test_an_outcome_on_screen_is_seen_before_the_alert(self):
+        self.press("command", "f14")  # command mode unavailable: an error shown for a few seconds
+        self.release("command", "f14")
+        self.wait_outcomes(1)
+        self.manager.alert(S.sound.DONE)
+        time.sleep(0.15)
+        self.assertEqual(self.indicator.last, ("show", ERROR, S.MESSAGES[S.COMMAND_UNAVAILABLE]))
+        self.assertEqual(self.player.plays, [])
+        self.clock.now += S.ERROR_SHOW_S
+        self.wait_shown(CLAUDE_DONE)
+        self.assertEqual(self.player.plays, [S.sound.DONE])
+
+    def test_stop_drops_waiting_alerts_and_start_again_works(self):
+        self.press()
+        self.manager.alert(S.sound.DONE)
+        self.manager.stop()
+        self.assertEqual(self.player.plays, [])
+        self.assertFalse(self.manager.alert(S.sound.DONE))
+        self.assertEqual(self.player.plays, [])
+        self.manager.start()
+        self.manager.alert(S.sound.PERMISSION)  # still loading: waits
+        self.assertEqual(self.player.plays, [])
+        self.manager.loaded()
+        self.assertEqual(self.player.plays, [S.sound.PERMISSION])
+        self.assertEqual(self.indicator.last, ("show", CLAUDE_PERMISSION, ""))
+
+    def test_a_broken_player_still_shows_the_alert(self):
+        self.player.fail = True
+        with self.assertLogs("quill.session", level="ERROR"):
+            self.manager.alert(S.sound.DONE)
+        self.assertEqual(self.indicator.last, ("show", CLAUDE_DONE, ""))
+
+    def test_unknown_kinds_are_refused(self):
+        with self.assertRaises(ValueError):
+            self.manager.alert("stop")
+
+    def test_alerts_from_another_thread_never_ring_into_a_recording(self):
+        done = threading.Event()
+
+        def alerts():
+            while not done.is_set():
+                self.manager.alert(S.sound.DONE)
+                self.clock.now += S.ALERT_REPEAT_S
+                time.sleep(0.001)
+        thread = threading.Thread(target=alerts)
+        thread.start()
+        try:
+            for number in range(20):
+                self.dictate(f"frase {number}")
+                self.wait_outcomes(number + 1)
+        finally:
+            done.set()
+            thread.join()
+        self.assertGreater(len(self.player.plays), 0)
+        self.assertEqual(self.player.plays_while_recording, 0)
+        self.assertEqual(len(self.injector.typed), 20)
+
+
+class SilentAlertTest(SessionCase):
+    def test_without_a_player_the_alert_is_only_shown(self):
+        self.manager.alert(S.sound.DONE)
+        self.assertEqual(self.indicator.states, [])  # still loading
+        self.ready()
+        self.assertEqual(self.indicator.last, ("show", CLAUDE_DONE, ""))
+
 
 class HelpersTest(unittest.TestCase):
     def test_voice_level(self):

@@ -23,6 +23,9 @@ the selection with the local Ollama model when the command trigger is bound.
 A long dictation is rewritten by the local model (``quill.autorewrite``)
 when ``[autorewrite]`` is on, and the undo key (``quill.edits.RewriteUndo``)
 puts the original back while the rewrite is provably untouched.
+When ``[claude_alert]`` is on, ``quill.notify.AlertListener`` waits for the
+named events set by the Claude Code hooks and the sessions show the alert
+and play its sound (``quill.sound``) once no dictation is recording.
 Learning from corrections is wired too:
 the correction key and manual-edit detection (``quill.corrections``,
 ``quill.edits``) see the key events of the hooks in memory only.
@@ -59,6 +62,7 @@ from quill.focus import ClickToFocus
 from quill.hooks import TriggerHooks, monotonic_ms, real_hooks
 from quill.indicator.render import ERROR, LOADING
 from quill.inject import NEWLINE_SHIFT_ENTER, NEWLINE_SPACE, Injector, Target
+from quill.notify import AlertListener
 from quill.profiles import CLAUDE_CODE, Profiles, StyleError, WindowInfo, apply_profile, load_style_samples, style_prompt, window_info
 from quill.session import CLEANUP_FALLBACK, Processed, SessionManager
 from quill.streaming import StreamingTranscriber, options_for
@@ -363,6 +367,8 @@ class Parts:
     client: object | None = None  # local Ollama client (llm cleanup)
     command_client: object | None = None  # local Ollama client of command mode; None disables it
     rewrite_client: object | None = None  # local Ollama client of the automatic rewrite; None disables it
+    alert_events: object | None = None  # named events of the Claude Code alerts (quill.notify.Events); None: off
+    player: object | None = None  # alert sounds (quill.sound.WinsoundPlayer); None: silent alerts
     vocabulary: Vocabulary = field(default_factory=Vocabulary)
     generic_terms: Sequence[str] = ()
     vocabulary_file: VocabularyFile | None = None  # read again before each dictation; None: never reloaded
@@ -415,8 +421,12 @@ class QuillApp:
             transcriber=self.transcriber, capture_factory=parts.capture_factory, focus=self.focus,
             injector=self.injector, indicator=parts.indicator, pipeline=self.pipeline, command=self.command,
             rewriter=self.rewriter, on_session_start=self._session_started, on_typed=self._typed,
-            housekeeping=self._housekeeping, clock=parts.clock,
+            housekeeping=self._housekeeping, player=parts.player if config.claude_alert.sound else None,
+            clock=parts.clock,
         )
+        self.alerts: AlertListener | None = None
+        if config.claude_alert.enabled and parts.alert_events is not None:
+            self.alerts = AlertListener(self.sessions.alert, parts.alert_events)
         self.hooks: TriggerHooks | None = None
         self._loader: threading.Thread | None = None
         self._stopping = threading.Event()
@@ -438,6 +448,7 @@ class QuillApp:
             self.parts.indicator.start()
             self.parts.indicator.show(LOADING)
             self.sessions.start()
+            self._start_alerts()
             self.transcriber.start()
             started = self.parts.clock()
             self._loader = threading.Thread(target=self._wait_loaded, args=(started,), name="quill-loader",
@@ -450,9 +461,19 @@ class QuillApp:
         except BaseException:
             self.stop()
             raise
-        log.info("Quill started (engine %s, cleanup %s, indicator %s, command mode %s, automatic rewrite %s)",
-                 self.config.engine_model, self.config.cleanup_mode, self.config.indicator_position,
-                 "on" if self.command else "off", "on" if self.rewriter else "off")
+        log.info("Quill started (engine %s, cleanup %s, indicator %s, command mode %s, automatic rewrite %s, "
+                 "claude alert %s)", self.config.engine_model, self.config.cleanup_mode,
+                 self.config.indicator_position, "on" if self.command else "off", "on" if self.rewriter else "off",
+                 "on" if self.alerts is not None and self.alerts.running else "off")
+
+    def _start_alerts(self) -> None:
+        """Listen for the Claude Code alerts; a failure leaves them off, never Quill."""
+        if self.alerts is None:
+            return
+        try:
+            self.alerts.start()
+        except OSError as exc:
+            log.error("claude alert listener not started (%s)", type(exc).__name__)
 
     def _wait_loaded(self, started: float) -> None:
         while not self.transcriber.ready.wait(LOAD_WAIT_S):
@@ -474,6 +495,7 @@ class QuillApp:
         self._undo_down = False
         steps = (
             ("hooks", self._stop_hooks),
+            ("alerts", self._stop_alerts),
             ("engine", self.transcriber.stop),
             ("sessions", self.sessions.stop),
             ("loader", self._join_loader),
@@ -495,6 +517,10 @@ class QuillApp:
         hooks, self.hooks = self.hooks, None
         if hooks is not None:
             hooks.stop()
+
+    def _stop_alerts(self) -> None:
+        if self.alerts is not None:
+            self.alerts.stop()
 
     def _join_loader(self) -> None:
         loader, self._loader = self._loader, None
@@ -642,7 +668,9 @@ def real_parts(config: Config) -> Parts:
     """The Windows parts. Creating them installs nothing; ``QuillApp.start`` does."""
     from quill.edits import Win32Layout
     from quill.indicator.window import Indicator
+    from quill.notify import Events
     from quill.ollama import OllamaClient
+    from quill.sound import WinsoundPlayer
     from quill.whisper import Whisper
     from quill.win32 import User32
 
@@ -662,6 +690,8 @@ def real_parts(config: Config) -> Parts:
         vocabulary=source.vocabulary,
         generic_terms=terms,
         vocabulary_file=source,
+        alert_events=Events() if config.claude_alert.enabled else None,
+        player=WinsoundPlayer() if config.claude_alert.enabled and config.claude_alert.sound else None,
     )
 
 

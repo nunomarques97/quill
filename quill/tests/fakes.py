@@ -455,3 +455,90 @@ class FakeRegistry:
         if self.fail:
             raise self.fail
         return self.values.pop(name, None) is not None
+
+
+class FakePlayer:
+    """The alert sound player: records plays and stops; ``playing`` is True from a play until a stop.
+
+    ``recording`` (optional) tells whether a microphone is open; each play
+    records it, so tests can prove no sound starts while one is.
+    """
+
+    def __init__(self, recording: Callable[[], bool] | None = None) -> None:
+        self.recording = recording
+        self.plays: list[str] = []
+        self.plays_while_recording = 0
+        self.stops = 0
+        self.playing = False
+        self.fail = False
+        self.lock = threading.Lock()
+
+    def play(self, kind: str) -> None:
+        with self.lock:
+            if self.fail:
+                raise OSError("fake: no sound device")
+            self.plays.append(kind)
+            self.playing = True
+            if self.recording is not None and self.recording():
+                self.plays_while_recording += 1
+
+    def stop(self) -> None:
+        with self.lock:
+            self.stops += 1
+            self.playing = False
+
+
+class FakeAlertEvents:
+    """Named auto-reset events of the Claude Code alerts, in memory (``quill.notify.Events``)."""
+
+    def __init__(self) -> None:
+        self.names: dict[int, str] = {}
+        self.pending: set[str] = set()
+        self.closed: list[int] = []
+        self.created: list[str] = []
+        self.fail_create = False
+        self._next = 1
+        self._condition = threading.Condition()
+
+    def create_event(self, name: str) -> int:
+        with self._condition:
+            if self.fail_create:
+                raise OSError("fake: CreateEventW failed")
+            handle = self._next
+            self._next += 1
+            self.names[handle] = name
+            self.created.append(name)
+            return handle
+
+    def set_event(self, name: str) -> bool:
+        with self._condition:
+            if name not in self.names.values():
+                return False
+            self.pending.add(name)
+            self._condition.notify_all()
+            return True
+
+    def wait_any(self, handles: list[int], timeout_s: float) -> int | None:
+        with self._condition:
+            def ready() -> int | None:
+                for index, handle in enumerate(handles):
+                    if self.names.get(handle) in self.pending:
+                        return index
+                return None
+            self._condition.wait_for(lambda: ready() is not None, timeout_s)
+            index = ready()
+            if index is not None:
+                self.pending.discard(self.names[handles[index]])
+            return index
+
+    def close(self, handle: int) -> None:
+        with self._condition:
+            self.closed.append(handle)
+            name = self.names.pop(handle)
+            if name not in self.names.values():
+                self.pending.discard(name)
+
+    @property
+    def open(self) -> list[str]:
+        with self._condition:
+            return list(self.names.values())

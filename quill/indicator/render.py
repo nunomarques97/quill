@@ -31,7 +31,9 @@ COMMAND = "command"
 REVIEWING = "reviewing"
 SENT = "sent"
 ERROR = "error"
-STATES = (LOADING, LISTENING, TRANSCRIBING, COMMAND, REVIEWING, SENT, ERROR)
+CLAUDE_DONE = "claude_done"
+CLAUDE_PERMISSION = "claude_permission"
+STATES = (LOADING, LISTENING, TRANSCRIBING, COMMAND, REVIEWING, SENT, ERROR, CLAUDE_DONE, CLAUDE_PERMISSION)
 
 LABELS = {
     LOADING: "A carregar",
@@ -41,6 +43,8 @@ LABELS = {
     REVIEWING: "A rever o texto",
     SENT: "Enviado para o Claude Code",
     ERROR: "Erro",
+    CLAUDE_DONE: "Claude Code terminou",
+    CLAUDE_PERMISSION: "Claude Code pede permissão",
 }
 # Shown in the words line, in the secondary colour, while a state has no text.
 PLACEHOLDERS = {
@@ -51,6 +55,8 @@ PLACEHOLDERS = {
     REVIEWING: "A corrigir palavras mal ouvidas…",
     SENT: "Texto enviado com Enter",
     ERROR: "Não foi possível concluir",
+    CLAUDE_DONE: "A resposta está pronta; é a sua vez",
+    CLAUDE_PERMISSION: "Aprove ou recuse o pedido no Claude Code",
 }
 # State colours (0xRRGGBB): distinct hues, each >= 4.5:1 on the worst backdrop.
 STATE_COLOURS = {
@@ -61,7 +67,11 @@ STATE_COLOURS = {
     REVIEWING: 0xFF8AD8,
     SENT: 0x5CF2A0,
     ERROR: 0xFF9494,
+    CLAUDE_DONE: 0xBDF26B,
+    CLAUDE_PERMISSION: 0xFFA25F,
 }
+# The Claude Code alerts: an orb that calls for attention, not for the voice.
+ALERT_STATES = (CLAUDE_DONE, CLAUDE_PERMISSION)
 # States whose orb follows the voice level.
 LEVEL_STATES = (LISTENING, COMMAND)
 
@@ -388,6 +398,12 @@ def _orb(view: View, lay: Layout) -> list[Op]:
         for offset in (0.0, 180.0):
             ops.append(Op("arc", (cx, cy, 19 * s, (200.0 * t + offset) % 360.0, 70.0,
                                   Stroke(2.2 * s, Solid(argb(colour, 0.95))))))
+    elif view.state in ALERT_STATES:
+        # A steady ring and a slower halo that breathes: someone is waiting for you.
+        breath = 0.5 if still else 0.5 + 0.5 * math.sin(2 * math.pi * 0.8 * t)
+        ops.append(Op("ellipse", (cx, cy, 18 * s, 18 * s), {"stroke": Stroke(1.6 * s, Solid(argb(colour, 0.8)))}))
+        ops.append(Op("ellipse", (cx, cy, 23 * s, 23 * s),
+                      {"stroke": Stroke(1.2 * s, Solid(argb(colour, 0.2 + 0.4 * breath)))}))
     elif view.state == TRANSCRIBING:
         ops.append(Op("arc", (cx, cy, 15 * s, (140.0 * t) % 360.0, 250.0,
                               Stroke(1.6 * s, Solid(argb(colour, 0.85)), dashed=True))))
@@ -401,7 +417,7 @@ def _orb(view: View, lay: Layout) -> list[Op]:
         ops.append(Op("ellipse", (cx, cy, 18 * s, 18 * s), {"stroke": Stroke(1.6 * s, Solid(argb(colour, 0.7)))}))
     pulse = 0.0 if still or view.state != TRANSCRIBING else 1.5 * math.sin(2 * math.pi * 1.2 * t)
     core = (10.0 + 2.5 * motion_level + pulse) * s
-    if view.state in (SENT, ERROR, REVIEWING):
+    if view.state in (SENT, ERROR, REVIEWING, *ALERT_STATES):
         core = 12.0 * s
     ops.append(Op("ellipse", (cx, cy, core, core), {"fill": Radial(cx - core * 0.3, cy - core * 0.35, core * 1.6,
                                                                      core * 1.6, argb(0xFFFFFF, 1.0),
@@ -415,6 +431,16 @@ def _orb(view: View, lay: Layout) -> list[Op]:
             y = cy + dy * s
             ops.append(Op("polyline", ([(cx - 5.0 * s, y), (cx - 5.0 * s + width * s, y)], False),
                           {"stroke": Stroke(1.8 * s, Solid(argb(GLYPH_COLOUR, 1.0)))}))
+    elif view.state == CLAUDE_DONE:
+        # Three dots: the conversation waits for your turn.
+        for dx in (-4.2, 0.0, 4.2):
+            ops.append(Op("ellipse", (cx + dx * s, cy, 1.6 * s, 1.6 * s), {"fill": Solid(argb(GLYPH_COLOUR, 1.0))}))
+    elif view.state == CLAUDE_PERMISSION:
+        # A padlock: a permission is needed.
+        shackle = Stroke(1.8 * s, Solid(argb(GLYPH_COLOUR, 1.0)))
+        ops.append(Op("arc", (cx, cy - 1.2 * s, 3.2 * s, 180.0, 180.0, shackle)))
+        ops.append(Op("round_rect", (cx - 4.6 * s, cy - 1.2 * s, 9.2 * s, 7.0 * s, 1.4 * s),
+                      {"fill": Solid(argb(GLYPH_COLOUR, 1.0))}))
     elif view.state == ERROR:
         ops.append(Op("polyline", ([(cx, cy - 6.0 * s), (cx, cy + 1.5 * s)], False),
                       {"stroke": Stroke(2.6 * s, Solid(argb(GLYPH_COLOUR, 1.0)))}))

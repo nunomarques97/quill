@@ -7,7 +7,8 @@ Usage: py -3.12 -m quill.indicator --render-frames bench/results/indicator
 listening sequence at varying voice levels, reduced-motion frames, long-text
 cases, the Claude Code alerts with project names (one finished reply, one
 permission request, several projects, a long name and an overflow, with the
-words line the sessions build) and a contact sheet (each frame over a light and a dark desktop) into
+words line the sessions build), the mouse 5 enrichment texts (enriching,
+enriched and sent, refused) and a contact sheet (each frame over a light and a dark desktop) into
 PNG files with GDI+ in memory. It creates no window (it checks that the
 process owns none at the end) and prints the offscreen frame time p50/p95,
 also written to ``timing.json`` next to the frames. The texts are invented.
@@ -36,7 +37,8 @@ from pathlib import Path
 from quill.indicator.render import (CLAUDE_DONE, CLAUDE_PERMISSION, COMMAND, ERROR, LISTENING, LOADING, REVIEWING,
                                     SENT, STATES, TRANSCRIBING, VOICE, VOICE_NONE, VOICE_OPEN, Layout, Renderer,
                                     View)
-from quill.session import ALERT_STATES, alert_text
+from quill import enrich
+from quill.session import ALERT_STATES, ENRICHING, MESSAGES, alert_text
 from quill.sound import DONE, PERMISSION
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -113,6 +115,12 @@ def frame_set() -> list[tuple[str, View, float]]:
         for stem, alerts in ALERT_SAMPLES:
             kind, text = alert_text(list(alerts))
             frames.append((f"{stem}-{pct}", View(ALERT_STATES[kind], text, 0.0, 0.4), scale))
+    for scale in SCALES:
+        pct = round(scale * 100)
+        # Mouse 5 into Claude Code: the enrichment running, then its outcome after the Enter.
+        frames.append((f"reviewing-enriching-{pct}", View(REVIEWING, ENRICHING, 0.0, 0.4), scale))
+        frames.append((f"sent-enriched-{pct}", View(SENT, MESSAGES[enrich.ENRICHED], 0.0, 0.4), scale))
+        frames.append((f"sent-enrich-refused-{pct}", View(SENT, MESSAGES[enrich.REFUSED], 0.0, 0.4), scale))
     return frames
 
 

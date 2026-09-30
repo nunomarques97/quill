@@ -40,7 +40,13 @@ keys = ["f14"]
 # first, whatever its length and whatever [autorewrite] enabled, min_audio_s
 # and min_words say, with the same content guard; a refusal, an Ollama failure
 # or a timeout types the original text with a short notice. The indicator
-# shows "A rever o texto" while the model works.
+# shows "A rever o texto" while the model works. Into Claude Code the model
+# also gets the context pack of the window's project ([project_context]
+# below) and then enriches the corrected text into a structured prompt (see
+# [autorewrite]); the indicator shows "A enriquecer o prompt para o Claude
+# Code…" meanwhile and "Prompt enriquecido e enviado" after the Enter. In
+# the Claude Code panel of VS Code the prompt parts go on separate lines
+# (Shift+Enter); in a terminal they stay one paragraph with their labels.
 [triggers.send_polished]
 buttons = ["xbutton2"]
 keys = ["f15"]
@@ -133,7 +139,13 @@ edit_window_s = 30
 # number, or adds a word that is neither dictated, from the project's context
 # pack nor a part label; project context may appear only in the Contexto part.
 # A refusal, an Ollama failure or a reply slower than enrich_timeout_s seconds
-# (1-60) types the corrected text.
+# (1-60) types the corrected text, and after the Enter the indicator says
+# "Enriquecimento recusado; foi o texto corrigido", "Ollama indisponível; foi
+# o texto corrigido" or "O enriquecimento demorou demais; foi o texto
+# corrigido". A short dictation (under 6 words) is corrected but not
+# enriched. Mouse 4, the middle click, send_claude and every window other
+# than Claude Code keep the rewrite described above, without pack or
+# enrichment.
 # undo_key puts the original text back in place of the last rewrite, for
 # undo_window_s seconds, only in the same window, before Enter, and while the
 # rewritten text is untouched with the cursor at its end (it needs the manual
@@ -231,7 +243,9 @@ model = "large-v3"
 # inside the ignored local/ folder only). A pack is built again when a file
 # it read changes, the file list changes, or it is older than max_age_h
 # hours (1-720). A build that takes longer than build_timeout_s seconds
-# (0.5-30) gives no pack, and the dictation goes on without it. Count the
+# (0.5-30) gives no pack, and the dictation goes on without it. Only mouse 5
+# (send_polished) into Claude Code uses the pack, and only when it is bound;
+# without a known project, mouse 5 corrects and enriches without one. Count the
 # pack of each configured project (counts only) with:
 #   py -3.12 -m quill.context_pack --check
 [project_context]

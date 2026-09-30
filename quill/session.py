@@ -42,10 +42,21 @@ the indicator shows ``reviewing`` ("A rever o texto"); a short one never
 calls it, so its path is unchanged. The ``send_polished`` trigger sends
 every dictation to the rewriter whatever its length (``force``) and
 ``send_raw`` never does. A failure, a timeout or a refusal by the
-content guard types the original text at once and shows a short notice. The
-text is typed with the target's newline policy (Shift+Enter in the Claude
-Code panel, a space elsewhere), and a send trigger presses Enter only
-after all of it is typed. A rewrite typed without Enter is reported to
+content guard types the original text at once and shows a short notice.
+Into Claude Code, ``send_polished`` also gives the rewriter the context pack
+of the window's project (``context_pack(folder)``, a
+``quill.context_pack.ContextPacks.get``: cached, built on a miss within its
+time bound, else None; no detected folder or a failing lookup gives None and
+the correction goes on without it) and asks it to enrich the corrected text
+into a structured prompt (``quill.enrich``); the indicator then shows
+``ENRICHING`` in the ``reviewing`` state, and after the Enter "Prompt
+enriquecido e enviado" when the prompt was enriched, or a short notice when
+the corrected text was sent instead. The long automatic rewrite,
+``send_claude``, ``send_raw`` and every other window keep the plain rewrite.
+The text is typed with the target's newline policy (Shift+Enter in the
+Claude Code panel, a space elsewhere; an enriched prompt goes into a terminal
+as one paragraph with its labels, ``quill.enrich.one_paragraph``), and a
+send trigger presses Enter only after all of it is typed. A rewrite typed without Enter is reported to
 ``on_typed`` with its original, for the undo key. ``submit`` runs other
 work (the undo key) on the finalizer thread, in order with the sessions.
 
@@ -96,6 +107,7 @@ from typing import Protocol
 
 from quill import autorewrite
 from quill import command as commands
+from quill import enrich
 from quill import inject
 from quill import focus as focus_reasons
 from quill import sound
@@ -164,10 +176,15 @@ MESSAGES = {
     focus_reasons.FOCUS_NOT_MOVED: "O campo não recebeu o foco; tente de novo",
     **commands.MESSAGES,
     **autorewrite.MESSAGES,
+    **enrich.MESSAGES,
+    enrich.ENRICHED: "Prompt enriquecido e enviado",
 }
 INTERRUPTED = " (escrita interrompida)"
 # Endings where the whole text was typed but something is worth showing.
-TYPED_NOTICES = frozenset({NOT_CLAUDE, ENTER_FAILED, CLEANUP_FALLBACK, *autorewrite.MESSAGES})
+TYPED_NOTICES = frozenset({NOT_CLAUDE, ENTER_FAILED, CLEANUP_FALLBACK, *autorewrite.MESSAGES, *enrich.MESSAGES,
+                           enrich.ENRICHED})
+# The words line of the ``reviewing`` state while the model enriches a mouse 5 prompt.
+ENRICHING = "A enriquecer o prompt para o Claude Code…"
 # PCM16 mono at 16 kHz: bytes per second of audio.
 AUDIO_BYTES_PER_S = 32_000
 
@@ -274,6 +291,7 @@ class Outcome:
     release_to_typed_s: float | None = None
     rewrite: str | None = None  # the automatic rewrite's reason code, when it was asked
     notice: str | None = None  # a notice shown with a text that was typed (for example after Enter)
+    enrichment: str | None = None  # the enrichment's reason code, when it was asked
 
 
 @dataclass(eq=False)
@@ -294,6 +312,7 @@ class _Hold:
     ended: bool = False
     audio_bytes: int = 0
     reviewing: bool = False
+    enriching: bool = False
 
 
 _STOP = object()
@@ -343,7 +362,9 @@ class SessionManager:
     runs on the finalizer thread about every ``poll_s``. ``player`` plays the
     Claude Code alert sounds (``quill.sound``; None: the alerts are silent) and
     ``speaker`` says the project names after them (``quill.speech.Speaker``;
-    None: only the chime).
+    None: only the chime). ``context_pack(folder)`` returns the context pack
+    of a project folder or None (``quill.context_pack.ContextPacks.get``;
+    None: mouse 5 corrects and enriches without a pack).
     """
 
     def __init__(self, *, transcriber: object, capture_factory: Callable[[Callable[[bytes], None]], object],
@@ -354,6 +375,7 @@ class SessionManager:
                  on_typed: Callable[[Target, str, str | None, str], None] | None = None,
                  housekeeping: Callable[[], None] | None = None,
                  player: object | None = None, speaker: object | None = None,
+                 context_pack: Callable[[Path], object | None] | None = None,
                  alert_repeat_s: float = ALERT_REPEAT_S,
                  clock: Callable[[], float] = time.perf_counter,
                  final_timeout_s: float = FINAL_TIMEOUT_S, poll_s: float = POLL_S) -> None:
@@ -373,6 +395,7 @@ class SessionManager:
         self.housekeeping = housekeeping
         self.player = player
         self.speaker = speaker
+        self.context_pack = context_pack
         self.alert_repeat_s = alert_repeat_s
         self.clock = clock
         self.final_timeout_s = final_timeout_s
@@ -743,10 +766,15 @@ class SessionManager:
             text, original, rewrite = processed.text, None, None
             pipeline_at = self.clock()
             force = hold.action == SEND_POLISHED
+            # Mouse 5 into Claude Code: the project's context pack, then the enrichment.
+            polish = force and processed.claude_code
             if self.rewriter is not None and (force or self._wants_rewrite(hold, processed)):
-                rewrite = self._rewrite(hold, processed, force)
+                rewrite = self._rewrite(hold, processed, force, polish)
                 if rewrite.rewritten:
+                    # The original is always the dictation before correction and enrichment.
                     text, original = rewrite.text, processed.text
+                    if rewrite.enriched and processed.newline == NEWLINE_SPACE:
+                        text = enrich.one_paragraph(text)
             text_at = self.clock()
             typed = self.injector.inject(text, hold.target, InjectOptions(newline=processed.newline))
             if not typed.ok:
@@ -754,9 +782,12 @@ class SessionManager:
                 return
             typed_at = self.clock()
             latency = typed_at - hold.released_at
-            log.info("session %d: typed (%s profile%s); release to typed %.0f ms (engine %.0f ms, text %.0f ms, "
+            enrichment = (rewrite.enrichment or None) if rewrite is not None else None
+            log.info("session %d: typed (%s profile%s%s); release to typed %.0f ms (engine %.0f ms, text %.0f ms, "
                      "%styping %.0f ms)", hold.number, processed.profile,
-                     f", rewrite {rewrite.reason}" if rewrite is not None else "", latency * 1000,
+                     f", rewrite {rewrite.reason}" if rewrite is not None else "",
+                     f", {enrichment} in {rewrite.enrich_seconds * 1000:.0f} ms" if enrichment else "",
+                     latency * 1000,
                      (engine_at - hold.released_at) * 1000, (pipeline_at - engine_at) * 1000,
                      f"rewrite {(text_at - pipeline_at) * 1000:.0f} ms, " if rewrite is not None else "",
                      (typed_at - text_at) * 1000)
@@ -768,7 +799,11 @@ class SessionManager:
                     self.on_typed(hold.target, normalize_text(text, processed.newline), undo, processed.newline)
                 except Exception as exc:  # noqa: BLE001
                     log.error("typed hook failed (%s)", type(exc).__name__)
-            notice = rewrite.reason if rewrite is not None and rewrite.message else processed.notice
+            notice = processed.notice
+            if rewrite is not None and rewrite.message:
+                notice = rewrite.reason
+            elif enrichment in MESSAGES:
+                notice = enrichment  # enriched, or the corrected text sent instead
             reason = TYPED
             if hold.action in SEND_ACTIONS:
                 if not processed.claude_code:
@@ -780,7 +815,7 @@ class SessionManager:
             elif notice:
                 reason = notice
             self._end(hold, reason, typed=typed.typed, latency=latency,
-                      rewrite=rewrite.reason if rewrite is not None else None, notice=notice)
+                      rewrite=rewrite.reason if rewrite is not None else None, notice=notice, enrichment=enrichment)
         except Exception as exc:  # noqa: BLE001 - the message may not carry text: log the type only
             log.error("session %d: finalization failed (%s)", hold.number, type(exc).__name__)
             self._fail(hold, INTERNAL_ERROR)
@@ -794,16 +829,24 @@ class SessionManager:
             log.error("session %d: rewrite check failed (%s)", hold.number, type(exc).__name__)
             return False
 
-    def _rewrite(self, hold: _Hold, processed: Processed, force: bool = False) -> autorewrite.AutoRewrite:
-        """The rewrite of a long dictation (any dictation with ``force``); the original text on every failure."""
+    def _rewrite(self, hold: _Hold, processed: Processed, force: bool = False,
+                 polish: bool = False) -> autorewrite.AutoRewrite:
+        """The rewrite of a long dictation (any dictation with ``force``); the original text on every failure.
+
+        ``polish`` (mouse 5 into Claude Code) adds the project's context pack and the enrichment.
+        """
         with self._lock:
             hold.reviewing = True
             if self._visible(hold):
                 self.indicator.show(REVIEWING, hold.live_text)
         try:
+            extra = {}
+            if polish:
+                extra = {"pack": self._pack(hold, processed), "enrich_prompt": True, "context": True,
+                         "on_enrich": lambda: self._enriching(hold)}
             result = self.rewriter.rewrite(processed.text, audio_s=hold.audio_bytes / AUDIO_BYTES_PER_S,
                                            profile=processed.rewrite_profile or processed.profile,
-                                           keep=processed.keep, project=processed.project, force=force)
+                                           keep=processed.keep, project=processed.project, force=force, **extra)
             if not isinstance(result.text, str) or not result.text.strip():
                 raise ValueError("empty rewrite result")
             return result
@@ -812,7 +855,27 @@ class SessionManager:
             return autorewrite.AutoRewrite(processed.text, processed.text, autorewrite.FAILED, type(exc).__name__)
         finally:
             with self._lock:
-                hold.reviewing = False
+                hold.reviewing = hold.enriching = False
+
+    def _pack(self, hold: _Hold, processed: Processed) -> object | None:
+        """The context pack of the window's project folder; None without a folder or on any failure."""
+        folder = processed.project_folder
+        if folder is None or self.context_pack is None:
+            return None
+        try:
+            pack = self.context_pack(folder)
+        except Exception as exc:  # noqa: BLE001 - a pack is optional: never lose the dictation for it
+            log.error("session %d: context pack failed (%s)", hold.number, type(exc).__name__)
+            return None
+        log.info("session %d: context pack %s", hold.number, "found" if pack is not None else "none")
+        return pack
+
+    def _enriching(self, hold: _Hold) -> None:
+        """The model starts enriching the corrected text (called by the rewriter on the finalizer thread)."""
+        with self._lock:
+            hold.enriching = True
+            if self._visible(hold):
+                self.indicator.show(REVIEWING, ENRICHING)
 
     def _finalize_command(self, hold: _Hold, instruction: str, engine_at: float) -> None:
         outcome = self.command.run(instruction, hold.target)
@@ -878,13 +941,13 @@ class SessionManager:
 
     def _end(self, hold: _Hold, reason: str, typed: int = 0, latency: float | None = None,
              rewrite: str | None = None, notice: str | None = None,
-             shown: tuple[str, str, float] | None = None) -> None:
+             shown: tuple[str, str, float] | None = None, enrichment: str | None = None) -> None:
         """``shown`` (state, text, seconds) replaces the outcome the reason would show."""
         with self._lock:
             if hold.ended:
                 return
             hold.ended = True
-            hold.reviewing = False
+            hold.reviewing = hold.enriching = False
             if hold in self._live:
                 self._live.remove(hold)
             if self._visible(hold):
@@ -892,7 +955,8 @@ class SessionManager:
                     self._show_timed(*shown)
                 else:
                     self._show_outcome(hold, reason, typed, notice)
-            self.outcomes.append(Outcome(hold.number, hold.action, reason, typed, latency, rewrite, notice))
+            self.outcomes.append(Outcome(hold.number, hold.action, reason, typed, latency, rewrite, notice,
+                                         enrichment))
             self._deliver_alerts()
 
     def _record(self, hold: _Hold, reason: str) -> None:
@@ -976,7 +1040,10 @@ class SessionManager:
             older = self._live[-1] if self._live else None
             if older is not None:
                 # An older session is still being finalized: show it again.
-                self.indicator.show(REVIEWING if older.reviewing else TRANSCRIBING, older.live_text)
+                if older.enriching:
+                    self.indicator.show(REVIEWING, ENRICHING)
+                else:
+                    self.indicator.show(REVIEWING if older.reviewing else TRANSCRIBING, older.live_text)
             else:
                 self.indicator.hide()
         elif reason == SENT_ENTER:

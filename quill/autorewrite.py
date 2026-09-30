@@ -32,7 +32,7 @@ compares it word by word with its input and refuses it when it
 - is out of the length bounds (``LENGTH_BOUNDS`` of the input's letters).
 
 In context mode (the ``send_polished`` trigger in the ``claude-code``
-profile), the prompt also carries the project's context pack (its bounded
+profile, or into Claude Code in a terminal with ``context``), the prompt also carries the project's context pack (its bounded
 summary and terms, ``quill.context_pack``) as data that is never
 instructions, and asks to replace a misheard word only with a project or
 vocabulary term that fits the context and sounds close. The guard is the
@@ -520,20 +520,29 @@ class AutoRewriter:
 
     def rewrite(self, text: str, *, audio_s: float | None, profile: str = DEFAULT, keep: Iterable[str] = (),
                 project: str = "", force: bool = False, pack: object | None = None,
-                enrich_prompt: bool = False) -> AutoRewrite:
+                enrich_prompt: bool = False, context: bool | None = None,
+                on_enrich: Callable[[], None] | None = None) -> AutoRewrite:
         """``force`` (the send_polished trigger) asks the model whatever ``enabled`` and the thresholds say.
 
-        Only with ``force`` in the ``claude-code`` profile (context mode) are
-        ``pack`` (a ``quill.context_pack.ContextPack``) and ``enrich_prompt``
-        used; everywhere else the rewrite is today's.
+        Only with ``force`` in context mode are ``pack`` (a
+        ``quill.context_pack.ContextPack``) and ``enrich_prompt`` used;
+        everywhere else the rewrite is today's. Context mode is the
+        ``claude-code`` profile, or ``context`` when given (Claude Code in a
+        terminal, whose layout profile keeps one paragraph). ``on_enrich``
+        runs just before the model is asked to enrich.
         """
         keep = tuple(keep)
-        context = force and profile == CLAUDE_CODE
+        context = force and (profile == CLAUDE_CODE if context is None else bool(context))
         result = self._correct(text, audio_s=audio_s, profile=profile, keep=keep, project=project, force=force,
                                context=context, pack=pack if context else None)
         if not (context and enrich_prompt) or result.reason not in (REWRITTEN, UNCHANGED):
             return result
         try:
+            if on_enrich is not None and self.enricher.wants(result.text):
+                try:
+                    on_enrich()
+                except Exception as exc:  # noqa: BLE001 - the indicator never stops the enrichment
+                    log.error("enrich: start hook failed (%s)", type(exc).__name__)
             enrichment = self.enricher.enrich(result.text, pack=pack, project=project)
         except Exception as exc:  # noqa: BLE001 - a broken enricher never loses the corrected text
             log.error("enrich: failed (%s)", type(exc).__name__)

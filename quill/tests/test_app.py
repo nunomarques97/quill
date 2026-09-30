@@ -17,6 +17,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from quill import app as A
@@ -1374,6 +1375,148 @@ class SendPolishedAppTest(RewriteCase):
         self.assertNotIn(REVIEWING, self.indicator.states)
         self.assertEqual(sent_segments(self.api), [SPOKEN, ""])
         self.assertEqual(self.api.enter_presses(), [False])
+
+
+class SequenceOllama(RewriteOllama):
+    """One reply per call, in order (the correction, then the enrichment); the last one repeats."""
+
+    def __init__(self, *replies):
+        super().__init__(replies[0])
+        self.replies = list(replies)
+
+    def chat(self, model, system, user, max_tokens=None, timeout_s=None):
+        self.reply = self.replies.pop(0) if len(self.replies) > 1 else self.replies[0]
+        return super().chat(model, system, user, max_tokens, timeout_s)
+
+
+class FakePacks:
+    """``quill.context_pack.ContextPacks`` stand-in: ``get`` records the folders; a pack, None or an error."""
+
+    def __init__(self):
+        self.folders = []
+        self.pack = SimpleNamespace(summary="Projeto de carteira digital.", terms=("carteira", "saldo"))
+        self.error = None
+
+    def get(self, folder):
+        self.folders.append(folder)
+        if self.error is not None:
+            raise self.error
+        return self.pack
+
+
+class PolishAppTest(RewriteCase):
+    """Mouse 5 into Claude Code: the detected project's pack, the correction, then the enrichment."""
+
+    ENRICHED = ("Pedido: w1 w2 w3 w4 w5 w6.\nContexto: projeto invented, carteira digital.\n"
+                "Restrições:\n- w7 w8 w9\n- w10 w11 w12.")
+    PARAGRAPH = ("Pedido: w1 w2 w3 w4 w5 w6. Contexto: projeto invented, carteira digital. "
+                 "Restrições: w7 w8 w9; w10 w11 w12.")
+    HUB_TITLE = "invented | notes.md - Visual Studio Code [Claude Code]"
+
+    def setUp(self):
+        super().setUp()
+        self.project = self.folder / "invented"
+        self.project.mkdir()
+        self.packs = FakePacks()
+        self.ollama = SequenceOllama(REWRITTEN, self.ENRICHED)
+        context = dataclasses.replace(self.config.project_context, folders=(("invented", self.project),))
+        rewrite = dataclasses.replace(self.config.autorewrite, min_words=10)
+        self.app = self.make_app(self.make_config(autorewrite=rewrite, project_context=context),
+                                 rewrite_client=self.ollama, layout=FakeLayout(), context_packs=self.packs)
+        self.api.under_pointer = CLAUDE_HWND
+        self.api.foreground = CLAUDE_HWND
+
+    def in_the_panel(self, title=HUB_TITLE):
+        self.api.images[CLAUDE_PID] = "C:\\Invented\\Code.exe"
+        self.api.titles[CLAUDE_HWND] = title
+
+    def test_the_hub_panel_gets_the_pack_and_the_enriched_lines_then_one_enter(self):
+        self.in_the_panel()
+        self.start()
+        self.hold(WORDS, which=XBUTTON2)
+        outcome = self.app.sessions.outcomes[-1]
+        self.assertEqual((outcome.reason, outcome.rewrite, outcome.enrichment),
+                         (S.SENT_ENTER, R.REWRITTEN, "enrich_enriched"))
+        self.assertEqual(self.packs.folders, [self.project])
+        correct, enrich = self.ollama.calls
+        self.assertIn("<project_terms>", correct[1])
+        self.assertIn("<project_summary>", enrich[1])
+        self.assertIn(f"<dictation>\n{REWRITTEN}\n</dictation>", enrich[1])  # the corrected text is enriched
+        self.assertEqual(sent_segments(self.api), [self.ENRICHED, ""])
+        self.assertEqual(self.api.enter_presses(), [True, True, True, True, False])  # Shift+Enter, then one Enter
+        self.assertEqual(self.indicator.last, ("show", SENT, "Prompt enriquecido e enviado"))
+        self.assertIn(("show", REVIEWING, S.ENRICHING), self.indicator.calls)
+        self.assertEqual(self.press_undo(), self.refused(UNDO_NOTHING))  # sent with Enter: never undone
+
+    def test_the_terminal_gets_one_paragraph_with_the_labels(self):
+        self.api.titles[CLAUDE_HWND] = "invented - Claude Code"
+        self.start()
+        self.hold(WORDS, which=XBUTTON2)
+        outcome = self.app.sessions.outcomes[-1]
+        self.assertEqual((outcome.reason, outcome.enrichment), (S.SENT_ENTER, "enrich_enriched"))
+        self.assertEqual(self.packs.folders, [self.project])
+        self.assertIn("one paragraph", self.ollama.calls[0][0])  # the terminal layout of the correction
+        self.assertEqual(sent_segments(self.api), [self.PARAGRAPH, ""])
+        self.assertEqual(self.api.enter_presses(), [False])
+
+    def test_an_unknown_project_still_enriches_without_a_pack(self):
+        self.ollama.replies = [REWRITTEN, "Pedido: w1 w2 w3 w4 w5 w6.\nRestrições: w7 w8 w9 w10 w11 w12."]
+        self.in_the_panel("unknown | notes.md - Visual Studio Code [Claude Code]")
+        self.start()
+        self.hold(WORDS, which=XBUTTON2)
+        outcome = self.app.sessions.outcomes[-1]
+        self.assertEqual((outcome.reason, outcome.enrichment), (S.SENT_ENTER, "enrich_enriched"))
+        self.assertEqual(self.packs.folders, [])
+        self.assertNotIn("<project_summary>", self.ollama.calls[1][1])
+        self.assertEqual(sent_segments(self.api), ["Pedido: w1 w2 w3 w4 w5 w6.\nRestrições: w7 w8 w9 w10 w11 w12.", ""])
+
+    def test_a_failing_pack_or_a_refused_enrichment_never_loses_the_dictation(self):
+        self.in_the_panel()
+        self.packs.error = OSError("fake")
+        self.start()
+        self.hold(WORDS, which=XBUTTON2)  # the pack fails: the enrichment reply names a pack word, refused
+        outcome = self.app.sessions.outcomes[-1]
+        self.assertEqual((outcome.reason, outcome.rewrite, outcome.enrichment, outcome.notice),
+                         (S.SENT_ENTER, R.REWRITTEN, "enrich_refused", "enrich_refused"))
+        self.assertEqual(sent_segments(self.api), [REWRITTEN, ""])  # the corrected text
+        self.assertEqual(self.indicator.last, ("show", SENT, "Enriquecimento recusado; foi o texto corrigido"))
+
+    def test_mouse_4_and_the_middle_click_keep_todays_behaviour(self):
+        self.in_the_panel()
+        self.start()
+        self.hold(WORDS)  # mouse 4, long: today's rewrite, no pack, no enrichment
+        self.assertEqual(self.app.sessions.outcomes[-1].enrichment, None)
+        self.assertEqual(len(self.ollama.calls), 1)
+        self.assertNotIn("<project_terms>", self.ollama.calls[0][1])
+        self.assertEqual(self.api.received_text(), REWRITTEN)
+        self.assertEqual(self.press_undo(), ("hide",))  # no Enter: the undo key restores the dictation
+        self.assertEqual(self.api.received_text(), SPOKEN)
+        self.hold(WORDS, which=MIDDLE)
+        self.assertEqual(self.app.sessions.outcomes[-1].enrichment, None)
+        self.assertEqual(len(self.ollama.calls), 1)
+        self.assertEqual(self.packs.folders, [])
+
+    def test_mouse_5_outside_claude_code_keeps_todays_rewrite(self):
+        self.api.under_pointer = self.api.foreground = TARGET.hwnd
+        self.start()
+        self.hold(WORDS, which=XBUTTON2)
+        outcome = self.app.sessions.outcomes[-1]
+        self.assertEqual((outcome.reason, outcome.rewrite, outcome.enrichment), (S.NOT_CLAUDE, R.REWRITTEN, None))
+        self.assertEqual((len(self.ollama.calls), self.packs.folders), (1, []))
+        self.assertEqual(self.api.received_text(), REWRITTEN)
+        self.assertEqual(self.press_undo(), ("hide",))  # no Enter: the dictation comes back
+        self.assertEqual(self.api.received_text(), SPOKEN)
+
+    def test_without_context_packs_mouse_5_enriches_without_a_pack(self):
+        self.ollama.replies = [REWRITTEN, "Pedido: w1 w2 w3 w4 w5 w6.\nRestrições: w7 w8 w9 w10 w11 w12."]
+        quill = self.make_app(self.app.config, rewrite_client=self.ollama, layout=FakeLayout())  # no packs
+        self.assertIsNone(quill.sessions.context_pack)
+        self.in_the_panel()
+        self.start(quill)
+        self.hold(WORDS, which=XBUTTON2, quill=quill)
+        outcome = quill.sessions.outcomes[-1]
+        self.assertEqual((outcome.reason, outcome.enrichment), (S.SENT_ENTER, "enrich_enriched"))
+        self.assertNotIn("<project_summary>", self.ollama.calls[1][1])
 
 
 class WarmModelTest(unittest.TestCase):

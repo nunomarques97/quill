@@ -228,6 +228,32 @@ class EnricherTest(unittest.TestCase):
         too_long = self.run_with(FakeClient(), text="palavra " * 800)
         self.assertEqual((too_long.reason, too_long.detail), (E.REFUSED, E.TOO_LONG))
 
+    def test_wants_matches_when_the_model_is_asked(self) -> None:
+        enricher = E.Enricher(FakeClient(), "m", 12.0)
+        self.assertTrue(enricher.wants(DICTATION))
+        self.assertFalse(enricher.wants("Sim, continua."))
+        self.assertFalse(enricher.wants("palavra " * 800))
+
+
+class OneParagraphTest(unittest.TestCase):
+    """Claude Code in a terminal: the accepted prompt on one line, labels kept, words unchanged."""
+
+    def test_parts_end_with_a_full_stop_and_items_join_with_semicolons(self) -> None:
+        self.assertEqual(E.one_paragraph(REPLY),
+                         "Pedido: Acrescenta a exportação do relatório de encomendas em CSV no painel de gestão. "
+                         "Contexto: projeto nimbus, loja online de encomendas com relatórios diários. "
+                         "Restrições: sem mexer na API pública. Critérios de aceitação: os testes do painel passam.")
+        self.assertEqual(E.one_paragraph("Objetivo: exportar\nPedido:\n- um\n- dois\nRestrições: nada"),
+                         "Objetivo: exportar. Pedido: um; dois. Restrições: nada")
+        self.assertEqual(E.one_paragraph("Pedido:\r\n\r\n-   um  item!\n- dois"), "Pedido: um item! dois")
+
+    def test_every_word_and_number_stays_in_order(self) -> None:
+        text = "Objetivo: corrigir 3 erros\nPedido:\n- rever o módulo 2\n- testar\nContexto: projeto nimbus"
+        shown = E.one_paragraph(text)
+        self.assertNotIn("\n", shown)
+        self.assertEqual(E.WORD.findall(shown), E.WORD.findall(text))
+        self.assertEqual(E.one_paragraph(""), "")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -5,14 +5,17 @@ are fakes; no microphone, window, hook or input is touched. The texts are
 invented.
 """
 
+import dataclasses
 import json
 import logging
 import threading
 import time
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 
 from quill import autorewrite as R
+from quill import enrich as E
 from quill import inject
 from quill import session as S
 from quill.focus import CLICKED, NO_WINDOW, FocusResult
@@ -139,15 +142,18 @@ class FakePipeline:
         self.calls = 0
         self.error = None
         self.notice = None
+        self.folder = None  # the project folder found for the Claude Code window
+        self.terminal = False  # Claude Code in a terminal: one paragraph, spaces for line breaks
 
     def __call__(self, raw, target):
         self.calls += 1
         if self.error is not None:
             raise self.error
         claude = target == CLAUDE
+        newline = inject.NEWLINE_SHIFT_ENTER if claude and not self.terminal else inject.NEWLINE_SPACE
         return Processed(raw.strip().capitalize() + ".", "claude-code" if claude else "default", claude, self.notice,
-                         keep=("Invented",), project="projeto", rewrite_profile="vscode" if claude else None,
-                         newline=inject.NEWLINE_SHIFT_ENTER if claude else inject.NEWLINE_SPACE)
+                         keep=("Invented",), project="projeto", project_folder=self.folder if claude else None,
+                         rewrite_profile="vscode" if claude else None, newline=newline)
 
 
 class FakeRewriter:
@@ -164,22 +170,39 @@ class FakeRewriter:
         self.error = None
         self.gate = None  # a threading.Event the rewrite waits for
         self.started = threading.Event()
+        self.polished = []  # the extra keyword arguments of each call (mouse 5 into Claude Code)
+        self.enrichment = ""  # the enrichment's reason code when it is asked ("": none)
+        self.enriched = None  # the enriched prompt; None: the corrected text with a label
+        self.enrich_gate = None  # a threading.Event the enrichment waits for
+        self.enriching = threading.Event()
 
     def wants(self, text, audio_s):
         self.asked.append((text, audio_s))
         return len(text.split()) >= self.min_words or audio_s >= self.min_audio_s
 
-    def rewrite(self, text, *, audio_s, profile="default", keep=(), project="", force=False):
+    def rewrite(self, text, *, audio_s, profile="default", keep=(), project="", force=False, **polish):
         self.calls.append({"text": text, "audio_s": audio_s, "profile": profile, "keep": keep, "project": project})
         self.forced.append(force)
+        self.polished.append(polish)
         self.started.set()
         if self.gate is not None:
             self.gate.wait(5)
         if self.error is not None:
             raise self.error
         if self.reason == R.REWRITTEN:
-            return R.AutoRewrite(self.reply or text.upper(), text, R.REWRITTEN)
-        return R.AutoRewrite(text, text, self.reason)
+            result = R.AutoRewrite(self.reply or text.upper(), text, R.REWRITTEN)
+        else:
+            result = R.AutoRewrite(text, text, self.reason)
+        if not (polish.get("enrich_prompt") and self.enrichment) or self.reason not in (R.REWRITTEN, R.UNCHANGED):
+            return result
+        polish["on_enrich"]()
+        self.enriching.set()
+        if self.enrich_gate is not None:
+            self.enrich_gate.wait(5)
+        typed = result.text
+        if self.enrichment == E.ENRICHED:
+            typed = self.enriched or f"Pedido: {result.text}"
+        return dataclasses.replace(result, text=typed, enrichment=self.enrichment)
 
 
 class SessionCase(unittest.TestCase):
@@ -202,8 +225,8 @@ class SessionCase(unittest.TestCase):
             transcriber=self.transcriber, capture_factory=self.captures, focus=self.focus, injector=self.injector,
             indicator=self.indicator, pipeline=self.pipeline, rewriter=self.rewriter, voice=self.voice,
             on_session_start=self._started,
-            on_typed=self._typed, player=self.player, speaker=self.speaker, clock=self.clock,
-            final_timeout_s=5.0, poll_s=0.05)
+            on_typed=self._typed, player=self.player, speaker=self.speaker, context_pack=self.make_context_pack(),
+            clock=self.clock, final_timeout_s=5.0, poll_s=0.05)
         self.manager.start()
         self.addCleanup(self.manager.stop)
 
@@ -217,6 +240,9 @@ class SessionCase(unittest.TestCase):
         return None
 
     def make_voice(self):
+        return None
+
+    def make_context_pack(self):
         return None
 
     def _started(self):
@@ -936,6 +962,182 @@ class SendPolishedRawTest(SessionCase):
             self.dictate("frase curta", action=action)
         self.assertEqual([o.reason for o in self.wait_outcomes(2)], [inject.FOREGROUND_CHANGED] * 2)
         self.assertEqual(self.injector.enters, [])
+
+
+class FakeContextPacks:
+    """``ContextPacks.get`` stand-in: records the folders asked for; a pack, None or an error."""
+
+    def __init__(self):
+        self.folders = []
+        self.pack = SimpleNamespace(summary="Projeto inventado.", terms=("carteira",))
+        self.error = None
+
+    def __call__(self, folder):
+        self.folders.append(folder)
+        if self.error is not None:
+            raise self.error
+        return self.pack
+
+
+class PolishTest(SessionCase):
+    """Mouse 5 into Claude Code: the project's context pack, the correction, then the enrichment."""
+
+    FOLDER = Path("C:/Invented/projeto")
+    ENRICHED = "Objetivo: frase curta.\nPedido:\n- um\n- dois"
+
+    def setUp(self):
+        super().setUp()
+        self.ready()
+        self.focus.targets = [CLAUDE]
+        self.pipeline.folder = self.FOLDER
+        self.rewriter.enrichment = E.ENRICHED
+        self.rewriter.enriched = self.ENRICHED
+
+    def make_rewriter(self):
+        return FakeRewriter()
+
+    def make_context_pack(self):
+        self.packs = FakeContextPacks()
+        return self.packs
+
+    def test_the_panel_gets_the_pack_and_the_enriched_lines_with_shift_enter_then_one_enter(self):
+        self.rewriter.enrich_gate = threading.Event()
+        self.dictate("frase curta", action="send_polished")
+        self.assertTrue(self.rewriter.enriching.wait(5))
+        self.assertEqual(self.indicator.last, ("show", REVIEWING, S.ENRICHING))
+        self.assertEqual(self.injector.typed, [])
+        self.rewriter.enrich_gate.set()
+        outcome = self.wait_outcomes(1)[0]
+        self.assertEqual((outcome.reason, outcome.rewrite, outcome.enrichment, outcome.notice),
+                         (S.SENT_ENTER, R.REWRITTEN, E.ENRICHED, E.ENRICHED))
+        self.assertEqual(self.packs.folders, [self.FOLDER])
+        polish = self.rewriter.polished[0]
+        self.assertIs(polish["pack"], self.packs.pack)
+        self.assertEqual((polish["enrich_prompt"], polish["context"]), (True, True))
+        self.assertEqual(self.rewriter.calls[0]["project"], "projeto")
+        self.assertEqual(self.injector.typed, [(self.ENRICHED, CLAUDE)])  # lines kept: Shift+Enter
+        self.assertEqual(self.injector.options[-1].newline, inject.NEWLINE_SHIFT_ENTER)
+        self.assertEqual(self.injector.enters, [CLAUDE])
+        self.assertEqual(self.injector.typed_before_enter, [1])  # one plain Enter after the whole text
+        self.assertEqual(self.undoable, [(None, inject.NEWLINE_SHIFT_ENTER)])  # followed by Enter: never undone
+        self.assertEqual(self.indicator.last, ("show", SENT, "Prompt enriquecido e enviado"))
+        self.assert_released()
+
+    def test_the_terminal_gets_one_paragraph_with_the_labels(self):
+        self.pipeline.terminal = True
+        self.dictate("frase curta", action="send_polished")
+        outcome = self.wait_outcomes(1)[0]
+        self.assertEqual((outcome.reason, outcome.enrichment), (S.SENT_ENTER, E.ENRICHED))
+        self.assertTrue(self.rewriter.polished[0]["context"])  # context mode despite the vscode layout profile
+        self.assertEqual(self.injector.typed, [("Objetivo: frase curta. Pedido: um; dois", CLAUDE)])
+        self.assertEqual(self.injector.options[-1].newline, inject.NEWLINE_SPACE)
+        self.assertEqual(self.injector.enters, [CLAUDE])
+        self.assertEqual(self.injector.typed_before_enter, [1])
+
+    def test_without_a_project_folder_it_enriches_without_a_pack(self):
+        self.pipeline.folder = None
+        self.dictate("frase curta", action="send_polished")
+        outcome = self.wait_outcomes(1)[0]
+        self.assertEqual((outcome.reason, outcome.enrichment), (S.SENT_ENTER, E.ENRICHED))
+        self.assertEqual(self.packs.folders, [])
+        self.assertIsNone(self.rewriter.polished[0]["pack"])
+        self.assertTrue(self.rewriter.polished[0]["enrich_prompt"])
+        self.assertEqual(self.injector.typed, [(self.ENRICHED, CLAUDE)])
+
+    def test_a_missing_or_failing_pack_never_loses_the_dictation(self):
+        for number, error in enumerate((None, OSError("fake"), TimeoutError()), start=1):
+            with self.subTest(error=error):
+                self.packs.pack, self.packs.error = None, error
+                self.dictate("frase curta", action="send_polished")
+                outcome = self.wait_outcomes(number)[-1]
+                self.assertEqual((outcome.reason, outcome.enrichment), (S.SENT_ENTER, E.ENRICHED))
+                self.assertIsNone(self.rewriter.polished[-1]["pack"])
+                self.assertEqual(self.injector.typed[-1], (self.ENRICHED, CLAUDE))
+        self.assertEqual(len(self.packs.folders), 3)
+
+    def test_a_refused_failed_or_slow_enrichment_sends_the_corrected_text_and_says_so(self):
+        for number, reason in enumerate((E.REFUSED, E.FAILED, E.TIMEOUT), start=1):
+            with self.subTest(reason=reason):
+                self.rewriter.enrichment = reason
+                self.dictate("frase curta", action="send_polished")
+                outcome = self.wait_outcomes(number)[-1]
+                self.assertEqual((outcome.reason, outcome.rewrite, outcome.enrichment, outcome.notice),
+                                 (S.SENT_ENTER, R.REWRITTEN, reason, reason))
+                self.assertEqual(self.injector.typed[-1], ("FRASE CURTA.", CLAUDE))  # the corrected text
+                self.assertEqual(self.indicator.last, ("show", SENT, E.MESSAGES[reason]))
+                self.assertEqual(self.undoable[-1], (None, inject.NEWLINE_SHIFT_ENTER))
+        self.assertEqual(self.injector.typed_before_enter, [1, 2, 3])
+
+    def test_a_short_dictation_not_enriched_is_sent_as_today(self):
+        self.rewriter.enrichment = E.SHORT
+        self.dictate("frase curta", action="send_polished")
+        outcome = self.wait_outcomes(1)[0]
+        self.assertEqual((outcome.reason, outcome.enrichment, outcome.notice), (S.SENT_ENTER, E.SHORT, None))
+        self.assertEqual(self.injector.typed, [("FRASE CURTA.", CLAUDE)])
+        self.assertEqual(self.indicator.last, ("show", SENT, ""))
+
+    def test_a_refused_or_failed_correction_types_the_dictation_without_enrichment(self):
+        for number, (reason, error) in enumerate(((R.REFUSED, None), (R.FAILED, RuntimeError("fake"))), start=1):
+            with self.subTest(reason=reason):
+                self.rewriter.reason, self.rewriter.error = reason, error
+                self.dictate("frase curta", action="send_polished")
+                outcome = self.wait_outcomes(number)[-1]
+                self.assertEqual((outcome.reason, outcome.enrichment, outcome.notice), (S.SENT_ENTER, None, reason))
+                self.assertEqual(self.injector.typed[-1], ("Frase curta.", CLAUDE))  # the dictation
+                self.assertEqual(self.indicator.last, ("show", SENT, R.MESSAGES[reason]))
+        self.assertNotIn(("show", REVIEWING, S.ENRICHING), self.indicator.calls)
+
+    def test_an_unchanged_correction_is_still_enriched(self):
+        self.rewriter.reason, self.rewriter.enriched = R.UNCHANGED, None
+        self.dictate("frase curta", action="send_polished")
+        outcome = self.wait_outcomes(1)[0]
+        self.assertEqual((outcome.rewrite, outcome.enrichment), (R.UNCHANGED, E.ENRICHED))
+        self.assertEqual(self.injector.typed, [("Pedido: Frase curta.", CLAUDE)])
+
+    def test_the_enriching_session_is_shown_again_when_a_newer_one_ends_first(self):
+        self.rewriter.enrich_gate = threading.Event()
+        self.dictate("frase curta", action="send_polished")
+        self.assertTrue(self.rewriter.enriching.wait(5))
+        self.manager.handle(signal(START))
+        self.assertEqual(self.indicator.last, ("show", LISTENING, ""))
+        self.manager.handle(signal(CANCEL, reason="short_hold"))  # the newer one ends first
+        wait_until(lambda: self.indicator.last == ("show", REVIEWING, S.ENRICHING), "the enrichment shown again")
+        self.rewriter.enrich_gate.set()
+        self.assertEqual(self.wait_outcomes(2)[-1].enrichment, E.ENRICHED)
+        self.assertEqual(self.indicator.last, ("show", SENT, "Prompt enriquecido e enviado"))
+
+    def test_other_triggers_and_windows_keep_todays_rewrite(self):
+        self.dictate(LONG)  # mouse 4, long: the automatic rewrite
+        self.dictate(LONG, action="send_claude")
+        self.dictate("frase curta", action="send_raw")
+        self.focus.targets = [TARGET]
+        self.dictate("frase curta", action="send_polished")  # not Claude Code
+        outcomes = self.wait_outcomes(4)
+        self.assertEqual([o.enrichment for o in outcomes], [None, None, None, None])
+        self.assertEqual(self.rewriter.polished, [{}, {}, {}])  # no pack, no enrichment; send_raw never asks
+        self.assertEqual(self.rewriter.forced, [False, False, True])
+        self.assertEqual(self.packs.folders, [])
+        self.assertNotIn(("show", REVIEWING, S.ENRICHING), self.indicator.calls)
+        self.assertEqual(self.undoable[0], (LONG_TYPED, inject.NEWLINE_SHIFT_ENTER))  # mouse 4: may be undone
+        self.assertEqual(self.undoable[-1], ("Frase curta.", inject.NEWLINE_SPACE))  # no Enter: the dictation
+
+
+class PolishWithoutPacksTest(SessionCase):
+    """No context packs configured (``context_pack`` None): mouse 5 into Claude Code enriches without a pack."""
+
+    def make_rewriter(self):
+        return FakeRewriter()
+
+    def test_enriches_without_a_pack(self):
+        self.ready()
+        self.focus.targets = [CLAUDE]
+        self.pipeline.folder = Path("C:/Invented/projeto")
+        self.rewriter.enrichment = E.ENRICHED
+        self.dictate("frase curta", action="send_polished")
+        outcome = self.wait_outcomes(1)[0]
+        self.assertEqual((outcome.reason, outcome.enrichment), (S.SENT_ENTER, E.ENRICHED))
+        self.assertIsNone(self.rewriter.polished[0]["pack"])
+        self.assertEqual(self.injector.typed, [("Pedido: FRASE CURTA.", CLAUDE)])
 
 
 class AlertTest(SessionCase):

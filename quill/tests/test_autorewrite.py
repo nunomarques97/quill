@@ -443,6 +443,38 @@ class ContextRewriterTest(unittest.TestCase):
         self.assertEqual((result.reason, result.text, result.enrichment, len(client.calls)),
                          (A.REWRITTEN, FIXED, "", 1))
 
+    def test_context_overrides_the_profile(self) -> None:
+        # Claude Code in a terminal: the vscode layout profile (one paragraph), still in context mode.
+        client = Replies(FIXED, ENRICHED)
+        result = self.run_with(client, profile="vscode", context=True)
+        self.assertEqual((result.reason, result.enrichment, result.text), (A.REWRITTEN, "enrich_enriched", ENRICHED))
+        self.assertEqual((client.calls[0].system, client.calls[0].user),
+                         A.build_prompt(HEARD, "vscode", KEEP, "trader", context=True, pack=PACK))
+        # context=False keeps today's rewrite even in the claude-code profile.
+        client = Replies(FIXED, ENRICHED)
+        result = self.run_with(client, context=False)
+        self.assertEqual((result.reason, result.enrichment, len(client.calls)), (A.REFUSED, "", 1))
+        # Without force, context changes nothing.
+        client = Replies(FIXED, ENRICHED)
+        result = self.run_with(client, context=True, force=False, audio_s=20.0)
+        self.assertEqual((result.enrichment, len(client.calls)), ("", 1))
+
+    def test_on_enrich_runs_once_just_before_the_enrichment_is_asked(self) -> None:
+        seen = []
+        client = Replies(FIXED, ENRICHED)
+        result = self.run_with(client, on_enrich=lambda: seen.append(len(client.calls)))
+        self.assertEqual((seen, result.enrichment), ([1], "enrich_enriched"))  # after the correction call
+        # A dictation too short to enrich never announces it; a failing hook never stops the enrichment.
+        seen.clear()
+        result = self.run_with(Replies("Sim, continua."), text="Sim, continua.", on_enrich=lambda: seen.append(1))
+        self.assertEqual((seen, result.enrichment), ([], "enrich_short"))
+        client = Replies(FIXED, ENRICHED)
+        result = self.run_with(client, on_enrich=lambda: 1 / 0)
+        self.assertEqual((result.enrichment, result.text), ("enrich_enriched", ENRICHED))
+        # A refused correction is not enriched: the hook is not called.
+        result = self.run_with(Replies(FIXED), pack=None, on_enrich=lambda: seen.append(1))
+        self.assertEqual((seen, result.reason), ([], A.REFUSED))
+
 
 class ClientTimeoutTest(unittest.TestCase):
     def test_chat_passes_its_timeout_and_never_keep_alive(self) -> None:

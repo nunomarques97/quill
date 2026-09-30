@@ -654,6 +654,31 @@ class OffscreenRenderTest(unittest.TestCase):
             self.assertTrue(overflow.startswith("…"))  # the older finished replies give way
             self.assertTrue(overflow.endswith("tarvo-kit, velo-api: Claude pede permissão"))
 
+    def test_enrichment_frames_fit_inside_the_capsule(self) -> None:
+        renderer = render.Renderer()
+        try:
+            measured = {}
+            for stem, view, scale in cli.frame_set():
+                if not stem.startswith(("reviewing-enriching-", "sent-enriched-", "sent-enrich-refused-")):
+                    continue
+                lay = renderer.layout(view, scale)
+                words = renderer._measurer(scale, "words")
+                room = lay.capsule[2] - (METRICS.orb_area + METRICS.pad_right) * scale
+                with self.subTest(stem=stem):
+                    self.assertFalse(lay.placeholder)
+                    self.assertLessEqual(len(lay.lines), 2)
+                    for line in lay.lines:
+                        self.assertLessEqual(words(line), room + 0.5)  # nothing drawn past the capsule
+                measured[stem] = " ".join(lay.lines)
+        finally:
+            renderer.close()
+        self.assertEqual(len(measured), 6)
+        for pct in (100, 150):
+            # The whole text is shown: nothing clipped or elided.
+            self.assertEqual(measured[f"reviewing-enriching-{pct}"], "A enriquecer o prompt para o Claude Code…")
+            self.assertEqual(measured[f"sent-enriched-{pct}"], "Prompt enriquecido e enviado")
+            self.assertEqual(measured[f"sent-enrich-refused-{pct}"], "Enriquecimento recusado; foi o texto corrigido")
+
     def test_png_is_valid(self) -> None:
         from quill.indicator.gdiplus import png_bytes
 
@@ -706,7 +731,8 @@ class CliTest(unittest.TestCase):
         self.assertGreater(len({view.level for view in sequence}), 6)
         self.assertIn("long-text-100", stems)
         self.assertTrue(any(view.reduced_motion for _, view, _ in cli.frame_set()))
-        for stem in ("alert-project-done", "alert-project-permission", "alert-projects-mixed", "alert-projects-overflow"):
+        for stem in ("alert-project-done", "alert-project-permission", "alert-projects-mixed", "alert-projects-overflow",
+                     "reviewing-enriching", "sent-enriched", "sent-enrich-refused"):
             self.assertIn(f"{stem}-100", stems)
             self.assertIn(f"{stem}-150", stems)
         alerts = {stem: view for stem, view, _ in cli.frame_set() if stem.startswith("alert-")}

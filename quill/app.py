@@ -24,6 +24,11 @@ A long dictation is rewritten by the local model (``quill.autorewrite``)
 when ``[autorewrite]`` is on, every dictation of the ``send_polished``
 trigger is (whatever ``[autorewrite]`` says), and the undo key
 (``quill.edits.RewriteUndo``) puts the original back while the rewrite is provably untouched.
+Into Claude Code, ``send_polished`` corrects with the context pack of the
+window's project (``quill.projects`` finds the project and its folder,
+``Parts.context_packs``, a ``quill.context_pack.ContextPacks`` cached in
+``[project_context] cache``, gives the pack) and then enriches the text into
+a structured prompt (``quill.enrich``).
 When the voice trigger is bound, ``quill.voice`` runs spoken commands ("abre
 VS Code no <projeto>" opens the matching shortcut of ``[voice_commands]``
 through ``Parts.launcher``); its holds are decoded in Portuguese with the
@@ -397,6 +402,7 @@ class Parts:
     launcher: object | None = None  # opens voice-command shortcuts (quill.shortcuts.ShellLauncher); None: off
     voice_model: object | None = None  # decodes the voice holds (load / transcribe / close); None: ``model`` does
     processes: object | None = None  # reads a terminal's Claude Code session (quill.win32.Processes); None: titles only
+    context_packs: object | None = None  # project context packs (quill.context_pack.ContextPacks); None: no pack
     vocabulary: Vocabulary = field(default_factory=Vocabulary)
     generic_terms: Sequence[str] = ()
     vocabulary_file: VocabularyFile | None = None  # read again before each dictation; None: never reloaded
@@ -469,6 +475,7 @@ class QuillApp:
             voice_transcriber=self.voice_transcriber, on_session_start=self._session_started, on_typed=self._typed,
             housekeeping=self._housekeeping, player=parts.player if config.claude_alert.sound else None,
             speaker=parts.speaker if config.claude_alert.sound and config.claude_alert.speak_project else None,
+            context_pack=parts.context_packs.get if parts.context_packs is not None else None,
             clock=parts.clock,
         )
         self.alerts: AlertListener | None = None
@@ -759,6 +766,7 @@ def load_personal(config: Config) -> tuple[VocabularyFile, list[str]]:
 
 def real_parts(config: Config) -> Parts:
     """The Windows parts. Creating them installs nothing; ``QuillApp.start`` does."""
+    from quill.context_pack import ContextPacks
     from quill.edits import Win32Layout
     from quill.indicator.window import Indicator
     from quill.notify import Events
@@ -795,6 +803,8 @@ def real_parts(config: Config) -> Parts:
         voice_model=(WarmModel(Whisper(config.voice.model))
                      if config.trigger("voice").enabled and config.voice.model != config.engine_model else None),
         processes=Processes(),
+        context_packs=(ContextPacks.from_settings(config.project_context)
+                       if config.trigger("send_polished").enabled else None),
     )
 
 

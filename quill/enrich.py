@@ -33,7 +33,9 @@ Content words are every word except function words and hesitations; words of
 negation, condition, alternative and contrast are content words
 (``quill.autorewrite`` uses the same split). A refusal, an Ollama failure or
 a timeout (``enrich_timeout_s``) gives the corrected text back: the caller
-types it, never the model reply. Texts, packs and prompts are never logged:
+types it, never the model reply. In a terminal, where Shift+Enter may send,
+the caller types an accepted prompt with ``one_paragraph`` (labels kept,
+parts and items joined on one line). Texts, packs and prompts are never logged:
 logs hold reason codes, counts and timings only.
 """
 
@@ -52,7 +54,7 @@ from quill.corrections import FUNCTION_WORDS
 
 log = logging.getLogger("quill.enrich")
 
-__all__ = ["Enricher", "Enrichment", "LABELS", "build_prompt", "guard", "language", "pack_data"]
+__all__ = ["Enricher", "Enrichment", "LABELS", "build_prompt", "guard", "language", "one_paragraph", "pack_data"]
 
 PT, EN = "pt", "en"
 OBJECTIVE, CONTEXT, REQUEST, CONSTRAINTS, ACCEPTANCE = "objective", "context", "request", "constraints", "acceptance"
@@ -348,6 +350,38 @@ def guard(source: str, reply: str, *, lang: str | None = None, pack: object | No
     return Verdict("\n".join(lines), "ok", sum(part.name is not None for part in parts))
 
 
+# ---------------------------------------------------------------- terminal layout
+
+_ENDED = ".!?;:…"
+
+
+def _ended(text: str, mark: str) -> str:
+    """``text`` closed with ``mark`` unless it already ends with a punctuation mark."""
+    return text if not text or text[-1] in _ENDED else text + mark
+
+
+def one_paragraph(text: str) -> str:
+    """A structured prompt on one line (Claude Code in a terminal, where Shift+Enter may send).
+
+    The labels stay; a part ends with a full stop before the next label and
+    the ``- `` items of a part are joined with semicolons. Only separators
+    change: every word and number stays in its place.
+    """
+    shown = ""
+    for line in (" ".join(line.split()) for line in text.replace("\r\n", "\n").split("\n")):
+        if not line:
+            continue
+        item = ITEM.match(line)
+        if item:
+            line = line[item.end():]
+            if shown and not shown.endswith(":"):
+                shown = _ended(shown, ";")
+        elif shown:
+            shown = _ended(shown, ".")
+        shown = f"{shown} {line}" if shown else line
+    return shown
+
+
 # ---------------------------------------------------------------- enricher
 
 
@@ -380,6 +414,10 @@ class Enricher:
         self.model = model
         self.timeout_s = timeout_s
         self.clock = clock
+
+    def wants(self, text: str) -> bool:
+        """Whether ``enrich`` would ask the model (long enough, not too long)."""
+        return len(WORD.findall(text)) >= MIN_WORDS and len(text) <= MAX_TEXT_CHARS
 
     def enrich(self, text: str, *, pack: object | None = None, project: str = "") -> Enrichment:
         lang = language(text)

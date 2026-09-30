@@ -45,7 +45,7 @@ Um toque rápido no botão não faz nada. Se carregar noutra tecla enquanto segu
 
 ## Enviar para o Claude Code
 
-10. No Claude Code, mantenha premido o botão 5 do rato (o botão lateral da frente), fale e largue. O indicador mostra "A rever o texto" enquanto o modelo local (Ollama) revê o texto, mesmo que seja curto. Depois o texto revisto é escrito e o Quill carrega em Enter para o enviar. Aparece "Enviado para o Claude Code". Se o Ollama falhar, demorar demais ou recusar a revisão, é enviado o texto tal como o disse, com um aviso curto.
+10. No Claude Code, mantenha premido o botão 5 do rato (o botão lateral da frente), fale e largue. O indicador mostra "A rever o texto" enquanto o modelo local (Ollama) revê o texto, mesmo que seja curto. Depois o texto revisto é escrito e o Quill carrega em Enter para o enviar. Aparece "Enviado para o Claude Code". Se o Ollama falhar, demorar demais ou recusar a revisão, é enviado o texto tal como o disse, com um aviso curto. No Claude Code, o botão 5 também usa o contexto do projeto e organiza o pedido num prompt mais claro (veja "Botão 5 no Claude Code: projeto e prompt enriquecido", mais abaixo).
 11. Para enviar o texto tal como o disse, sem a revisão, use o botão do meio (carregar na roda do rato) em vez do botão 5: mantenha a roda premida, fale e largue. O texto é escrito e o Quill carrega em Enter.
 
 O Enter só é carregado no Claude Code (a caixa do Claude Code na barra lateral do VS Code, ou o Claude Code no Terminal do Windows) e só depois de o texto todo estar escrito. Em qualquer outra janela (um ficheiro ou o terminal integrado do VS Code, o browser, o WhatsApp), o botão 5 e o botão do meio escrevem o texto sem Enter e o indicador avisa "Não é o Claude Code: escrito sem Enter". O botão 4 nunca carrega em Enter.
@@ -156,6 +156,39 @@ Se o Ollama estiver desligado, demorar mais de 4 segundos ou a revisão perder a
 [autorewrite]
 enabled = false
 ```
+
+Depois de mudar o ficheiro, desligue e volte a ligar o Quill.
+
+## Botão 5 no Claude Code: projeto e prompt enriquecido
+
+Quando dita com o botão 5 para o Claude Code, o Quill sabe em que projeto está e usa isso para corrigir palavras mal ouvidas. Por exemplo, num projeto de trading, se o Whisper ouvir mal «wallet», o modelo local pode trocar a palavra pelo termo certo do projeto, desde que soe parecido e faça sentido na frase. Depois transforma o que disse num prompt organizado para o Claude Code. Isto demora mais alguns segundos do que a revisão normal.
+
+- **Como descobre o projeto:** no VS Code, pelo título da janela (o formato da Central de Projetos «<projeto> | <ficheiro> - Visual Studio Code [<vista>]» ou o título normal com a pasta). No Claude Code num terminal, por um nome de projeto conhecido no título ou pela pasta onde essa sessão do Claude Code está a trabalhar. O nome leva à pasta do projeto pelos atalhos dos comandos de voz (a pasta ou o `.code-workspace` para onde apontam) ou pela lista `[project_context.folders]` em `local\quill.toml`, por exemplo:
+
+  ```
+  [project_context.folders]
+  "projeto-exemplo" = 'D:\Projetos\projeto-exemplo'
+  ```
+
+  Se não reconhecer o projeto, o botão 5 funciona como antes da mudança, mas o prompt continua a ser organizado.
+- **O que lê do projeto:** um resumo curto do que o projeto é (do `CLAUDE.md`, ou do `README.md` se não houver) e uma lista de termos do próprio projeto (títulos da documentação, nomes de módulos, ficheiros e classes, palavras que o projeto repete). Só lê ficheiros que o Git acompanha ou acompanharia, por isso nada do que o `.gitignore` do projeto exclui. Nunca lê ficheiros `.env`, chaves, certificados, credenciais, ficheiros com «token» ou «secret» no nome, áudio, vídeo, gravações nem a pasta `local`. A pasta tem de ser um repositório Git; se não for, não há contexto. O resumo fica guardado em `local\context` (nunca vai para o Git) e é refeito quando o projeto muda ou ao fim de 24 horas. Nada sai do PC e o registo nunca guarda o conteúdo do projeto.
+- **O prompt enriquecido:** o texto corrigido é organizado em partes com títulos, na língua em que falou: «Objetivo», «Contexto», «Pedido», «Restrições» e «Critérios de aceitação» (em inglês, «Objective», «Context», «Request», «Constraints», «Acceptance criteria»). Só entram as partes que disse. O Quill confere a resposta do modelo: não pode perder nenhuma palavra ou número que disse, nem acrescentar números, requisitos ou palavras que não disse. Do projeto só pode acrescentar contexto, e só na parte «Contexto». Se a resposta falhar essa verificação, é enviado o texto corrigido.
+- **Como é escrito:** na caixa do Claude Code da barra lateral do VS Code, cada parte fica na sua linha (Shift+Enter entre linhas). No Claude Code num terminal, fica tudo num só parágrafo, com os títulos. No fim, o Quill carrega uma só vez em Enter.
+- **O que o indicador mostra:** "A enriquecer o prompt para o Claude Code…" enquanto o modelo organiza o texto e, depois do Enter, "Prompt enriquecido e enviado". Se o prompt não puder ser enriquecido, aparece "Enriquecimento recusado; foi o texto corrigido", "Ollama indisponível; foi o texto corrigido" ou "O enriquecimento demorou demais; foi o texto corrigido", e foi enviado o texto corrigido.
+- **Ditados curtos:** com menos de 6 palavras (por exemplo «sim, continua») o texto é só corrigido, sem ser organizado.
+- **Desfazer:** a F17 continua a repor o que disse, antes da correção e da organização, sempre que não houve Enter. Como o botão 5 no Claude Code envia com Enter, aí não há nada para desfazer.
+- O botão 4, o botão do meio e as outras janelas continuam como antes: sem contexto do projeto e sem prompt enriquecido.
+
+Para mudar o tempo máximo da organização (em segundos, de 1 a 60; por omissão 15), escreva em `local\quill.toml`:
+
+```
+[autorewrite]
+enrich_timeout_s = 20
+```
+
+Para ver quantos termos o Quill encontra em cada projeto da lista (só contagens, nunca o conteúdo):
+
+    py -3.12 -m quill.context_pack --check
 
 Depois de mudar o ficheiro, desligue e volte a ligar o Quill.
 
@@ -299,6 +332,7 @@ O indicador mostra "Erro" com a causa e o ditado seguinte funciona normalmente:
 - "Janela de administrador: não é possível escrever": o Quill não escreve em janelas abertas como administrador.
 - "Ollama indisponível: texto limpo pelas regras": o texto foi escrito na mesma, limpo pelas regras.
 - "Ollama indisponível; ficou o texto original", "A reescrita demorou demais; ficou o texto original" ou "Reescrita recusada; ficou o texto original": o ditado foi escrito sem a revisão automática, tal como o disse.
+- "Enriquecimento recusado; foi o texto corrigido", "Ollama indisponível; foi o texto corrigido" ou "O enriquecimento demorou demais; foi o texto corrigido": com o botão 5 no Claude Code, foi enviado o texto corrigido, sem ser organizado em prompt.
 - "Não há reescrita para desfazer", "Outra janela ativa; a reescrita ficou", "Já carregou em Enter; a reescrita ficou" e parecidos: a F17 não mudou nada, pelo motivo indicado.
 - "A reposição foi interrompida; verifique o texto": a F17 parou a meio (por exemplo, mudou de janela); confirme o texto no campo.
 - "Selecione o texto antes de dar a instrução": o modo comando precisa de texto selecionado.

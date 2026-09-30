@@ -9,8 +9,10 @@ The ``voice`` set (``bench/dictation/guiao-comandos-pt.md``, recorded with
 expected action: open the shortcut named by ``<projeto-N>`` (the names come
 from ``[voice.projects]`` of the ignored ``local/bench.toml``), or open
 nothing. Each recorded take goes through the product path: it is replayed
-through ``quill.streaming`` (local large-v3-turbo with the app's hints: the
-personal vocabulary and the generic terms), and the final text goes to the
+through ``quill.streaming`` (local large-v3-turbo) with exactly the hints the
+app gives a voice session (``quill.voice.VoiceHints``: Portuguese, the
+command prompt, the listed shortcut names and the personal-vocabulary names
+with their variants; not the dictation hints), and the final text goes to the
 app's own voice commands (``quill.voice``: the parser, the shortcut listing of
 the quill config's ``[voice_commands] shortcut_dirs``, the matcher with the
 personal vocabulary and the launch checks). The launcher only records what
@@ -50,8 +52,10 @@ from bench.dataset import PLACEHOLDER, Dataset, DatasetError, Take, load_dataset
 from bench.metrics import percentile_nearest_rank, write_summary
 from bench.settings import REPO_ROOT, RESULTS_DIR, Settings, SettingsError, load_settings
 from quill import shortcuts
-from quill.voice import OPEN_PROJECT, UNRECOGNIZED, OpenProject, Parser, VoiceCommands, VoiceOutcome, normalize
+from quill.voice import (OPEN_PROJECT, UNRECOGNIZED, OpenProject, Parser, VoiceCommands, VoiceHints, VoiceOutcome,
+                         normalize)
 from quill.vocabulary import Vocabulary
+from quill.whisper import SessionHints
 
 SET_NAME = "voice"
 SUMMARY_SCHEMA = 1
@@ -410,10 +414,27 @@ def spoken_texts(dataset: Dataset, rows: Sequence[VoiceRow], results: Sequence[T
 Streamer = Callable[[Sequence[Take]], list[tuple[str, float]]]
 
 
-def default_streamer(hints: Sequence[str]) -> tuple[Streamer, dict]:
+def default_streamer(hints: SessionHints) -> tuple[Streamer, dict]:
+    """The product streaming path; every take is opened as a voice session with ``hints``."""
     from bench.rewrite import default_streamer as product_streamer
 
-    return product_streamer(hints)
+    return product_streamer((), hints)
+
+
+def default_tokens() -> Callable[[str], int]:
+    """The token counter of the measured engine model, as the app counts with its own."""
+    from bench.pipeline import STREAM_MODEL
+    from quill.whisper import TokenCounter
+
+    return TokenCounter(STREAM_MODEL)
+
+
+def hints_record(hints: SessionHints, shortcut_names: int, tokens: Callable[[str], int]) -> dict:
+    """What the run was decoded with, for the summary: the kind and sizes, never the names."""
+    exact = getattr(tokens, "exact", None)
+    return {"kind": "voice", "language": hints.language, "prompt_chars": len(hints.prompt or ""),
+            "hotwords_chars": len(hints.hotwords or ""), "shortcut_names": shortcut_names,
+            "token_count": "unknown" if exact is None else ("tokenizer" if exact else "bytes")}
 
 
 def shortcut_folders() -> tuple[Path, ...]:
@@ -495,13 +516,14 @@ def report_lines(summary: dict) -> list[str]:
 def main(
     argv: list[str] | None = None,
     *,
-    streamer_factory: Callable[[Sequence[str]], tuple[Streamer, dict]] = default_streamer,
+    streamer_factory: Callable[[SessionHints], tuple[Streamer, dict]] = default_streamer,
+    tokens_factory: Callable[[], Callable[[str], int]] = default_tokens,
     folders: Callable[[], Sequence[Path]] = shortcut_folders,
     lister: Callable[[Sequence[Path]], shortcuts.Listing] = shortcuts.list_shortcuts,
     results_dir: Path = RESULTS_DIR,
     out: Callable[[str], None] = print,
 ) -> int:
-    from quill.vocabulary import LOCAL_VOCABULARY, VocabularyError, load_generic_terms, load_vocabulary, whisper_hints
+    from quill.vocabulary import LOCAL_VOCABULARY, VocabularyError, load_vocabulary
 
     parser = argparse.ArgumentParser(prog="bench.voice_commands",
                                      description="Voice-command measurement on spoken commands.")
@@ -539,7 +561,9 @@ def main(
         out("error: the shortcut folders do not fit the script; nothing was measured")
         return 2
     by_id = {row.id: row for row in rows}
-    hints = whisper_hints(vocabulary, (), load_generic_terms())
+    # The app's voice hints (its builder and token count), from the listing the commands match against.
+    tokens = tokens_factory()
+    hints = VoiceHints(configured, lambda: vocabulary, tokens=tokens, lister=lambda _folders: listing)()
 
     from bench.engines.base import EngineError, EngineUnavailable
 
@@ -563,7 +587,8 @@ def main(
         out(f"error: {exc}")
         return 2
 
-    summary = {**aggregate(results, dataset), "engine": stream_options}
+    summary = {**aggregate(results, dataset),
+               "engine": {**stream_options, "hints": hints_record(hints, len(listing.shortcuts), tokens)}}
     names = [entry.text for entry in vocabulary.names] + [value for _, value in voice.projects or ()] + [
         shortcut.name for shortcut in listing.shortcuts]
     texts = spoken_texts(dataset, rows, results)

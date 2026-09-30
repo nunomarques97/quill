@@ -18,8 +18,9 @@ import importlib
 import importlib.util
 import os
 import sys
+import threading
 import types
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -138,6 +139,48 @@ def hint_options(vocabulary: Sequence[str], max_chars: int = PROMPT_MAX_CHARS) -
     return HINTS_PREFIX + joined + ".", join_vocabulary(vocabulary, max_chars, separator=" ")
 
 
+class TokenCounter:
+    """Tokens faster-whisper puts for one prompt part (``" " + text.strip()``) with a model's tokenizer.
+
+    The tokenizer is the model folder's ``tokenizer.json``, the one
+    faster-whisper loads; it is read once, on the first count (``tokenizers``
+    comes with faster-whisper; no GPU). When it cannot be read, a part counts
+    its UTF-8 bytes, never fewer than its tokens. ``exact`` tells which.
+    """
+
+    def __init__(self, model: str = DEFAULT_MODEL, models_dir: Path = MODELS_DIR, *,
+                 loader: Callable[[Path], object] | None = None) -> None:
+        self.path = model_dir(model, models_dir) / "tokenizer.json"
+        self.loader = loader
+        self._lock = threading.Lock()
+        self._tokenizer: object | None = None
+        self._loaded = False
+
+    def _load(self) -> object | None:
+        with self._lock:
+            if not self._loaded:
+                self._loaded = True
+                try:
+                    if self.loader is not None:
+                        self._tokenizer = self.loader(self.path)
+                    elif self.path.is_file() and importlib.util.find_spec("tokenizers") is not None:
+                        self._tokenizer = importlib.import_module("tokenizers").Tokenizer.from_file(str(self.path))
+                except Exception:  # noqa: BLE001 - counting bytes instead is always safe
+                    self._tokenizer = None
+            return self._tokenizer
+
+    @property
+    def exact(self) -> bool:
+        return self._load() is not None
+
+    def __call__(self, text: str) -> int:
+        part = " " + text.strip()
+        tokenizer = self._load()
+        if tokenizer is None:
+            return len(part.encode("utf-8"))
+        return len(tokenizer.encode(part, add_special_tokens=False).ids)
+
+
 # ---------------------------------------------------------------- decoding
 
 
@@ -153,6 +196,23 @@ class Decode:
     # Upper bound on generated tokens per 30 s window; stops a runaway
     # decode on near-silent audio. None keeps faster-whisper's default.
     max_new_tokens: int | None = None
+    # The spoken language; None keeps the model's own (``Whisper.language``).
+    # Never auto-detected: Quill always names one.
+    language: str | None = None
+
+
+@dataclass(frozen=True)
+class SessionHints:
+    """Hints of one streaming session that replace the vocabulary hints (a voice command).
+
+    ``prompt`` is the initial prompt (committed text may follow it) and
+    ``hotwords`` the hotwords of every decode of that session; ``language``
+    the language it is decoded in.
+    """
+
+    prompt: str | None = field(default=None, repr=False)
+    hotwords: str | None = field(default=None, repr=False)
+    language: str | None = None
 
 
 @dataclass(frozen=True)
@@ -268,7 +328,7 @@ class Whisper:
         try:
             segments, _info = self._whisper.transcribe(
                 audio,
-                language=self.language,
+                language=options.language or self.language,
                 beam_size=options.beam_size,
                 temperature=0.0,
                 vad_filter=False,

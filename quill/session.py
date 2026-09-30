@@ -31,7 +31,10 @@ session (the ``voice`` trigger) never clicks, captures no target, types
 nothing and presses no Enter: its final text goes to ``quill.voice``
 (``voice.run``), and the indicator shows ``voice`` with the live words while
 it listens, then the command's outcome ("A abrir <nome>", the closest names
-or the reason).
+or the reason). Its transcription is opened with the ``voice_hints()`` of
+that press (``quill.voice.VoiceHints``: Portuguese, the command prompt and
+the project names); every other session keeps the transcriber's vocabulary
+hints. Hints that cannot be built never stop the capture.
 
 A long dictation (over the ``[autorewrite]`` audio or word threshold) goes,
 after the text pipeline, to the ``rewriter`` (``quill.autorewrite``) while
@@ -281,7 +284,8 @@ class SessionManager:
     (None: the command trigger only says it is unavailable); ``rewriter`` is a
     ``quill.autorewrite.AutoRewriter`` (None: no automatic rewrite); ``voice``
     is a ``quill.voice.VoiceCommands`` (None: the voice trigger only says it
-    is unavailable).
+    is unavailable) and ``voice_hints()`` returns the decoding hints of a
+    voice session (``quill.whisper.SessionHints``; None: the vocabulary hints).
     ``on_session_start`` runs when a hold starts recording and
     ``on_typed(target, text, original, newline)`` after a successful
     injection (manual-edit detection, the correction key and the undo key):
@@ -294,6 +298,7 @@ class SessionManager:
     def __init__(self, *, transcriber: object, capture_factory: Callable[[Callable[[bytes], None]], object],
                  focus: object, injector: object, indicator: object, pipeline: TextPipeline,
                  command: object | None = None, rewriter: object | None = None, voice: object | None = None,
+                 voice_hints: Callable[[], object] | None = None,
                  on_session_start: Callable[[], None] | None = None,
                  on_typed: Callable[[Target, str, str | None, str], None] | None = None,
                  housekeeping: Callable[[], None] | None = None,
@@ -309,6 +314,7 @@ class SessionManager:
         self.command = command
         self.rewriter = rewriter
         self.voice = voice
+        self.voice_hints = voice_hints
         self.on_session_start = on_session_start
         self.on_typed = on_typed
         self.housekeeping = housekeeping
@@ -492,8 +498,10 @@ class SessionManager:
                 self.on_session_start()
             except Exception as exc:  # noqa: BLE001
                 log.error("session start hook failed (%s)", type(exc).__name__)
+        hints = self._session_hints(hold)
+        extra = {} if hints is None else {"hints": hints}
         try:
-            hold.asr = self.transcriber.open(on_partial=lambda partial: self._on_partial(hold, partial))
+            hold.asr = self.transcriber.open(on_partial=lambda partial: self._on_partial(hold, partial), **extra)
             capture = self.capture_factory(lambda pcm: self._on_audio(hold, pcm))
             capture.start()
         except Exception as exc:  # noqa: BLE001 - microphone missing, busy or unplugged
@@ -503,6 +511,16 @@ class SessionManager:
         with self._lock:
             hold.capture = capture
             hold.capturing = True
+
+    def _session_hints(self, hold: _Hold) -> object | None:
+        """The decoding hints of a voice session; None (the vocabulary hints) for any other or on failure."""
+        if hold.action != VOICE_ACTION or self.voice_hints is None:
+            return None
+        try:
+            return self.voice_hints()
+        except Exception as exc:  # noqa: BLE001 - never stop the capture for its hints
+            log.error("session %d: voice hints failed (%s)", hold.number, type(exc).__name__)
+            return None
 
     def _confirm(self) -> None:
         with self._lock:

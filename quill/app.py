@@ -26,7 +26,8 @@ trigger is (whatever ``[autorewrite]`` says), and the undo key
 (``quill.edits.RewriteUndo``) puts the original back while the rewrite is provably untouched.
 When the voice trigger is bound, ``quill.voice`` runs spoken commands ("abre
 VS Code no <projeto>" opens the matching shortcut of ``[voice_commands]``
-through ``Parts.launcher``). When ``[claude_alert]`` is on, ``quill.notify.AlertListener`` waits for the
+through ``Parts.launcher``); its holds are decoded in Portuguese with the
+voice hints (``quill.voice.VoiceHints``), dictation with the vocabulary hints. When ``[claude_alert]`` is on, ``quill.notify.AlertListener`` waits for the
 named events set by the Claude Code hooks and the sessions show the alert
 and play its sound (``quill.sound``) once no dictation is recording.
 Learning from corrections is wired too:
@@ -70,10 +71,10 @@ from quill.profiles import CLAUDE_CODE, Profiles, StyleError, WindowInfo, apply_
 from quill.session import CLEANUP_FALLBACK, Processed, SessionManager
 from quill.streaming import StreamingTranscriber, options_for
 from quill.triggers import KEY, InputEvent
-from quill.voice import VoiceCommands, default_parser
+from quill.voice import VoiceCommands, VoiceHints, default_parser
 from quill.vocabulary import (Matcher, Vocabulary, VocabularyError, VocabularyFile, hint_list, load_generic_terms,
                               load_vocabulary, whisper_hints)
-from quill.whisper import MODELS, Decode, model_present
+from quill.whisper import MODELS, Decode, TokenCounter, model_present
 
 log = logging.getLogger("quill.app")
 
@@ -383,6 +384,7 @@ class Parts:
     focus_options: dict = field(default_factory=dict)
     inject_options: dict = field(default_factory=dict)
     command_options: dict = field(default_factory=dict)
+    voice_hint_options: dict = field(default_factory=dict)  # quill.voice.VoiceHints options (tests: lister)
 
 
 class QuillApp:
@@ -407,9 +409,13 @@ class QuillApp:
                                        **parts.command_options)
         self.vocabulary = parts.vocabulary  # the current personal vocabulary, for the voice commands
         self.voice: VoiceCommands | None = None
+        self.voice_hints: VoiceHints | None = None
         if config.trigger("voice").enabled and parts.launcher is not None:
             self.voice = VoiceCommands(default_parser(config.voice.shortcut_dirs, lambda: self.vocabulary,
                                                       parts.launcher), clock=parts.clock)
+            # Built at each press, after the vocabulary is refreshed, from the same folders.
+            self.voice_hints = VoiceHints(config.voice.shortcut_dirs, lambda: self.vocabulary,
+                                          **{"tokens": TokenCounter(config.engine_model), **parts.voice_hint_options})
         self.rewriter: AutoRewriter | None = None
         if wants_rewriter(config) and parts.rewrite_client is not None:
             self.rewriter = AutoRewriter(parts.rewrite_client, config.ollama_model, config.autorewrite)
@@ -430,7 +436,7 @@ class QuillApp:
         self.sessions = SessionManager(
             transcriber=self.transcriber, capture_factory=parts.capture_factory, focus=self.focus,
             injector=self.injector, indicator=parts.indicator, pipeline=self.pipeline, command=self.command,
-            rewriter=self.rewriter, voice=self.voice, on_session_start=self._session_started, on_typed=self._typed,
+            rewriter=self.rewriter, voice=self.voice, voice_hints=self.voice_hints, on_session_start=self._session_started, on_typed=self._typed,
             housekeeping=self._housekeeping, player=parts.player if config.claude_alert.sound else None,
             clock=parts.clock,
         )
@@ -498,7 +504,16 @@ class QuillApp:
             log.error("speech model not loaded: %s", error)
         else:
             log.info("speech model ready in %.1f s", self.parts.clock() - started)
+        if self.voice_hints is not None:
+            self._warm_voice_hints()
         self.sessions.loaded(error=bool(error))
+
+    def _warm_voice_hints(self) -> None:
+        """Read the tokenizer of the voice hints now, not at the first voice press."""
+        try:
+            self.voice_hints.tokens("")
+        except Exception as exc:  # noqa: BLE001 - the hints then count bytes
+            log.warning("voice hints tokenizer not read (%s)", type(exc).__name__)
 
     def stop(self) -> None:
         """Remove the hooks first, then release the engine, the sessions, the indicator and the lock."""

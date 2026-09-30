@@ -16,7 +16,9 @@ from quill import voice
 from quill.indicator.render import ERROR, VOICE_NONE, VOICE_OPEN
 from quill.tests.test_shortcuts import CODE, FakeLauncher, write_link
 from quill.vocabulary import Entry, Vocabulary
-from quill.voice import Intent, OpenProject, Parser, VoiceCommands, VoiceOutcome, normalize
+from quill.streaming import options_for
+from quill.voice import Intent, OpenProject, Parser, VoiceCommands, VoiceHints, VoiceOutcome, normalize, voice_hints
+from quill.whisper import PROMPT_MAX_CHARS, PROMPT_PART_MAX, SessionHints
 
 NAMES = ("nimbus-deck", "nimbus-deck-public", "orla", "orla-public", "tarvo-kit", "velinor-app")
 # Spoken names and folder paths that must never reach a log line.
@@ -243,6 +245,111 @@ class OpenProjectRunTest(unittest.TestCase):
         outcome, _ = self.run_voice("abre VS Code no orla")
         self.assertNotIn("orla", repr(outcome))
         self.assertNotIn("orla", repr(Intent("open_project", {"project": "orla"})))
+
+
+def word_tokens(text: str) -> int:
+    """An invented token count: one token per word."""
+    return len(text.split())
+
+
+VOCABULARY = Vocabulary(names=(Entry("Velatrix", "name", ("vela trix",)), Entry("Nimbus-Deck", "name", ("nimbos deque",)),
+                               Entry("tarvo-kit", "name")),
+                        terms=(Entry("kubectl", "term", ("cube control",)),))
+
+
+class VoiceHintsBuilderTest(unittest.TestCase):
+    def test_a_portuguese_command_prompt_with_the_shortcut_names_first(self):
+        hints = voice_hints(["orla", "nimbus-deck", "orla_public"], VOCABULARY)
+        self.assertIsInstance(hints, SessionHints)
+        self.assertEqual(hints.language, "pt")
+        # Shortcut names, then the vocabulary names not already listed (same letters: listed once).
+        self.assertEqual(hints.prompt, "Abre o VS Code no projeto. Projetos: orla, nimbus-deck, orla_public, Velatrix, "
+                                       "tarvo-kit.")
+        # Hotwords: shortcut names (split too), then vocabulary names with their variants; no terms.
+        self.assertEqual(hints.hotwords, "orla nimbus-deck nimbus deck orla_public orla public Velatrix vela trix "
+                                         "nimbos deque tarvo-kit tarvo kit")
+        self.assertNotIn("kubectl", hints.hotwords + hints.prompt)
+        self.assertNotIn("Vocabulário", hints.prompt)
+
+    def test_without_names_the_prompt_is_the_command_alone(self):
+        hints = voice_hints([], Vocabulary())
+        self.assertEqual((hints.prompt, hints.hotwords, hints.language), (voice.VOICE_PROMPT, None, "pt"))
+
+    def test_trimming_drops_the_vocabulary_before_the_shortcut_names(self):
+        many = [f"projeto{index:02d}-kit" for index in range(60)]
+        for tokens in (voice.utf8_tokens, word_tokens):
+            hints = voice_hints(many, VOCABULARY, tokens=tokens)
+            for part in (hints.prompt, hints.hotwords):
+                self.assertLessEqual(len(part), PROMPT_MAX_CHARS)
+                self.assertLessEqual(tokens(part), voice.VOICE_PART_MAX_TOKENS)
+            self.assertNotIn("Velatrix", hints.prompt)
+            self.assertNotIn("Velatrix", hints.hotwords)
+            listed = hints.prompt[len(voice.VOICE_PROMPT + voice.PROJECTS_PREFIX):-1].split(", ")
+            self.assertEqual(listed, many[:len(listed)])  # in order, cut at the first that does not fit
+            self.assertTrue(hints.hotwords.startswith("projeto00-kit projeto00 kit projeto01-kit"))
+        # Byte counting never allows more than a real tokenizer would.
+        self.assertLess(len(voice_hints(many, tokens=voice.utf8_tokens).prompt),
+                        len(voice_hints(many, tokens=word_tokens).prompt))
+
+    def test_a_long_single_name_is_left_out_rather_than_cut(self):
+        hints = voice_hints(["x" * 700, "orla"], tokens=word_tokens)
+        self.assertEqual(hints.prompt, voice.VOICE_PROMPT)  # the first name does not fit: the list ends there
+        self.assertIsNone(hints.hotwords)
+
+    def test_the_parts_fit_the_whisper_prompt_bounds(self):
+        self.assertLess(voice.VOICE_PART_MAX_TOKENS, PROMPT_PART_MAX)  # faster-whisper never cuts a part
+        ten_seconds = options_for("large-v3-turbo")
+        self.assertGreaterEqual(voice.VOICE_ROOM_TOKENS, 10 * ten_seconds.tokens_per_s + ten_seconds.min_new_tokens)
+
+
+class VoiceHintsProviderTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.folder = Path(self._tmp.name) / "Hub"
+        self.folder.mkdir()
+        write_link(self.folder, "orla", CODE)
+
+    def test_the_folders_are_listed_at_every_press(self):
+        provider = VoiceHints([self.folder], lambda: VOCABULARY, tokens=word_tokens)
+        first = provider()
+        self.assertIn("orla", first.prompt)
+        self.assertNotIn("nimbus-deck", first.prompt)
+        write_link(self.folder, "nimbus-deck", CODE)
+        second = provider()
+        self.assertIn("nimbus-deck", second.prompt)
+        self.assertEqual(second, voice_hints(["nimbus-deck", "orla"], VOCABULARY, tokens=word_tokens))
+
+    def test_an_unreadable_folder_gives_the_prompt_without_its_names(self):
+        missing = Path(self._tmp.name) / "zefiro"
+        with self.assertLogs("quill", logging.INFO) as logs:
+            hints = VoiceHints([missing], lambda: Vocabulary())()
+        self.assertEqual((hints.prompt, hints.hotwords, hints.language), (voice.VOICE_PROMPT, None, "pt"))
+        text = "\n".join(logs.output)
+        self.assertIn(SC.FOLDER_MISSING, text)
+        for private in (*PRIVATE, str(missing)):
+            self.assertNotIn(private, text)
+
+    def test_failures_never_raise_and_log_reason_codes_only(self):
+        def lister(_folders):
+            raise PermissionError(f"denied: {self.folder}")
+
+        def vocabulary():
+            raise ValueError("orla secret")
+
+        def tokens(_text):
+            raise RuntimeError("velinor")
+
+        with self.assertLogs("quill.voice", logging.INFO) as logs:
+            hints = VoiceHints([self.folder], vocabulary, lister=lister)()
+            counted = VoiceHints([self.folder], lambda: VOCABULARY, tokens=tokens)()
+        self.assertEqual(hints.prompt, voice.VOICE_PROMPT)
+        self.assertEqual(counted, voice_hints(["orla"], VOCABULARY))  # bytes counted instead
+        text = "\n".join(logs.output)
+        self.assertIn(voice.HINTS_UNLISTED, text)
+        self.assertIn("PermissionError", text)
+        for private in (*PRIVATE, str(self.folder), "secret"):
+            self.assertNotIn(private, text)
 
 
 if __name__ == "__main__":

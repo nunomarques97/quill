@@ -641,6 +641,45 @@ class WhisperTest(unittest.TestCase):
         model._whisper = SimpleNamespace()
         self.assertIsNone(model._max_new_tokens(short))
 
+    def test_the_decode_language_overrides_the_model_language(self):
+        class Audio:
+            def astype(self, _type):
+                return self
+
+            def __truediv__(self, _value):
+                return self
+
+        seen = []
+        model = whisper.Whisper(language="en")
+        model._numpy = SimpleNamespace(frombuffer=lambda data, dtype: Audio(), int16="int16", float32="float32")
+        model._whisper = SimpleNamespace(transcribe=lambda audio, **kwargs: (seen.append(kwargs) or ([], None)))
+        model.transcribe(bytes(2), Decode(language="pt"))
+        model.transcribe(bytes(2), Decode())
+        self.assertEqual([kwargs["language"] for kwargs in seen], ["pt", "en"])
+        self.assertEqual(whisper.Whisper().language, "pt")
+
+    def test_token_counter_uses_the_tokenizer_or_counts_bytes(self):
+        import tempfile
+
+        encoder = SimpleNamespace(encode=lambda text, add_special_tokens=False: SimpleNamespace(ids=text.split()))
+        loads = []
+        counter = whisper.TokenCounter(loader=lambda path: loads.append(path.name) or encoder)
+        self.assertEqual(counter("  um dois tres "), 3)
+        self.assertEqual(counter("quatro"), 1)
+        self.assertTrue(counter.exact)
+        self.assertEqual(loads, ["tokenizer.json"])  # read once
+
+        def broken(path):
+            raise OSError("invented")
+
+        fallback = whisper.TokenCounter(loader=broken)
+        self.assertEqual(fallback("ção"), len(" ção".encode("utf-8")))
+        self.assertFalse(fallback.exact)
+        with tempfile.TemporaryDirectory() as folder:
+            missing = whisper.TokenCounter("large-v3", Path(folder))
+            self.assertEqual(missing("ab cd"), 6)
+            self.assertFalse(missing.exact)
+
     def test_missing_model_is_unavailable_without_importing(self):
         import sys
         import tempfile
@@ -651,6 +690,86 @@ class WhisperTest(unittest.TestCase):
         self.assertNotIn("faster_whisper", sys.modules)
         with self.assertRaises(ValueError):
             whisper.Whisper("tiny")
+
+
+class SessionHintsTest(Case):
+    """A session opened with hints (a voice command) decodes with them; no other session does."""
+
+    HINTS = whisper.SessionHints(prompt="Abre o VS Code no projeto. Projetos: zorblax, alfa-beta.",
+                                 hotwords="zorblax alfa-beta alfa beta", language="pt")
+
+    def transcriber(self, **options):
+        transcriber = StreamingTranscriber(self.model, StreamOptions(**options), ["Zorblax", "deploy"], clock=self.clock)
+        transcriber.start()
+        self.transcribers.append(transcriber)
+        return transcriber
+
+    def replay_with(self, transcriber, pcm, hints):
+        session = transcriber.open(hints=hints)
+        size = int(0.05 * BYTES_PER_SECOND)
+        for start in range(0, len(pcm), size):
+            session.feed(pcm[start : start + size])
+            self.assertTrue(transcriber.drain(5))
+        result = session.release().wait(5)
+        self.assertTrue(result.ok)
+        return result
+
+    def assert_voice(self, calls):
+        for call in calls:
+            self.assertEqual(call.options.initial_prompt, self.HINTS.prompt)
+            self.assertEqual(call.options.hotwords, self.HINTS.hotwords)
+            self.assertEqual(call.options.language, "pt")
+
+    def assert_dictation(self, calls):
+        for call in calls:
+            self.assertEqual(call.options.initial_prompt, "Vocabulário: Zorblax, deploy.")
+            self.assertEqual(call.options.hotwords, "Zorblax deploy")
+            self.assertIsNone(call.options.language)
+
+    def test_partial_speculative_and_final_decodes_use_the_session_hints_only(self):
+        transcriber = self.transcriber(pause_commit=False)
+        # Pauses longer than tail_pad_s ask for speculative finals; the short trail leaves a real final.
+        result = self.replay_with(transcriber, speech([1, 2, 3], gap=0.6, trail=0.1), self.HINTS)
+        self.assertEqual(result.text, text([1, 2, 3]))
+        voice = list(self.model.calls)
+        partials = [c for c in voice if c.options.beam_size == 1]
+        finals = [c for c in voice if c.options.beam_size == 5]
+        self.assertGreater(len(partials), 0)
+        self.assertGreaterEqual(len(finals), 2)  # at least one speculative final and the release's final
+        self.assert_voice(voice)
+        # A later dictation session on the same transcriber gets the vocabulary hints again.
+        _, again = replay(transcriber, speech([4, 5], gap=0.6, trail=0.1))
+        self.assertEqual(again.text, text([4, 5]))
+        dictation = self.model.calls[len(voice):]
+        self.assertTrue(any(c.options.beam_size == 1 for c in dictation))
+        self.assertTrue(any(c.options.beam_size == 5 for c in dictation))
+        self.assert_dictation(dictation)
+
+    def test_a_dictation_before_and_a_voice_session_after(self):
+        transcriber = self.transcriber()
+        replay(transcriber, speech([1, 2]))
+        before = len(self.model.calls)
+        self.assert_dictation(self.model.calls)
+        self.replay_with(transcriber, speech([3]), self.HINTS)
+        self.assert_voice(self.model.calls[before:])
+
+    def test_empty_hints_decode_with_no_prompt_and_the_language(self):
+        transcriber = self.transcriber()
+        self.replay_with(transcriber, speech([1]), whisper.SessionHints(language="pt"))
+        for call in self.model.calls:
+            self.assertEqual((call.options.initial_prompt, call.options.hotwords, call.options.language),
+                             (None, None, "pt"))
+
+    def test_committed_context_follows_the_hints_within_the_prompt_bound(self):
+        long_prompt = "Abre o VS Code no projeto. Projetos: " + ", ".join(["zorblax"] * 62) + "."
+        self.assertLess(len(long_prompt), whisper.PROMPT_MAX_CHARS)
+        hints = whisper.SessionHints(prompt=long_prompt, hotwords="zorblax", language="pt")
+        transcriber = self.transcriber(agreement=True)
+        self.replay_with(transcriber, speech(list(range(1, 10))), hints)
+        prompts = [c.options.initial_prompt for c in self.model.calls]
+        self.assertTrue(all(prompt.startswith(long_prompt) for prompt in prompts))
+        self.assertTrue(any(len(prompt) > len(long_prompt) for prompt in prompts))  # committed words follow
+        self.assertTrue(all(len(prompt) <= whisper.PROMPT_MAX_CHARS for prompt in prompts))
 
 
 if __name__ == "__main__":

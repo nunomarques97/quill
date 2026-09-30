@@ -43,7 +43,7 @@ from bench.engines.base import EngineError, EngineUnavailable, Hints, build_hint
 from bench.metrics import corpus_wer, load_terms, percentile_nearest_rank
 from bench.settings import RESULTS_DIR, SettingsError, load_settings
 from quill.streaming import BYTES_PER_SECOND, FinalResult, StreamingTranscriber, StreamOptions, options_for
-from quill.whisper import DEFAULT_MODEL, MODELS
+from quill.whisper import DEFAULT_MODEL, MODELS, SessionHints
 
 CHUNK_S = 0.05
 MAX_LATENCY_AUDIO_S = 15.0
@@ -75,9 +75,13 @@ def _wait(handle, timeout: float) -> FinalResult:
     return result
 
 
-def replay_deterministic(transcriber: StreamingTranscriber, pcm: bytes, chunk_s: float = CHUNK_S) -> FinalResult:
-    """Feed by audio time, draining the worker after every chunk: reproducible text."""
-    session = transcriber.open()
+def replay_deterministic(transcriber: StreamingTranscriber, pcm: bytes, chunk_s: float = CHUNK_S,
+                         hints: SessionHints | None = None) -> FinalResult:
+    """Feed by audio time, draining the worker after every chunk: reproducible text.
+
+    ``hints`` open the session as the app opens a voice session (None: the vocabulary hints).
+    """
+    session = transcriber.open() if hints is None else transcriber.open(hints=hints)
     for chunk in chunks(pcm, chunk_s):
         session.feed(chunk)
         if not transcriber.drain(FINAL_TIMEOUT_S):
@@ -204,10 +208,12 @@ def stream_takes(
     options: StreamOptions = StreamOptions(),
     *,
     clock: Callable[[], float] = time.perf_counter,
+    hints: SessionHints | None = None,
 ) -> list[tuple[str, float]]:
     """Deterministic streamed final text of every take, with its release-to-final seconds.
 
-    Used by ``bench.pipeline`` for the ``streamed`` stage. The model stays
+    Used by ``bench.pipeline`` for the ``streamed`` stage and, with a voice
+    session's ``hints``, by ``bench.voice_commands``. The model stays
     loaded for the caller. A failed final raises ``EngineError``: partial
     results are never mixed with complete ones.
     """
@@ -219,7 +225,7 @@ def stream_takes(
             raise EngineUnavailable(transcriber.load_error)
         out = []
         for take in takes:
-            result = replay_deterministic(transcriber, wav_pcm(take.path.read_bytes())[0])
+            result = replay_deterministic(transcriber, wav_pcm(take.path.read_bytes())[0], hints=hints)
             if not result.ok:
                 raise EngineError(f"streamed final failed: {result.error}")
             out.append((result.text, result.latency_s))

@@ -24,8 +24,9 @@ from bench.settings import VOICE_SCRIPT, SettingsError, load_settings
 from bench.tests.test_record import FakeWaveIn, ScriptedConsole, samples
 from quill import shortcuts
 from quill.tests.test_shortcuts import CODE, write_link
-from quill.vocabulary import Vocabulary
-from quill.voice import VOICE_NONE, VOICE_OPEN, default_parser
+from quill.vocabulary import Vocabulary, load_vocabulary
+from quill.voice import VOICE_NONE, VOICE_OPEN, default_parser, voice_hints
+from quill.whisper import SessionHints
 
 REPO = Path(__file__).resolve().parents[2]
 EXAMPLE = REPO / "bench" / "bench.example.toml"
@@ -50,6 +51,11 @@ SMALL_SCRIPT = """# Invented voice script
 | vc-02 | irmão | Abre VS Code no <projeto-2>. | abrir | <projeto-2> |
 | vc-03 | negativo | Abre VS Code no girassol. | nada | — |
 """
+
+
+def word_tokens(text):
+    """An invented token count: one token per word."""
+    return len(text.split())
 
 
 def toml_names(names):
@@ -349,7 +355,7 @@ class FakeStreamer:
         self.closed = False
 
     def factory(self, hints):
-        self.hints = list(hints)
+        self.hints = hints
 
         def stream(takes):
             self.calls += 1
@@ -374,7 +380,8 @@ class MeasureTest(Case):
         vocabulary.write_text('names = ["nimbus-deck"]\n[variants]\n"nimbus-deck" = ["nimbos deque"]\n',
                               encoding="utf-8")
         code = V.main(["--config", str(self.config), "--summary", str(summary), "--vocabulary", str(vocabulary),
-                       *args], streamer_factory=streamer.factory, folders=self.hub.folders,
+                       *args], streamer_factory=streamer.factory, tokens_factory=lambda: word_tokens,
+                      folders=self.hub.folders,
                       results_dir=self.results, out=lines.append)
         return code, lines, streamer, summary
 
@@ -385,7 +392,16 @@ class MeasureTest(Case):
         code, lines, streamer, summary_path = self.run_main(texts)
         self.assertEqual(code, 0)
         self.assertTrue(streamer.closed)
-        self.assertIn("nimbus-deck", streamer.hints)  # the app's hints: personal vocabulary first
+        # Exactly the app's voice hints (from the listed hub and the vocabulary), never the dictation hints.
+        vocabulary = load_vocabulary(self.root / "vocabulary.toml")
+        self.assertIsInstance(streamer.hints, SessionHints)
+        listed = [s.name for s in shortcuts.list_shortcuts(self.hub.folders()).shortcuts]
+        self.assertEqual(streamer.hints, voice_hints(listed, vocabulary, tokens=word_tokens))
+        self.assertIn("marble", streamer.hints.prompt)
+        self.assertEqual(streamer.hints.language, "pt")
+        self.assertIn("nimbus deck", streamer.hints.hotwords)
+        self.assertIn("nimbos deque", streamer.hints.hotwords)
+        self.assertNotIn("Vocabulário", streamer.hints.prompt)
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
         self.assertEqual((summary["status"], summary["takes"], summary["correct"], summary["correct_rate"]),
                          ("measured", 3, 3, 1.0))
@@ -394,6 +410,11 @@ class MeasureTest(Case):
         self.assertEqual(summary["targets"], {"correct_rate_min": 0.95, "wrong_shortcuts_max": 0})
         self.assertEqual(summary["meets_targets"], {"correct_rate": True, "wrong_shortcuts": True, "all": True})
         self.assertEqual(summary["dataset"], {"script_rows": 3, "recorded": 3, "pending": 0, "invalid": 0})
+        # The options record says the run used the voice hints, by kind and size only.
+        self.assertEqual(summary["engine"]["model"], "fake-engine")
+        self.assertEqual(summary["engine"]["hints"], {
+            "kind": "voice", "language": "pt", "prompt_chars": len(streamer.hints.prompt),
+            "hotwords_chars": len(streamer.hints.hotwords), "shortcut_names": len(HUB), "token_count": "unknown"})
         serialized = summary_path.read_text(encoding="utf-8")
         for secret in ("nimbus", "alfa", "girassol", "nimbos", "visual studio"):
             self.assertNotIn(secret, serialized.casefold())
@@ -435,6 +456,22 @@ class MeasureTest(Case):
         self.assertIsNone(streamer.hints)
         self.assertFalse(summary_path.exists())
         self.assertIn("fixture problems (take ids): vc-02", "\n".join(lines))
+
+
+class DefaultStreamerTest(unittest.TestCase):
+    def test_every_take_is_replayed_as_a_voice_session_with_the_hints(self):
+        hints = SessionHints(prompt="Abre o VS Code no projeto.", hotwords="zorblax", language="pt")
+        seen = []
+
+        def stream_takes(model, takes, vocabulary, options, *, hints=None):
+            seen.append((type(model).__name__, model.loaded, list(vocabulary), hints))
+            return []
+
+        with mock.patch("bench.streaming.stream_takes", stream_takes):
+            stream, options = V.default_streamer(hints)
+            stream([])
+        self.assertEqual(seen, [("Whisper", False, [], hints)])  # never loaded: the fake stood in
+        self.assertEqual(options["model"], "large-v3-turbo")
 
 
 class AggregateTest(unittest.TestCase):

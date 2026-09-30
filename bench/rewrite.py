@@ -57,6 +57,7 @@ from bench.normalize import normalize_words
 from bench.settings import RESULTS_DIR, Settings, SettingsError, load_settings
 from quill import command
 from quill.command import CommandRewriter, same_text
+from quill.whisper import SessionHints
 
 SET_NAME = "rewrite"
 SUMMARY_SCHEMA = 1
@@ -452,8 +453,12 @@ def spoken_texts(dataset: Dataset, rows: Sequence[RewriteRow], results: Sequence
 Streamer = Callable[[Sequence[Take]], list[tuple[str, float]]]
 
 
-def default_streamer(hints: Sequence[str]) -> tuple[Streamer, dict]:
-    """The product streaming path, with its engine model and tuning; ``stream.close`` frees the model."""
+def default_streamer(hints: Sequence[str], session_hints: SessionHints | None = None) -> tuple[Streamer, dict]:
+    """The product streaming path, with its engine model and tuning; ``stream.close`` frees the model.
+
+    ``session_hints`` open every take's session as the app opens a voice
+    session; without them the takes get the vocabulary ``hints``.
+    """
     from dataclasses import asdict
 
     from bench.pipeline import ENGINE_COMPUTE, STREAM_MODEL
@@ -465,7 +470,7 @@ def default_streamer(hints: Sequence[str]) -> tuple[Streamer, dict]:
     model = Whisper(STREAM_MODEL, compute_type=ENGINE_COMPUTE)
 
     def stream(takes: Sequence[Take]) -> list[tuple[str, float]]:
-        return stream_takes(model, takes, list(hints), options)
+        return stream_takes(model, takes, list(hints), options, hints=session_hints)
 
     stream.close = model.close
     return stream, {"model": STREAM_MODEL, **asdict(options)}

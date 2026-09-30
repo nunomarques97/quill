@@ -48,6 +48,9 @@ from quill.tests.test_edits import FakeLayout
 from quill.tests.test_shortcuts import CODE as SHORTCUT_CODE
 from quill.tests.test_shortcuts import FakeLauncher, write_link
 from quill.tests.test_streaming import FakeModel, speech
+from quill.tests.test_voice import word_tokens
+from quill.shortcuts import list_shortcuts
+from quill.voice import VOICE_PROMPT, voice_hints
 from quill.whisper import Transcript, Word
 from quill.win32 import (
     INTEGRITY_MEDIUM,
@@ -599,7 +602,7 @@ SPOKEN_WORDS = {"w1": "abre", "w2": "vs", "w3": "code", "w4": "no", "w5": "orla"
 class VoiceCommandTest(AppCase):
     """F9 held: the spoken command opens an invented hub shortcut through a fake launcher."""
 
-    def voice_app(self, launcher, vocabulary_names=None):
+    def voice_app(self, launcher, vocabulary_names=None, **hint_options):
         hub = self.folder / "hub"
         hub.mkdir(exist_ok=True)
         for name in ("orla", "orla-public", "nimbus-deck"):
@@ -612,6 +615,8 @@ class VoiceCommandTest(AppCase):
             path.write_text(vocabulary_names, "utf-8")
             source = V.VocabularyFile(path)
             parts = dict(vocabulary=source.load(), vocabulary_file=source)
+        # An invented token count: the tokenizer of a real model is never read here.
+        parts["voice_hint_options"] = {"tokens": word_tokens, **hint_options}
         return self.start(self.make_app(config, launcher=launcher, **parts)), hub
 
     def speak(self, quill, words):
@@ -648,6 +653,44 @@ class VoiceCommandTest(AppCase):
         text = "\n".join(logs.output)
         self.assertIn("voice commands on (1 folders)", text)
         for private in ("orla", "quasar", "abre", str(hub)):
+            self.assertNotIn(private, text)
+
+    def test_f9_is_decoded_with_the_voice_hints_and_dictation_keeps_the_vocabulary_hints(self):
+        launcher = FakeLauncher()
+        quill, hub = self.voice_app(launcher, 'names = ["nimbus-deck"]' + chr(10) + '[variants]' + chr(10)
+                                    + '"nimbus-deck" = ["quasar"]' + chr(10))
+        self.assertEqual(self.speak(quill, (1, 2, 3, 4, 5)).reason, "opened")
+        voice = list(self.model.calls)
+        self.assertTrue(voice)
+        listed = [shortcut.name for shortcut in list_shortcuts((hub,)).shortcuts]
+        expected = voice_hints(listed, quill.vocabulary, tokens=word_tokens)
+        self.assertIn("orla-public", expected.prompt)
+        self.assertIn("orla public", expected.hotwords)
+        self.assertIn("quasar", expected.hotwords)
+        for call in voice:  # partials and the final alike
+            self.assertEqual((call.options.initial_prompt, call.options.hotwords, call.options.language),
+                             (expected.prompt, expected.hotwords, "pt"))
+        # A dictation afterwards gets the vocabulary hints and the model's own language again.
+        self.hold((5, 6), quill=quill)
+        dictation = self.model.calls[len(voice):]
+        self.assertTrue(dictation)
+        for call in dictation:
+            self.assertEqual((call.options.initial_prompt, call.options.hotwords, call.options.language),
+                             ("Vocabulário: nimbus-deck.", "nimbus-deck", None))
+
+    def test_hints_that_cannot_be_listed_never_stop_the_command(self):
+        def lister(_folders):
+            raise PermissionError("invented")
+
+        launcher = FakeLauncher()
+        with self.assertLogs("quill", level="INFO") as logs:
+            quill, hub = self.voice_app(launcher, lister=lister)
+            self.assertEqual(self.speak(quill, (1, 2, 3, 4, 5)).reason, "opened")
+        self.assertEqual(launcher.opened, [hub / "orla.lnk"])
+        self.assertTrue(all(call.options.initial_prompt == VOICE_PROMPT for call in self.model.calls))
+        text = chr(10).join(logs.output)
+        self.assertIn("hints_shortcuts_unlisted (PermissionError)", text)
+        for private in ("orla", str(hub)):
             self.assertNotIn(private, text)
 
     def test_unrecognized_speech_does_nothing(self):

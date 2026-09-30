@@ -104,6 +104,18 @@ class StreamTakesTest(unittest.TestCase):
         self.assertEqual((model.loads, model.closes), (1, 0))
         self.assertTrue(all(c.options.hotwords == "Zorblax" for c in model.calls))
 
+    def test_session_hints_replace_the_vocabulary_hints_of_every_take(self):
+        model = FakeModel()
+        hints = whisper.SessionHints(prompt="Abre o VS Code no projeto.", hotwords="zorblax", language="pt")
+        with tempfile.TemporaryDirectory() as folder:
+            takes = [write_take(Path(folder), f"vc-0{i}", speech([i, i + 1], gap=0.6), "r") for i in (1, 3)]
+            out = streaming.stream_takes(model, takes, ["Zorblax"], hints=hints)
+        self.assertEqual([t for t, _ in out], ["w1 w2", "w3 w4"])
+        self.assertTrue(model.calls)
+        for call in model.calls:
+            self.assertEqual((call.options.initial_prompt, call.options.hotwords, call.options.language),
+                             ("Abre o VS Code no projeto.", "zorblax", "pt"))
+
     def test_failed_final_or_load_raises(self):
         model = FakeModel()
         model.fail = lambda call: RuntimeError("x") if not call.options.word_timestamps else None

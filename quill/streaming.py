@@ -38,6 +38,10 @@ exception in a partial is counted and skipped; in a final it yields an error
 result. ``stop`` resolves every pending final with an error, so a caller
 waiting for a final never hangs; ``start`` after ``stop`` works again.
 
+A session opened with ``SessionHints`` (a voice command) is decoded with
+those hints instead of the vocabulary hints: every partial, speculative and
+final decode of that session, and no other session.
+
 All session state is protected by one lock; the model runs outside it.
 Nothing here logs or stores text or audio.
 """
@@ -55,7 +59,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from quill.whisper import HINTS_PREFIX, PROMPT_MAX_CHARS, Decode, Transcript, Word, join_vocabulary
+from quill.whisper import HINTS_PREFIX, PROMPT_MAX_CHARS, Decode, SessionHints, Transcript, Word, join_vocabulary
 
 SAMPLE_RATE = 16_000
 SAMPLE_WIDTH = 2
@@ -387,10 +391,12 @@ class _Job:
 class Session:
     """The audio of one hold. Created by ``StreamingTranscriber.open``."""
 
-    def __init__(self, owner: "StreamingTranscriber", number: int, on_partial: Callable[[Partial], None] | None) -> None:
+    def __init__(self, owner: "StreamingTranscriber", number: int, on_partial: Callable[[Partial], None] | None,
+                 hints: SessionHints | None = None) -> None:
         self.owner = owner
         self.number = number
         self.on_partial = on_partial
+        self.hints = hints
         options = owner.options
         self._pcm = bytearray()
         self._vad = SpeechDetector(options.min_speech_rms, options.floor_ratio)
@@ -482,22 +488,36 @@ class Session:
             context = self._stable.text[-options.context_chars :]
             if len(self._stable.text) > options.context_chars and " " in context:
                 context = context.split(" ", 1)[1]
-        vocabulary = self.owner.vocabulary
         prompt_parts = []
-        if vocabulary:
-            joined = join_vocabulary(vocabulary, max(0, PROMPT_MAX_CHARS - len(context)))
-            if joined:
-                prompt_parts.append(HINTS_PREFIX + joined + ".")
+        hints = self.hints
+        language = None
+        if hints is not None:
+            # The session's own hints; committed text follows them only as far as it fits.
+            if hints.prompt:
+                prompt_parts.append(hints.prompt)
+                room = PROMPT_MAX_CHARS - len(hints.prompt) - 1
+                if len(context) > room:
+                    context = context[len(context) - room :].split(" ", 1)[-1] if room > 0 else ""
+            hotwords = hints.hotwords or None
+            language = hints.language
+        else:
+            vocabulary = self.owner.vocabulary
+            if vocabulary:
+                joined = join_vocabulary(vocabulary, max(0, PROMPT_MAX_CHARS - len(context)))
+                if joined:
+                    prompt_parts.append(HINTS_PREFIX + joined + ".")
+            hotwords = join_vocabulary(vocabulary, PROMPT_MAX_CHARS, separator=" ") or None
         if context:
             prompt_parts.append(context)
         seconds = min((end - start) / BYTES_PER_SECOND, WINDOW_S)
         return Decode(
             beam_size=beam,
             initial_prompt=" ".join(prompt_parts) or None,
-            hotwords=join_vocabulary(vocabulary, PROMPT_MAX_CHARS, separator=" ") or None,
+            hotwords=hotwords,
             word_timestamps=words,
             without_timestamps=not words,
             max_new_tokens=int(math.ceil(seconds * options.tokens_per_s)) + options.min_new_tokens,
+            language=language,
         )
 
     def _emit(self, committed: str, tentative: Sequence[str], end: int, speculative: bool) -> Partial:
@@ -586,10 +606,11 @@ class StreamingTranscriber:
         if close_model and exited and hasattr(self.model, "close"):
             self.model.close()
 
-    def open(self, on_partial: Callable[[Partial], None] | None = None) -> Session:
+    def open(self, on_partial: Callable[[Partial], None] | None = None, hints: SessionHints | None = None) -> Session:
+        """A new session; with ``hints`` its decodes use them instead of the vocabulary hints."""
         with self._cond:
             self._numbers += 1
-            session = Session(self, self._numbers, on_partial)
+            session = Session(self, self._numbers, on_partial, hints)
             self._sessions.append(session)
             return session
 

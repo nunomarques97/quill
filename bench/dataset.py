@@ -275,6 +275,17 @@ def load_reference_names(path: Path) -> frozenset[str]:
     return frozenset(names)
 
 
+def known_names(settings: Settings) -> frozenset[str]:
+    """Names a placeholder of ``settings`` may map to.
+
+    The voice set names project-hub shortcuts: its own ``[voice.projects]``
+    mapping lists them. The other sets use the reference config.
+    """
+    if settings.own_names:
+        return frozenset(name for _, name in settings.projects or ())
+    return load_reference_names(settings.reference_config)
+
+
 def resolve_placeholders(text: str, mapping: dict[str, str], known: frozenset[str], take_id: str) -> tuple[str, tuple[str, ...]]:
     """Replace <projeto-N> with the recording's name; validate against ``known``."""
     used: list[str] = []
@@ -394,7 +405,7 @@ def load_dataset(settings: Settings) -> Dataset:
     if rows is None:
         rows = load_script(settings)
     entries = load_manifest(settings.manifest)
-    known = load_reference_names(settings.reference_config)
+    known = known_names(settings)
     valid_file = valid_file_pattern(settings.id_prefix)
 
     takes: list[Take] = []

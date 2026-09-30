@@ -2,10 +2,13 @@
 
 ``load_settings`` returns the settings of the commands set (the 44 takes read
 in place from the reference project) with the dictation set attached as
-``settings.dictation`` and the command-mode set of spoken rewrite
-instructions as ``settings.rewrite``. Both live in this repository: their
-scripts are committed and their recordings stay under the ignored ``local/``
-folder.
+``settings.dictation``, the command-mode set of spoken rewrite
+instructions as ``settings.rewrite`` and the spoken voice commands ("abre VS
+Code no <projeto>") as ``settings.voice``. These three live in this
+repository: their scripts are committed and their recordings stay under the
+ignored ``local/`` folder. The voice set's ``<projeto-N>`` placeholders name
+project-hub shortcuts, so its own ``[voice.projects]`` mapping, not the
+reference config, lists the names it may use.
 """
 
 from __future__ import annotations
@@ -34,6 +37,12 @@ REWRITE_PREFIX = "rw"
 REWRITE_EXPECTED_TAKES = 20
 REWRITE_MIN_TAKES = 16
 
+VOICE_SCRIPT = REPO_ROOT / "bench" / "dictation" / "guiao-comandos-pt.md"
+VOICE_PREFIX = "vc"
+VOICE_EXPECTED_TAKES = 15
+# The target (95 % correct) needs every one of the 15 commands: all are required.
+VOICE_MIN_TAKES = 15
+
 ID_PREFIX = re.compile(r"^[a-z]{2,8}$")
 PLACEHOLDER_KEY = re.compile(r"^<projeto-\d+>$")
 
@@ -56,11 +65,15 @@ class Settings:
     markup: bool = False
     # When true, script rows not recorded yet are pending instead of invalid.
     allow_pending: bool = False
-    # Placeholder -> project name shown while recording (dictation set only).
+    # Placeholder -> project name shown while recording (dictation and voice sets).
     projects: tuple[tuple[str, str], ...] | None = None
+    # When true, the names of ``projects`` are the only valid names (voice set: shortcut names).
+    own_names: bool = False
     dictation: Settings | None = None
     # Spoken rewrite instructions for command mode (commands set only).
     rewrite: Settings | None = None
+    # Spoken voice commands (commands set only).
+    voice: Settings | None = None
     # MME input device name for bench.record; None falls back to the reference config.
     recorder_device: str | None = None
 
@@ -71,7 +84,7 @@ class Settings:
     def for_set(self, name: str) -> Settings:
         if name == self.name:
             return self
-        for extra in (self.dictation, self.rewrite):
+        for extra in (self.dictation, self.rewrite, self.voice):
             if extra is not None and name == extra.name:
                 return extra
         raise SettingsError(f"unknown dataset set: {name}")
@@ -94,8 +107,8 @@ def _inside(path: Path, root: Path) -> bool:
 
 
 def _script_set(data: dict, section: str, reference_config: Path, *, recordings: Path, script: Path, prefix: str,
-                expected: int, minimum: int, projects: bool) -> Settings:
-    """A set recorded with bench.record from a committed script: [dictation] or [rewrite]."""
+                expected: int, minimum: int, projects: bool, own_names: bool = False) -> Settings:
+    """A set recorded with bench.record from a committed script: [dictation], [rewrite] or [voice]."""
     table = data.get(section, {})
     if not isinstance(table, dict):
         raise SettingsError(f"benchmark settings: [{section}] must be a table")
@@ -138,6 +151,7 @@ def _script_set(data: dict, section: str, reference_config: Path, *, recordings:
         markup=True,
         allow_pending=True,
         projects=mapping,
+        own_names=own_names,
     )
 
 
@@ -151,6 +165,13 @@ def _rewrite(data: dict, reference_config: Path) -> Settings:
     return _script_set(data, "rewrite", reference_config, recordings=REWRITE_RECORDINGS, script=REWRITE_SCRIPT,
                        prefix=REWRITE_PREFIX, expected=REWRITE_EXPECTED_TAKES, minimum=REWRITE_MIN_TAKES,
                        projects=False)
+
+
+def _voice(data: dict, reference_config: Path) -> Settings:
+    # The default folder follows LOCAL_DIR when it is read, so a config without [voice] stays valid.
+    return _script_set(data, "voice", reference_config, recordings=LOCAL_DIR / "recordings" / "voice",
+                       script=VOICE_SCRIPT, prefix=VOICE_PREFIX, expected=VOICE_EXPECTED_TAKES, minimum=VOICE_MIN_TAKES,
+                       projects=True, own_names=True)
 
 
 def load_settings(path: Path | None = None) -> Settings:
@@ -203,5 +224,6 @@ def load_settings(path: Path | None = None) -> Settings:
         expected_takes=expected,
         dictation=_dictation(data, reference_config),
         rewrite=_rewrite(data, reference_config),
+        voice=_voice(data, reference_config),
         recorder_device=device.strip() if isinstance(device, str) else None,
     )

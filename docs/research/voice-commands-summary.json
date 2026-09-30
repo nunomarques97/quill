@@ -1,0 +1,80 @@
+{
+  "schema": 1,
+  "kind": "voice_commands",
+  "status": "measured",
+  "targets": {
+    "correct_rate_min": 0.95,
+    "wrong_shortcuts_max": 0
+  },
+  "takes": 15,
+  "correct": 2,
+  "correct_rate": 0.1333,
+  "wrong_shortcuts": 0,
+  "ambiguous": 0,
+  "unrecognized": 14,
+  "no_match": 1,
+  "reasons": {
+    "no_match": 1,
+    "unrecognized": 14
+  },
+  "by_case": {
+    "exato": {
+      "takes": 3,
+      "correct": 0
+    },
+    "irmão": {
+      "takes": 5,
+      "correct": 0
+    },
+    "vocabulário": {
+      "takes": 2,
+      "correct": 0
+    },
+    "variante": {
+      "takes": 3,
+      "correct": 0
+    },
+    "negativo": {
+      "takes": 2,
+      "correct": 2
+    }
+  },
+  "meets_targets": {
+    "correct_rate": false,
+    "wrong_shortcuts": true,
+    "all": false
+  },
+  "latency": {
+    "transcription_p50_s": 0.175,
+    "transcription_p95_s": 0.196,
+    "command_p50_s": 0.0,
+    "command_p95_s": 0.001
+  },
+  "dataset": {
+    "script_rows": 15,
+    "recorded": 15,
+    "pending": 0,
+    "invalid": 0
+  },
+  "engine": {
+    "model": "large-v3-turbo",
+    "step_s": 0.5,
+    "commit": false,
+    "agreement": false,
+    "partial_beam": 1,
+    "final_beam": 5,
+    "commit_margin_s": 1.0,
+    "context_chars": 200,
+    "max_window_s": 20.0,
+    "tail_pad_s": 0.3,
+    "speculate": true,
+    "pause_commit": true,
+    "pause_commit_min_s": 1.5,
+    "min_speech_s": 0.2,
+    "lead_s": 0.2,
+    "min_speech_rms": 0.001,
+    "floor_ratio": 4.0,
+    "tokens_per_s": 10.0,
+    "min_new_tokens": 24
+  }
+}

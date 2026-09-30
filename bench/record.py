@@ -4,13 +4,17 @@ Usage:
     py -3.12 -m bench.record                   # record every take not recorded yet
     py -3.12 -m bench.record --redo dt-05,dt-07
     py -3.12 -m bench.record --set rewrite     # the command-mode rewrite instructions
+    py -3.12 -m bench.record --set voice       # the voice commands ("abre VS Code no <projeto>")
     py -3.12 -m bench.record --list-devices    # MME inputs; the microphone is not opened
 
-Two sets are recorded: ``dictation`` (the default, ``dt-NN``) and
+Three sets are recorded: ``dictation`` (the default, ``dt-NN``),
 ``rewrite`` (``rw-NN``, the spoken instructions of command mode; the
 invented selected text of each take is shown first, for context only, and is
-not read aloud). Each phrase is shown with the ``<projeto-N>`` placeholders
-replaced by the names from the local configuration. Enter starts and stops a take; ``s``
+not read aloud) and ``voice`` (``vc-NN``, the spoken voice commands; the
+names are the project-hub shortcut names of ``[voice.projects]``, and every
+placeholder must have one before the microphone opens). Each phrase is shown
+with the ``<projeto-N>`` placeholders replaced by the names from the local
+configuration. Enter starts and stops a take; ``s``
 skips it (it stays pending), ``q`` quits, ``r`` repeats the take just saved.
 A take is rejected, and asked again, when it has 0.5 s or more of exact
 zeros, falls behind (or runs ahead of) the clock, is near-silent or shorter
@@ -54,6 +58,7 @@ from bench.dataset import (
     ScriptRow,
     display_text,
     dictation_projects,
+    known_names,
     load_reference_names,
     load_script,
     parse_markup,
@@ -62,7 +67,7 @@ from bench.dataset import (
 from bench.settings import LOCAL_DIR, Settings, SettingsError, load_settings
 
 MANIFEST_VERSION = 1
-RECORDED_SETS = ("dictation", "rewrite")
+RECORDED_SETS = ("dictation", "rewrite", "voice")
 
 
 class Console:
@@ -310,7 +315,12 @@ def main(argv: list[str] | None = None, *, api: object | None = None, console: C
         chosen = settings.for_set(args.set)
         rows = load_script(chosen)
         context = rewrite_context(chosen) if args.set == "rewrite" else (lambda row: None)
-        if any(PLACEHOLDER.search(row.text) for row in rows) or args.set == "dictation":
+        if args.set == "voice":
+            from bench.voice_commands import load_voice_rows, recording_names
+
+            mapping = recording_names(chosen, load_voice_rows(chosen))
+            known = known_names(chosen)
+        elif any(PLACEHOLDER.search(row.text) for row in rows) or args.set == "dictation":
             mapping = dictation_projects(chosen, settings)
             known = load_reference_names(chosen.reference_config)
         else:

@@ -40,6 +40,37 @@ expected_takes = 44
 # expected_takes = 20
 # min_takes = 16
 
+# Optional: the voice-command set (defaults shown), recorded with
+# `bench.record --set voice` and measured with `bench.voice_commands`. Its
+# script is committed with <projeto-N> placeholders and invented names; its
+# recordings stay under the ignored local/ folder.
+# [voice]
+# recordings_dir = "local/recordings/voice"   # must be under local/
+# recording_script = "bench/dictation/guiao-comandos-pt.md"
+# id_prefix = "vc"
+# expected_takes = 15
+# min_takes = 15
+#
+# Required to record the voice set: the project-hub shortcut name shown for
+# each placeholder of the script. Each name must be a shortcut (.lnk file name
+# without .lnk) in the [voice_commands] shortcut_dirs folders of
+# local/quill.toml; these names, not the reference config, are the valid ones.
+# The "irmão" rows need a name and its sibling (x and x-public).
+# [voice.projects]
+# "<projeto-1>" = "nimbus-deck"
+# "<projeto-2>" = "orchard"
+# "<projeto-3>" = "tidepool"
+# "<projeto-4>" = "alfa"
+# "<projeto-5>" = "alfa-public"
+# "<projeto-6>" = "beacon"
+# "<projeto-7>" = "beacon-public"
+# "<projeto-8>" = "ledger-legal"
+# "<projeto-9>" = "kite-radar"
+# "<projeto-10>" = "quokkai"
+# "<projeto-11>" = "marble"
+# "<projeto-12>" = "harbor"
+# "<projeto-13>" = "compass"
+
 # Optional: MME input device used by bench.record. A name truncated by MME to
 # 31 characters still matches. Without it the reference config's microphone
 # name ([microfone].nome) is used.

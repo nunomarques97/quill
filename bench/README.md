@@ -50,6 +50,9 @@ py -3.12 -m bench.intent --run bench/results/pipeline/<run> --reviews bench/resu
 py -3.12 -m bench.record --set rewrite              # record the spoken rewrite instructions
 py -3.12 -m bench.rewrite --dry-run                 # rewrite script and recording counts, no GPU
 .venv\Scripts\python -m bench.rewrite                # command mode: instruction WER, correctness, latency
+py -3.12 -m bench.record --set voice                # record the spoken voice commands
+py -3.12 -m bench.voice_commands --dry-run          # voice script, recording and shortcut counts; no microphone
+.venv\Scripts\python -m bench.voice_commands        # voice commands: correct actions, wrong shortcuts, latency
 py -3.12 -m bench.pipeline --summary docs/research/phase2-summary.json --add-command-mode bench/results/rewrite/<run>/summary.json --add-selftests local/selftest
 py -3.12 -m bench.pipeline --summary docs/research/phase2-summary.json --require complete --require overall
 py -3.12 -m bench.pipeline --summary docs/research/phase2-summary.json --write-doc docs/research/FASE2.md
@@ -375,6 +378,40 @@ holds the command trigger and says what to do with it.
   go only to `bench/results/rewrite/<run>/`. The summary holds aggregates
   only, is written under `bench/results/` by default and is refused when a
   spoken or script text would leak into it.
+
+### Voice commands (voice set)
+
+The `voice` set measures the voice commands of the F9 trigger ("abre VS Code
+no <projeto>") on the Sponsor's voice. Recording steps for the Sponsor:
+[docs/research/GRAVAR-COMANDOS.md](../docs/research/GRAVAR-COMANDOS.md).
+
+- The script `bench/dictation/guiao-comandos-pt.md` is committed with the
+  columns `id` (`vc-NN`), `caso` (`exato`, `irmão`, `vocabulário`,
+  `variante` or `negativo`), `frase` (the spoken command), `intenção`
+  (`abrir` or `nada`) and `projeto` (the `<projeto-N>` to open, or `—`).
+  Negatives use invented names that must not be a shortcut.
+- The placeholders name project-hub shortcuts, so `[voice.projects]` in
+  `local/bench.toml` maps each one to a shortcut name of the
+  `[voice_commands] shortcut_dirs` folders of `local/quill.toml`; those
+  names, not the reference config, are the valid ones. `bench.record --set
+  voice` refuses to open the microphone until every placeholder has a name,
+  and records under `local/recordings/voice/` with the usual take rules.
+- `--dry-run` prints the script cases, recorded N of 15 and `complete:
+  yes/no`, and whether every mapped name is a listed shortcut and no
+  negative is; it never opens the microphone, the GPU or a shortcut.
+- The measurement needs all 15 takes (95 % of 15 is 15). Each take is
+  replayed through the product's streaming engine with the app's hints and
+  the final text goes to the app's own voice commands (parser, shortcut
+  listing, matcher with the personal vocabulary, launch checks) with a
+  launcher that only records the request: nothing is opened. A correct
+  action opens the expected shortcut, or nothing for a negative; any other
+  opened shortcut is a wrong shortcut. Targets: at least 95 % correct and 0
+  wrong shortcuts.
+- Per-take text goes only to `bench/results/voice/<run>/`. The aggregate
+  (correct rate, wrong shortcuts, ambiguous, unrecognized and no-match
+  counts, reasons, by case, latency, the targets and whether they are met)
+  goes to the committed `docs/research/voice-commands-summary.json`, which
+  holds `"status": "pending_recordings"` until then.
 
 ### Streaming replay
 

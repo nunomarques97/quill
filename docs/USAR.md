@@ -43,6 +43,8 @@ Também pode usar a tecla F13 (por exemplo, num botão do Streamlabs) ou o Ctrl 
 
 Um toque rápido no botão não faz nada. Se carregar noutra tecla enquanto segura o Ctrl da direita (por exemplo Ctrl+C), o ditado é cancelado e o atalho funciona normalmente.
 
+Um ditado de cada vez: enquanto o Quill ainda está a tratar o ditado anterior (a transcrever, a rever, a enriquecer, a escrever ou a carregar em Enter), carregar outra vez num botão ou tecla do Quill (botão 4, botão 5, botão do meio, F13, F15, Ctrl da direita, F14 ou F9) não faz nada: o Quill não clica, não abre o microfone e não grava, por isso não mexe no cursor enquanto o texto anterior está a ser escrito. O indicador mostra durante 2 segundos "Aguarde: o ditado anterior ainda está a ser escrito" e depois volta ao que estava a mostrar. O ditado anterior termina normalmente, com o seu texto e o seu Enter. Espere que o texto apareça e carregue de novo: esse toque já funciona normalmente.
+
 ## Enviar para o Claude Code
 
 10. No Claude Code, mantenha premido o botão 5 do rato (o botão lateral da frente), fale e largue. O indicador mostra "A rever o texto" enquanto o modelo local (Ollama) revê o texto, mesmo que seja curto. Depois o texto revisto é escrito e o Quill carrega em Enter para o enviar. Aparece "Enviado para o Claude Code". Se o Ollama falhar, demorar demais ou recusar a revisão, é enviado o texto tal como o disse, com um aviso curto. No Claude Code, o botão 5 também usa o contexto do projeto e organiza o pedido num prompt mais claro (veja "Botão 5 no Claude Code: projeto e prompt enriquecido", mais abaixo).

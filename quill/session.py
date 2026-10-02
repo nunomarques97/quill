@@ -12,10 +12,20 @@ hook worker thread and runs each hold as a session:
   (``quill.focus``) and capture the target window; the command trigger never
   clicks and captures the foreground window, where the selection is.
 - ``stop``: the capture stops, the final transcription is requested and the
-  session is queued for finalization; the hook thread is free again, so a new
-  press starts capturing immediately.
+  session is queued for finalization.
 - ``cancel`` (short tap, combo, hooks stopping): the capture and the
   transcription are released; nothing is typed.
+
+While a released session is still pending (transcribing, correcting,
+enriching, typing or pressing Enter), a press of any trigger starts no
+session: no click, no microphone, no capture. It is recorded as
+``PREVIOUS_PENDING``, the indicator shows "Aguarde: o ditado anterior ainda
+está a ser escrito" in the pending session's state and, ``BUSY_SHOW_S``
+later, that session's own words again (unless something newer was shown
+meanwhile); the ignored press's confirm, release and cancel do nothing. A
+second click would move the focus or the caret under the pending typing. A
+session pending for over ``pending_limit_s`` (a hang) no longer blocks the
+next press. A hold still held keeps the one-hold rule of ``quill.triggers``.
 
 One finalizer thread takes the released sessions strictly in release order:
 it waits for the final text, runs the text pipeline (cleanup, vocabulary,
@@ -91,8 +101,8 @@ affected. The capture, the transcription job and the indicator state are
 released on every exit path.
 
 The indicator shows the newest live session (capturing or finalizing): an
-older session finishing while a newer one is live is logged, not shown, so
-the live words stay on screen.
+older session finishing while a newer one is live (only after the pending
+limit) is logged, not shown, so the live words stay on screen.
 
 Logs hold session numbers, events, reason codes and timings only, never
 spoken or typed text; ``outcomes`` keeps the same for tests.
@@ -155,6 +165,7 @@ MODEL_UNAVAILABLE = "model_unavailable"
 INTERNAL_ERROR = "internal_error"
 CLEANUP_FALLBACK = "cleanup_fallback"
 FOCUS_FAILED = "focus_failed"
+PREVIOUS_PENDING = "previous_pending"  # a press while an earlier session is still pending: ignored
 
 # What the indicator says (European Portuguese); the reason codes stay in the logs.
 MESSAGES = {
@@ -171,6 +182,7 @@ MESSAGES = {
     ENTER_WITHHELD: "O destino deixou de ser o Claude Code: escrito sem Enter",
     CLEANUP_FALLBACK: "Ollama indisponível: texto limpo pelas regras",
     FOCUS_FAILED: "Nenhum campo de texto sob o ponteiro",
+    PREVIOUS_PENDING: "Aguarde: o ditado anterior ainda está a ser escrito",
     inject.NO_TARGET: "Nenhum campo de texto sob o ponteiro",
     inject.TARGET_GONE: "A janela de destino fechou",
     inject.FOREGROUND_CHANGED: "A janela ativa mudou; o texto não foi escrito",
@@ -204,6 +216,8 @@ VOICE_OPEN_SHOW_S = 2.5
 VOICE_NONE_SHOW_S = 6.0
 ALERT_SHOW_S = 6.0
 ALERT_REPEAT_S = 5.0
+BUSY_SHOW_S = 2.0  # the "Aguarde" notice, then the pending session's words again
+PENDING_LIMIT_S = 120.0  # a session pending longer than this (a hang) no longer blocks a press
 # Claude Code alert kind -> indicator state; the text when a permission request also covers a finished reply.
 ALERT_STATES = {sound.DONE: CLAUDE_DONE, sound.PERMISSION: CLAUDE_PERMISSION}
 ALSO_DONE = "Aprove ou recuse o pedido; outra resposta também terminou"
@@ -315,6 +329,7 @@ class _Hold:
     action: str
     trigger: str
     loading: bool = False
+    ignored: bool = False  # pressed while an earlier session was pending: nothing is recorded
     error: str | None = None  # set when the session failed before its release
     capture: object | None = None
     asr: object | None = None
@@ -333,17 +348,31 @@ class _Hold:
 _STOP = object()
 
 
+def _later(seconds: float, job: Callable[[], None]) -> None:
+    timer = threading.Timer(seconds, job)
+    timer.daemon = True
+    timer.start()
+
+
 class _SafeIndicator:
-    """The indicator behind a guard: a failing overlay never breaks a session."""
+    """The indicator behind a guard: a failing overlay never breaks a session.
+
+    ``changes`` counts what replaced the words on screen (show, hide, set_text).
+    """
+
+    CHANGES = frozenset({"show", "hide", "set_text"})
 
     def __init__(self, indicator: object) -> None:
         self.indicator = indicator
         self.errors = 0
+        self.changes = 0
 
     def __getattr__(self, name: str) -> Callable[..., None]:
         method = getattr(self.indicator, name)
 
         def call(*args: object, **kwargs: object) -> None:
+            if name in self.CHANGES:
+                self.changes += 1
             try:
                 method(*args, **kwargs)
             except Exception as exc:  # noqa: BLE001 - the text shown may not be logged: the type only
@@ -382,6 +411,9 @@ class SessionManager:
     None: mouse 5 corrects and enriches without a pack). ``enter_check(target,
     window)`` returns None when the send trigger may press Enter in ``target``
     now, else a reason code (None: no check beyond the injector's own).
+    ``schedule(seconds, job)`` runs ``job`` once after ``seconds`` on another
+    thread (None: a daemon ``threading.Timer``); it brings back the pending
+    session's words after the "Aguarde" notice.
     """
 
     def __init__(self, *, transcriber: object, capture_factory: Callable[[Callable[[bytes], None]], object],
@@ -395,6 +427,8 @@ class SessionManager:
                  context_pack: Callable[[Path], object | None] | None = None,
                  enter_check: Callable[[Target | None, object | None], str | None] | None = None,
                  alert_repeat_s: float = ALERT_REPEAT_S,
+                 schedule: Callable[[float, Callable[[], None]], None] | None = None,
+                 pending_limit_s: float = PENDING_LIMIT_S,
                  clock: Callable[[], float] = time.perf_counter,
                  final_timeout_s: float = FINAL_TIMEOUT_S, poll_s: float = POLL_S) -> None:
         self.transcriber = transcriber
@@ -416,6 +450,8 @@ class SessionManager:
         self.context_pack = context_pack
         self.enter_check = enter_check
         self.alert_repeat_s = alert_repeat_s
+        self.schedule = schedule or _later
+        self.pending_limit_s = pending_limit_s
         self.clock = clock
         self.final_timeout_s = final_timeout_s
         self.poll_s = poll_s
@@ -572,6 +608,8 @@ class SessionManager:
             self._numbers += 1
             hold = _Hold(self._numbers, signal.action, signal.trigger)
             self._active = hold
+            pending = self._pending() if self._ready else None
+            token = None
             # From here no alert sound or spoken name may start, and one still playing stops before the
             # microphone opens.
             self._silence()
@@ -582,6 +620,9 @@ class SessionManager:
                     self._show_timed(ERROR, MESSAGES[MODEL_UNAVAILABLE], ERROR_SHOW_S)
                 else:
                     self.indicator.show(LOADING)
+            elif pending is not None:
+                hold.ignored = True
+                token = self._show_busy(pending)
             elif hold.action == COMMAND_ACTION and self.command is None:
                 hold.error = COMMAND_UNAVAILABLE
             elif hold.action == VOICE_ACTION and self.voice is None:
@@ -594,6 +635,16 @@ class SessionManager:
         if hold.loading:
             log.info("session %d: %s pressed while the model is %s; not recording", hold.number, hold.action,
                      "unavailable" if self._load_error else "loading")
+            return
+        if hold.ignored:
+            log.info("session %d: %s pressed while session %d is still pending; ignored (%s)", hold.number,
+                     hold.action, pending.number, PREVIOUS_PENDING)
+            self._record(hold, PREVIOUS_PENDING)
+            if token is not None:
+                try:
+                    self.schedule(BUSY_SHOW_S, lambda: self._restore(pending, token))
+                except Exception as exc:  # noqa: BLE001 - the pending session's next state still shows
+                    log.error("indicator restore could not be scheduled (%s)", type(exc).__name__)
             return
         if hold.error is not None:
             self._show_error(hold, hold.error)
@@ -644,7 +695,7 @@ class SessionManager:
     def _confirm(self) -> None:
         with self._lock:
             hold = self._active
-        if hold is None or hold.loading or hold.error is not None:
+        if hold is None or hold.loading or hold.ignored or hold.error is not None:
             return
         if hold.action not in CLICK_ACTIONS and hold.action != COMMAND_ACTION:
             return
@@ -662,6 +713,9 @@ class SessionManager:
         if hold is None:
             return
         log.info("session %d: cancelled (%s)", hold.number, reason or "unknown")
+        if hold.ignored:
+            self._idle()
+            return
         if hold.loading or hold.error is not None:
             self._record(hold, hold.error or WHILE_LOADING)
             return
@@ -676,6 +730,10 @@ class SessionManager:
         if hold.loading:
             log.info("session %d: released while loading; nothing recorded", hold.number)
             self._record(hold, WHILE_LOADING)
+            return
+        if hold.ignored:
+            log.info("session %d: released; it was ignored (%s)", hold.number, PREVIOUS_PENDING)
+            self._idle()
             return
         if hold.error is not None:
             self._record(hold, hold.error)
@@ -997,6 +1055,11 @@ class SessionManager:
                                          enrichment))
             self._deliver_alerts()
 
+    def _idle(self) -> None:
+        """An ignored press ended: the alerts kept meanwhile may show."""
+        with self._lock:
+            self._deliver_alerts()
+
     def _record(self, hold: _Hold, reason: str) -> None:
         with self._lock:
             if not hold.ended:
@@ -1069,6 +1132,40 @@ class SessionManager:
                  sum(1 for _, project in alerts if project), "sound" if rang else "no sound")
         return True
 
+    def _pending(self) -> _Hold | None:
+        """The released session still being finalized; None when there is none (or it hangs past the limit)."""
+        for hold in self._live:
+            if hold.handle is None or hold.ended:
+                continue  # still held, or already over
+            waited = self.clock() - hold.released_at
+            if waited < self.pending_limit_s:
+                return hold
+            log.warning("session %d still pending after %.0f s; a new press may start", hold.number, waited)
+        return None
+
+    def _show_pending(self, hold: _Hold, words: str | None = None) -> None:
+        """Show the state of a session being finalized, with its own words or ``words``."""
+        if hold.enriching:
+            state, text = REVIEWING, ENRICHING
+        else:
+            state, text = REVIEWING if hold.reviewing else TRANSCRIBING, hold.live_text
+        self.indicator.show(state, text if words is None else words)
+
+    def _show_busy(self, pending: _Hold) -> int | None:
+        """The "Aguarde" notice in the pending session's state; the token of what is now on screen, or None."""
+        if not self._visible(pending):
+            return None
+        self._show_pending(pending, MESSAGES[PREVIOUS_PENDING])
+        return self.indicator.changes
+
+    def _restore(self, pending: _Hold, token: int) -> None:
+        """After the notice, the pending session's words again, unless anything newer was shown meanwhile."""
+        with self._lock:
+            if (self._closed or pending.ended or pending not in self._live or not self._visible(pending)
+                    or self.indicator.changes != token):
+                return
+            self._show_pending(pending)
+
     def _visible(self, hold: _Hold) -> bool:
         """No newer session is live (capturing or finalizing)."""
         return all(other.number <= hold.number for other in self._live)
@@ -1078,10 +1175,7 @@ class SessionManager:
             older = self._live[-1] if self._live else None
             if older is not None:
                 # An older session is still being finalized: show it again.
-                if older.enriching:
-                    self.indicator.show(REVIEWING, ENRICHING)
-                else:
-                    self.indicator.show(REVIEWING if older.reviewing else TRANSCRIBING, older.live_text)
+                self._show_pending(older)
             else:
                 self.indicator.hide()
         elif reason == SENT_ENTER:

@@ -34,7 +34,7 @@ from quill.corrections import CorrectionStore
 from quill.edits import UNDO_EDITED, UNDO_ENTERED, UNDO_EXPIRED, UNDO_MESSAGES, UNDO_NOTHING, UNDO_OTHER_WINDOW, \
     UNDO_UNSURE
 from quill.indicator.render import (CLAUDE_DONE, CLAUDE_PERMISSION, ERROR, LISTENING, LOADING, REVIEWING, SENT, VOICE,
-                                    VOICE_NONE, VOICE_OPEN)
+                                    TRANSCRIBING, VOICE_NONE, VOICE_OPEN)
 from quill.ollama import ChatReply, OllamaError
 from quill.tests.fakes import (
     OTHER_HWND,
@@ -212,6 +212,16 @@ class AppCase(unittest.TestCase):
         (self.api.keys_down.add if down else self.api.keys_down.discard)(vk)
         return self.hooks.key(WM_KEYDOWN if down else WM_KEYUP, vk)
 
+    def ignored_press(self, which=XBUTTON1, quill=None):
+        """Press and release a mouse trigger while a session is pending; returns its outcome."""
+        quill = quill or self.app
+        done = len(quill.sessions.outcomes)
+        self.assertEqual(self.button(True, which), 1)  # still swallowed: no Back/Forward action
+        self.outcomes(done + 1, quill)
+        time.sleep(self.min_hold_ms * 4 / 1000)  # past the click-to-focus moment of a normal hold
+        self.assertEqual(self.button(False, which), 1)
+        return quill.sessions.outcomes[done]
+
     def outcomes(self, count, quill=None):
         quill = quill or self.app
         wait_for(lambda: len(quill.sessions.outcomes) >= count, f"{count} session outcomes")
@@ -283,18 +293,23 @@ class FlowTest(AppCase):
         self.assertEqual(self.api.calls, [])
         self.assertEqual(self.captures.open, [])
 
-    def test_overlapping_sessions_capture_at_once_and_type_in_order(self):
+    def test_a_press_while_the_previous_session_is_pending_starts_nothing(self):
         self.start()
         gate = threading.Event()
         self.model.gate, self.model.gate_when = gate, lambda call: True
         self.hold((1,), wait=False)
         wait_for(lambda: self.model.entered.is_set(), "the engine to be busy")
-        # The first session is being finalized: the next press records at once.
-        second = self.hold((2,), wait=False)
-        self.assertTrue(second.started)
-        self.assertEqual(len(self.app.sessions.outcomes), 0)
+        # The first session is being finalized: the next press clicks, records and types nothing.
+        clicks, made = len(self.api.mouse_calls), len(self.captures.made)
+        outcome = self.ignored_press()
+        self.assertEqual(outcome.reason, S.PREVIOUS_PENDING)
+        self.assertEqual((len(self.api.mouse_calls), len(self.captures.made)), (clicks, made))
+        self.assertIn(("show", TRANSCRIBING, S.MESSAGES[S.PREVIOUS_PENDING]), self.indicator.calls)
         gate.set()
-        self.assertEqual([o.reason for o in self.outcomes(2)], [S.TYPED, S.TYPED])
+        self.assertEqual([o.reason for o in self.outcomes(2)], [S.PREVIOUS_PENDING, S.TYPED])
+        self.assertEqual(self.api.received_text(), "w1.")
+        self.hold((2,))  # the first press after it works normally
+        self.assertEqual(self.app.sessions.outcomes[-1].reason, S.TYPED)
         self.assertEqual(self.api.received_text(), "w1.w2.")
 
     def test_failures_then_success(self):
@@ -1230,20 +1245,20 @@ class RewriteAppTest(RewriteCase):
         # Nothing to undo after the original was typed.
         self.assertEqual(self.press_undo(), self.refused(UNDO_NOTHING))
 
-    def test_a_dictation_during_a_rewrite_waits_and_types_in_order(self):
+    def test_a_dictation_press_during_a_rewrite_is_ignored(self):
         self.ollama.gate = threading.Event()
         self.start()
         self.hold(WORDS, wait=False)
         self.assertTrue(self.ollama.entered.wait(WAIT_S))
         wait_for(lambda: REVIEWING in self.indicator.states, "the reviewing state")
-        self.hold((1, 2), wait=False)
-        time.sleep(0.05)
-        self.assertEqual(self.api.received_text(), "")  # nothing typed before the older rewrite
-        self.assertEqual(len(self.app.sessions.outcomes), 0)
+        clicks, made = len(self.api.mouse_calls), len(self.captures.made)
+        self.assertEqual(self.ignored_press().reason, S.PREVIOUS_PENDING)
+        self.assertEqual((len(self.api.mouse_calls), len(self.captures.made)), (clicks, made))
+        self.assertEqual(self.api.received_text(), "")
         self.ollama.gate.set()
         outcomes = self.outcomes(2)
-        self.assertEqual([o.reason for o in outcomes], [S.TYPED, S.TYPED])
-        self.assertEqual(self.api.received_text(), REWRITTEN + "w1 w2.")
+        self.assertEqual([o.reason for o in outcomes], [S.PREVIOUS_PENDING, S.TYPED])
+        self.assertEqual(self.api.received_text(), REWRITTEN)
         self.assertEqual(self.indicator.last, ("hide",))
         self.assertEqual(len(self.ollama.calls), 1)
 
@@ -1525,6 +1540,31 @@ class PolishAppTest(RewriteCase):
         self.assertEqual(self.indicator.last, ("show", SENT, "Prompt enriquecido e enviado"))
         self.assertIn(("show", REVIEWING, S.ENRICHING), self.indicator.calls)
         self.assertEqual(self.press_undo(), self.refused(UNDO_NOTHING))  # sent with Enter: never undone
+
+    def test_a_second_mouse_5_press_while_the_first_is_corrected_is_ignored(self):
+        # The logged case: two mouse 5 presses 1 s apart; the second one used to fail with no_speech.
+        self.in_the_panel()
+        self.ollama.gate = threading.Event()
+        with self.assertLogs("quill", level="INFO") as logs:
+            self.start()
+            self.hold(WORDS, which=XBUTTON2, wait=False)
+            self.assertTrue(self.ollama.entered.wait(WAIT_S))
+            clicks, made = len(self.api.mouse_calls), len(self.captures.made)
+            outcome = self.ignored_press(XBUTTON2)
+            self.assertEqual((outcome.action, outcome.reason), ("send_polished", S.PREVIOUS_PENDING))
+            self.assertEqual((len(self.api.mouse_calls), len(self.captures.made)), (clicks, made))
+            self.assertEqual(self.api.enter_presses(), [])
+            self.ollama.gate.set()
+            outcomes = self.outcomes(2)
+        self.assertEqual([o.reason for o in outcomes], [S.PREVIOUS_PENDING, S.SENT_ENTER])
+        self.assertEqual(outcomes[-1].enrichment, "enrich_enriched")
+        self.assertEqual(sent_segments(self.api), [self.ENRICHED, ""])
+        self.assertEqual(self.api.enter_presses(), [True, True, True, True, False])  # one Enter, after the text
+        self.assertEqual(len(self.ollama.calls), 2)  # one correction and one enrichment
+        self.assertNotIn(S.NO_SPEECH, [o.reason for o in self.app.sessions.outcomes])
+        text = "\n".join(logs.output)
+        self.assertIn("ignored (previous_pending)", text)
+        self.assertNotRegex(text.casefold(), r"\bw[0-9]")
 
     def test_the_terminal_gets_one_paragraph_with_the_labels(self):
         self.api.titles[CLAUDE_HWND] = "invented - Claude Code"

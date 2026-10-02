@@ -15,6 +15,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from quill import autorewrite as R
+from quill import command as C
 from quill import enrich as E
 from quill import inject
 from quill import session as S
@@ -23,6 +24,7 @@ from quill.indicator.render import (CLAUDE_DONE, CLAUDE_PERMISSION, ERROR, LISTE
                                     TRANSCRIBING, VOICE, VOICE_NONE, VOICE_OPEN)
 from quill.inject import InjectResult, Target
 from quill.session import Processed, SessionManager
+from quill import sound
 from quill import speech as SP
 from quill.tests.fakes import FakeCaptures, FakeClock, FakeIndicator, FakePlayer, FakeSpeechEngine
 from quill.triggers import CANCEL, CONFIRM, START, STOP, Signal
@@ -219,14 +221,15 @@ class SessionCase(unittest.TestCase):
         self.speaker = self.make_speaker()
         self.voice = self.make_voice()
         self.started = 0
+        self.scheduled = []  # (seconds, job) of each indicator restore after the "Aguarde" notice
         self.typed_hook = []
         self.undoable = []  # (original, newline) of each on_typed call
         self.manager = SessionManager(
             transcriber=self.transcriber, capture_factory=self.captures, focus=self.focus, injector=self.injector,
             indicator=self.indicator, pipeline=self.pipeline, rewriter=self.rewriter, voice=self.voice,
-            on_session_start=self._started,
+            command=self.make_command(), on_session_start=self._started,
             on_typed=self._typed, player=self.player, speaker=self.speaker, context_pack=self.make_context_pack(),
-            clock=self.clock, final_timeout_s=5.0, poll_s=0.05)
+            schedule=self._schedule, clock=self.clock, final_timeout_s=5.0, poll_s=0.05)
         self.manager.start()
         self.addCleanup(self.manager.stop)
 
@@ -242,11 +245,17 @@ class SessionCase(unittest.TestCase):
     def make_voice(self):
         return None
 
+    def make_command(self):
+        return None
+
     def make_context_pack(self):
         return None
 
     def _started(self):
         self.started += 1
+
+    def _schedule(self, seconds, job):
+        self.scheduled.append((seconds, job))
 
     def _typed(self, target, text, original=None, newline=inject.NEWLINE_SPACE):
         self.typed_hook.append((target, text))
@@ -270,8 +279,17 @@ class SessionCase(unittest.TestCase):
     def release(self, action="dictation", trigger="xbutton1"):
         self.manager.handle(signal(STOP, action, trigger, "release"))
 
+    def settle(self):
+        """Wait until no released session is pending, so the next press starts a session."""
+        deadline = time.monotonic() + 5
+        while any(hold.handle is not None for hold in list(self.manager._live)):
+            if time.monotonic() > deadline:
+                self.fail("a released session is still pending")
+            time.sleep(0.005)
+
     def dictate(self, text=SPOKEN, action="dictation", error=None):
-        """One full hold: press, audio, release, final result."""
+        """One full hold after the earlier ones ended: press, audio, release, final result."""
+        self.settle()
         self.press(action)
         capture = self.captures.made[-1]
         capture.push(PCM)
@@ -373,37 +391,49 @@ class FlowTest(SessionCase):
         self.assertEqual(self.indicator.last, ("hide",))
         self.assert_released()
 
-    def test_new_press_during_finalization_captures_at_once_and_sessions_stay_ordered(self):
+    def test_new_press_during_finalization_is_ignored_and_the_pending_session_is_unaffected(self):
         self.focus.targets = [TARGET, OTHER]
         self.press()
         self.captures.made[0].push(PCM)
+        self.transcriber.sessions[0].partial("primeira")
         self.release()
         first = self.transcriber.sessions[0]
-        # The first session is still being finalized: the next press records immediately.
-        self.press()
-        second_capture = self.captures.made[1]
-        self.assertTrue(second_capture.started)
-        self.assertFalse(second_capture.stopped)
-        self.assertEqual(self.indicator.last, ("show", LISTENING, ""))
-        # The older session's result does not replace the live one on screen.
-        self.transcriber.sessions[1].partial("segunda frase")
-        second_capture.push(PCM)
-        self.release()
-        second = self.transcriber.sessions[1]
-        second.handle.resolve("segunda frase")  # resolved first...
-        time.sleep(0.05)
-        self.assertEqual(self.injector.typed, [])  # ...but typed only after the first one
+        # The first session is still being finalized: the next press starts nothing.
+        with self.assertLogs("quill.session", level="INFO") as logs:
+            self.press()
+        self.assertEqual(len(self.captures.made), 1)
+        self.assertEqual(len(self.transcriber.sessions), 1)
+        self.assertEqual(self.focus.calls, [("dictation", "xbutton1")])  # no second click
+        self.assertEqual(self.started, 1)
+        self.assertEqual(self.indicator.last, ("show", TRANSCRIBING, S.MESSAGES[S.PREVIOUS_PENDING]))
+        self.assertEqual([(o.session, o.reason) for o in self.manager.outcomes], [(2, S.PREVIOUS_PENDING)])
+        self.assertIn("pressed while session 1 is still pending; ignored (previous_pending)", "\n".join(logs.output))
+        self.release()  # its release does nothing
+        self.assertEqual(len(self.manager.outcomes), 1)
+        # After the notice the pending session's words come back.
+        [(seconds, restore)] = self.scheduled
+        self.assertEqual(seconds, S.BUSY_SHOW_S)
+        restore()
+        self.assertEqual(self.indicator.last, ("show", TRANSCRIBING, "primeira"))
         first.handle.resolve("primeira frase")
         outcomes = self.wait_outcomes(2)
-        self.assertEqual([o.reason for o in outcomes], [S.TYPED, S.TYPED])
-        self.assertEqual(self.injector.typed, [("Primeira frase.", TARGET), ("Segunda frase.", OTHER)])
+        self.assertEqual([(o.session, o.reason) for o in outcomes], [(2, S.PREVIOUS_PENDING), (1, S.TYPED)])
+        self.assertEqual(self.injector.typed, [("Primeira frase.", TARGET)])
         self.assertEqual(self.indicator.last, ("hide",))
+        # The first press after it works normally.
+        self.dictate("segunda frase")
+        self.assertEqual(self.wait_outcomes(3)[-1].reason, S.TYPED)
+        self.assertEqual(self.injector.typed[-1], ("Segunda frase.", OTHER))
         self.assert_released()
 
-    def test_older_session_ending_while_a_newer_one_listens_keeps_the_live_words(self):
+    def test_a_session_pending_past_the_limit_no_longer_blocks_and_ends_without_hiding_the_live_words(self):
         self.press()
         self.release()
-        self.press()
+        self.clock.now += S.PENDING_LIMIT_S  # the finalization hangs
+        with self.assertLogs("quill.session", level="WARNING") as logs:
+            self.press()
+        self.assertIn("session 1 still pending after 120 s", "\n".join(logs.output))
+        self.assertTrue(self.captures.made[1].started)
         shown = len(self.indicator.states)
         self.transcriber.sessions[1].partial("ao vivo")
         self.transcriber.sessions[0].handle.resolve("", None)  # no speech: an error, but not shown
@@ -791,35 +821,35 @@ class RewriteTest(SessionCase):
         self.assertEqual(self.typed_hook, [])
         self.assert_released()
 
-    def test_a_newer_session_during_a_rewrite_keeps_its_words_and_the_order(self):
+    def test_a_press_during_a_rewrite_is_ignored_and_the_rewrite_is_typed_once(self):
         self.focus.targets = [TARGET, OTHER]
         self.hold_long()
-        self.assertEqual(self.indicator.last[:2], ("show", REVIEWING))
-        self.press()  # records at once while the first one is being rewritten
-        self.assertEqual(self.indicator.last, ("show", LISTENING, ""))
-        self.captures.made[1].push(PCM)
-        self.transcriber.sessions[1].partial("segunda")
+        self.assertEqual(self.indicator.last, ("show", REVIEWING, "um dois"))
+        self.press()  # nothing starts while the first one is being rewritten
+        self.assertEqual(len(self.captures.made), 1)
+        self.assertEqual(len(self.focus.calls), 1)
+        self.assertEqual(self.indicator.last, ("show", REVIEWING, S.MESSAGES[S.PREVIOUS_PENDING]))
         self.release()
-        self.assertEqual(self.indicator.last, ("show", TRANSCRIBING, "segunda"))
-        self.transcriber.sessions[1].handle.resolve("segunda frase")
-        time.sleep(0.05)
-        self.assertEqual(self.injector.typed, [])  # typed only after the older one
+        self.scheduled[-1][1]()
+        self.assertEqual(self.indicator.last, ("show", REVIEWING, "um dois"))
         self.rewriter.gate.set()
         outcomes = self.wait_outcomes(2)
-        self.assertEqual([(o.session, o.reason) for o in outcomes], [(1, S.TYPED), (2, S.TYPED)])
-        self.assertEqual(self.injector.typed, [(LONG_TYPED.upper(), TARGET), ("Segunda frase.", OTHER)])
-        self.assertEqual(self.indicator.states.count(REVIEWING), 1)  # never over the newer session's words
+        self.assertEqual([(o.session, o.reason) for o in outcomes], [(2, S.PREVIOUS_PENDING), (1, S.TYPED)])
+        self.assertEqual(self.injector.typed, [(LONG_TYPED.upper(), TARGET)])
+        self.assertEqual(len(self.rewriter.calls), 1)
         self.assertEqual(self.indicator.last, ("hide",))
         self.assert_released()
 
-    def test_older_rewrite_is_shown_again_when_the_newer_session_ends_first(self):
+    def test_the_notice_never_comes_back_over_a_newer_state(self):
         self.hold_long()
         self.manager.handle(signal(START))
-        self.assertEqual(self.indicator.last, ("show", LISTENING, ""))
-        self.manager.handle(signal(CANCEL, reason="short_hold"))  # the newer one ends first
-        wait_until(lambda: self.indicator.last == ("show", REVIEWING, "um dois"), "the rewrite shown again")
+        self.assertEqual(self.indicator.last, ("show", REVIEWING, S.MESSAGES[S.PREVIOUS_PENDING]))
+        self.manager.handle(signal(CANCEL, reason="short_hold"))  # the ignored press: nothing to cancel
+        self.assertEqual([o.reason for o in self.manager.outcomes], [S.PREVIOUS_PENDING])
         self.rewriter.gate.set()
         self.wait_outcomes(2)
+        self.assertEqual(self.indicator.last, ("hide",))
+        self.scheduled[-1][1]()  # too late: the session ended
         self.assertEqual(self.indicator.last, ("hide",))
         self.assert_released()
 
@@ -1155,16 +1185,26 @@ class PolishTest(SessionCase):
         self.assertEqual((outcome.rewrite, outcome.enrichment), (R.UNCHANGED, E.ENRICHED))
         self.assertEqual(self.injector.typed, [("Pedido: Frase curta.", CLAUDE)])
 
-    def test_the_enriching_session_is_shown_again_when_a_newer_one_ends_first(self):
+    def test_a_second_mouse_5_press_while_enriching_is_ignored_and_the_first_is_sent_once(self):
+        # The logged case: a second mouse 5 press 1 s after the first, while it is being rewritten.
         self.rewriter.enrich_gate = threading.Event()
         self.dictate("frase curta", action="send_polished")
         self.assertTrue(self.rewriter.enriching.wait(5))
-        self.manager.handle(signal(START))
-        self.assertEqual(self.indicator.last, ("show", LISTENING, ""))
-        self.manager.handle(signal(CANCEL, reason="short_hold"))  # the newer one ends first
-        wait_until(lambda: self.indicator.last == ("show", REVIEWING, S.ENRICHING), "the enrichment shown again")
+        self.clock.now += 1.0
+        self.press("send_polished", "xbutton2")
+        self.assertEqual(self.focus.calls, [("send_polished", "xbutton1")])  # the first press's click only
+        self.assertEqual(len(self.captures.made), 1)
+        self.assertEqual(self.indicator.last, ("show", REVIEWING, S.MESSAGES[S.PREVIOUS_PENDING]))
+        self.scheduled[-1][1]()
+        self.assertEqual(self.indicator.last, ("show", REVIEWING, S.ENRICHING))
+        self.release("send_polished", "xbutton2")
         self.rewriter.enrich_gate.set()
-        self.assertEqual(self.wait_outcomes(2)[-1].enrichment, E.ENRICHED)
+        outcomes = self.wait_outcomes(2)
+        self.assertEqual([o.reason for o in outcomes], [S.PREVIOUS_PENDING, S.SENT_ENTER])
+        self.assertEqual(outcomes[-1].enrichment, E.ENRICHED)
+        self.assertEqual(self.injector.typed, [(self.ENRICHED, CLAUDE)])
+        self.assertEqual(self.injector.enters, [CLAUDE])  # one Enter, after the whole text
+        self.assertEqual(len(self.rewriter.calls), 1)
         self.assertEqual(self.indicator.last, ("show", SENT, "Prompt enriquecido e enviado"))
 
     def test_other_triggers_and_windows_keep_todays_rewrite(self):
@@ -1822,3 +1862,211 @@ class SpokenNameWithoutSoundTest(SessionCase):
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     unittest.main()
+
+
+class FakeCommand:
+    """A quill.command.CommandMode stand-in: records the instructions and rewrites the selection."""
+
+    def __init__(self):
+        self.instructions = []
+
+    def run(self, instruction, target):
+        self.instructions.append((instruction, target))
+        return SimpleNamespace(ok=True, reason=C.REWRITTEN, typed=3, timings={})
+
+
+class PendingPressTest(SessionCase):
+    """A press while an earlier released session is still pending starts nothing."""
+
+    NOTICE = S.MESSAGES[S.PREVIOUS_PENDING]
+    TRIGGERS = (("dictation", "xbutton1"), ("send_polished", "xbutton2"), ("send_raw", "mbutton"),
+                ("send_claude", "f15"), ("command", "f14"), ("voice", "f9"))
+
+    def setUp(self):
+        super().setUp()
+        self.ready()
+        self.focus.targets = [CLAUDE]
+
+    def make_rewriter(self):
+        return FakeRewriter()
+
+    def make_voice(self):
+        return FakeVoice()
+
+    def make_command(self):
+        self.command = FakeCommand()
+        return self.command
+
+    def make_player(self):
+        return FakePlayer()
+
+    def pending(self, action="send_polished"):
+        """A released mouse 5 session whose correction waits for ``self.rewriter.gate``."""
+        self.settle()
+        self.rewriter.gate = threading.Event()
+        self.rewriter.started.clear()
+        self.press(action, "xbutton2")
+        self.captures.made[-1].push(PCM)
+        self.transcriber.sessions[-1].partial("um dois")
+        self.release(action, "xbutton2")
+        self.transcriber.sessions[-1].handle.resolve(LONG)
+        self.assertTrue(self.rewriter.started.wait(5))
+
+    def assert_nothing_started(self, captures=1, clicks=1):
+        self.assertEqual(len(self.captures.made), captures)
+        self.assertEqual(len(self.transcriber.sessions), captures)
+        self.assertEqual(len(self.focus.calls), clicks)
+        self.assertEqual(self.started, captures)
+
+    def test_every_trigger_is_ignored_and_the_pending_session_sends_once(self):
+        self.pending()
+        with self.assertLogs("quill.session", level="INFO") as logs:
+            for action, trigger in self.TRIGGERS:
+                self.press(action, trigger)
+                self.assertEqual(self.indicator.last, ("show", REVIEWING, self.NOTICE))
+                self.release(action, trigger)
+        self.assert_nothing_started()
+        self.assertEqual([(o.action, o.reason) for o in self.manager.outcomes],
+                         [(action, S.PREVIOUS_PENDING) for action, _ in self.TRIGGERS])
+        self.rewriter.gate.set()
+        outcome = self.wait_outcomes(7)[-1]
+        self.assertEqual((outcome.session, outcome.reason), (1, S.SENT_ENTER))
+        self.assertEqual(self.injector.typed, [(LONG_TYPED.upper(), CLAUDE)])
+        self.assertEqual(self.injector.enters, [CLAUDE])
+        self.assertEqual(self.command.instructions, [])
+        self.assertEqual(self.voice.texts, [])
+        text = "\n".join(logs.output)
+        self.assertEqual(text.count("still pending; ignored (previous_pending)"), len(self.TRIGGERS))
+        for word in ("um", "dois", "aguarde"):
+            self.assertNotRegex(text.casefold(), rf"\b{word}\b")
+        self.assert_released()
+
+    def test_a_pending_command_or_voice_session_blocks_a_dictation_press(self):
+        for number, (action, trigger) in enumerate((("command", "f14"), ("voice", "f9"))):
+            with self.subTest(action):
+                self.settle()
+                self.press(action, trigger)
+                self.captures.made[-1].push(PCM)
+                self.release(action, trigger)
+                made, clicks = len(self.captures.made), len(self.focus.calls)
+                self.press()
+                self.release()
+                self.assert_nothing_started(made, clicks)
+                self.assertEqual(self.manager.outcomes[-1].reason, S.PREVIOUS_PENDING)
+                self.transcriber.sessions[-1].handle.resolve("frase inventada")
+                outcome = self.wait_outcomes(2 * number + 2)[-1]
+                self.assertEqual(outcome.action, action)
+        self.assertEqual(len(self.command.instructions), 1)
+        self.assertEqual(len(self.voice.texts), 1)
+        self.assertEqual(self.injector.typed, [])
+        self.assert_released()
+
+    def test_a_pending_session_failing_while_the_ignored_press_is_held_shows_its_error(self):
+        for number, failure in enumerate(("engine", "typing")):
+            with self.subTest(failure):
+                self.settle()
+                self.scheduled.clear()
+                self.press("send_polished", "xbutton2")
+                self.captures.made[-1].push(PCM)
+                self.release("send_polished", "xbutton2")
+                self.press()  # ignored, still held
+                if failure == "engine":
+                    self.transcriber.sessions[-1].handle.resolve("", error="fake engine failure")
+                    reason = S.ENGINE_ERROR
+                else:
+                    self.injector.results = [inject.FOREGROUND_CHANGED]
+                    self.transcriber.sessions[-1].handle.resolve("frase curta")
+                    reason = inject.FOREGROUND_CHANGED
+                outcomes = self.wait_outcomes(2 * number + 2)
+                self.assertEqual([o.reason for o in outcomes[-2:]], [S.PREVIOUS_PENDING, reason])
+                self.assertEqual(self.indicator.last[:2], ("show", ERROR))
+                shown = self.indicator.last
+                self.scheduled[-1][1]()  # the notice's restore never hides the error
+                self.release()
+                self.assertEqual(self.indicator.last, shown)
+                self.assertEqual(len(self.manager.outcomes), 2 * number + 2)
+        self.assertEqual(self.injector.enters, [])
+        self.dictate()  # the next press works normally
+        self.assertEqual(self.wait_outcomes(5)[-1].reason, S.TYPED)
+        self.assert_released()
+
+    def test_a_pending_session_succeeding_while_the_ignored_press_is_held_and_alerts_wait_for_its_release(self):
+        self.pending()
+        self.press()  # ignored, still held
+        self.rewriter.gate.set()
+        self.assertEqual(self.wait_outcomes(2)[-1].reason, S.SENT_ENTER)
+        self.assertEqual(self.injector.enters, [CLAUDE])
+        self.manager.alert(sound.DONE)
+        time.sleep(0.1)  # several finalizer polls
+        self.assertEqual(self.player.plays, [])  # the press is still held: no sound
+        self.clock.now += S.ERROR_SHOW_S  # the outcome was seen
+        self.release()
+        self.assertEqual(self.player.plays, [sound.DONE])
+        self.assertEqual(self.indicator.last[1], CLAUDE_DONE)
+        self.assertEqual(len(self.manager.outcomes), 2)
+        self.dictate()  # the next press works normally
+        self.assertEqual(self.wait_outcomes(3)[-1].reason, S.TYPED)
+
+    def test_stop_while_pending_with_an_ignored_press_held_finishes_the_session_once(self):
+        self.pending()
+        self.press()  # ignored, still held
+        stopper = threading.Thread(target=self.manager.stop)
+        stopper.start()
+        self.rewriter.gate.set()
+        stopper.join(5)
+        self.assertFalse(stopper.is_alive())
+        self.assertEqual([o.reason for o in self.manager.outcomes], [S.PREVIOUS_PENDING, S.SENT_ENTER])
+        self.assertEqual(len(self.injector.typed), 1)
+        self.assertEqual(self.injector.enters, [CLAUDE])
+        self.assert_released()
+        self.release()  # after stop: nothing
+        self.assertEqual(len(self.manager.outcomes), 2)
+        self.manager.start()
+        self.manager.loaded()
+        self.dictate()
+        self.assertEqual(self.wait_outcomes(3)[-1].reason, S.TYPED)
+
+    def test_repeated_press_release_cycles(self):
+        for cycle in range(1, 3):
+            self.scheduled.clear()
+            self.pending()
+            for _ in range(3):
+                self.press()
+                self.release()
+                self.assertEqual(self.indicator.last, ("show", REVIEWING, self.NOTICE))
+            for _, restore in self.scheduled:  # the older restores are stale: only the last one shows
+                restore()
+            # Each cycle: the correction's state once, then the last restore once.
+            self.assertEqual(self.indicator.calls.count(("show", REVIEWING, "um dois")), 2 * cycle)
+            self.assertEqual(self.indicator.last, ("show", REVIEWING, "um dois"))
+            self.rewriter.gate.set()
+            self.assertEqual(self.wait_outcomes(4 * cycle)[-1].reason, S.SENT_ENTER)
+            self.assert_nothing_started(cycle, cycle)
+        self.assertEqual(self.injector.enters, [CLAUDE, CLAUDE])
+        self.assertEqual([o.reason for o in self.manager.outcomes].count(S.PREVIOUS_PENDING), 6)
+        self.assert_released()
+
+    def test_a_held_session_keeps_todays_one_hold_rule(self):
+        with self.assertLogs("quill.session", level="WARNING"):
+            self.press()  # held, not released: not pending
+            self.press()  # the machine allows one hold: the stale one is dropped, as today
+        self.assertEqual(len(self.captures.made), 2)
+        self.assertTrue(self.captures.made[1].started)
+        self.assertEqual([o.reason for o in self.manager.outcomes], [S.INTERNAL_ERROR])
+        self.release()
+        self.transcriber.sessions[-1].handle.resolve("frase curta")
+        self.assertEqual(self.wait_outcomes(2)[-1].reason, S.TYPED)
+
+    def test_a_failing_schedule_is_logged_and_the_pending_session_finishes(self):
+        def broken(seconds, job):
+            raise RuntimeError("fake timer failure")
+
+        self.manager.schedule = broken
+        self.pending()
+        with self.assertLogs("quill.session", level="ERROR") as logs:
+            self.press()
+        self.assertIn("indicator restore could not be scheduled (RuntimeError)", "\n".join(logs.output))
+        self.release()
+        self.rewriter.gate.set()
+        self.assertEqual(self.wait_outcomes(2)[-1].reason, S.SENT_ENTER)
+        self.assert_released()

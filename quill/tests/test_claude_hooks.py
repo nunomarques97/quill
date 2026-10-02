@@ -679,6 +679,45 @@ class ListenerRecordsTest(unittest.TestCase):
             wait_for(lambda: self.alerts[-1:] == [(sound.DONE, None)], "the next wake")
         self.assertEqual(self.alerts, [(sound.DONE, "zorblat-kit"), (sound.DONE, None)])
 
+    def refused_opens(self, refusals: int) -> mock.Mock:
+        """An ``open`` for the listener whose first ``refusals`` calls fail as on a fresh file a scanner holds."""
+        real_open = open
+        calls = {"n": 0}
+
+        def opener(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] <= refusals:
+                raise PermissionError(13, "fake: held by another handle")
+            return real_open(*args, **kwargs)
+        return mock.Mock(side_effect=opener)
+
+    def test_a_record_briefly_held_by_another_handle_keeps_its_name(self) -> None:
+        self.listener.start()
+        self.write("alert-1.json", self.record(project="zorblat-kit"))
+        opener = self.refused_opens(N.OPEN_TRIES - 1)
+        started = time.monotonic()
+        with mock.patch.object(N, "open", opener, create=True):
+            self.assertTrue(self.events.set_event(N.EVENT_NAMES[sound.DONE]))
+            wait_for(lambda: self.alerts == [(sound.DONE, "zorblat-kit")], "the named alert")
+        self.assertEqual(opener.call_count, N.OPEN_TRIES)
+        self.assertGreaterEqual(time.monotonic() - started, (N.OPEN_TRIES - 1) * N.OPEN_RETRY_S * 0.9)  # spaced
+        self.assertEqual(list(self.alerts_dir.iterdir()), [])
+
+    def test_a_record_held_past_the_tries_is_dropped_and_the_listener_goes_on(self) -> None:
+        self.listener.start()
+        self.write("alert-1.json", self.record(project="zorblat-kit"))
+        opener = self.refused_opens(N.OPEN_TRIES)
+        with mock.patch.object(N, "open", opener, create=True), self.assertLogs("quill.notify", level="INFO") as logs:
+            self.assertTrue(self.events.set_event(N.EVENT_NAMES[sound.DONE]))
+            wait_for(lambda: self.alerts == [(sound.DONE, None)], "the nameless alert")
+        self.assertEqual(opener.call_count, N.OPEN_TRIES)  # bounded: no endless retry
+        self.assertIn("dropped 1 alert records", "\n".join(logs.output))
+        self.assertNotIn("zorblat", "\n".join(logs.output))
+        self.assertEqual(list(self.alerts_dir.iterdir()), [])
+        self.now[0] += 10.0
+        self.assertEqual(self.run_hook("brask-lab"), "signalled")
+        wait_for(lambda: self.alerts[-1:] == [(sound.DONE, "brask-lab")], "the next named alert")
+
 
 class HookScriptTest(unittest.TestCase):
     """The script as Claude Code runs it, from another folder. Only inputs that are ignored

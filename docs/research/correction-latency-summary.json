@@ -1,0 +1,184 @@
+{
+  "what": "mouse 5 correction latency in the shared local Ollama (qwen3:8b); aggregates only, no spoken text",
+  "log_evidence": {
+    "corrections_logged": 15,
+    "timed_out_at_4_s": 10,
+    "answered": 5,
+    "answered_s": {
+      "min": 0.53,
+      "p50": 0.69,
+      "max": 3.64
+    },
+    "timeouts": "first mouse 5 after Quill started or after more than 5 minutes without a Quill request"
+  },
+  "ollama_evidence": {
+    "server_keep_alive_default_s": 300,
+    "models_in_memory_at_once": 1,
+    "loads_aborted_when_the_client_gave_up": 9,
+    "qwen3_8b_load_s": {
+      "n": 44,
+      "min": 1.76,
+      "p50": 4.53,
+      "p95": 5.78,
+      "max": 6.28
+    },
+    "natural_cold_chat_s": 5.56
+  },
+  "prompt_size": {
+    "correct": {
+      "calls": 29,
+      "chars_p50": 2269,
+      "chars_max": 3111,
+      "prompt_tokens_p50": 566,
+      "prompt_tokens_max": 741,
+      "server_s_p50": 1.131,
+      "server_s_p95": 2.066
+    },
+    "correct_context": {
+      "calls": 19,
+      "chars_p50": 4816,
+      "chars_max": 5065,
+      "prompt_tokens_p50": 1181,
+      "prompt_tokens_max": 1230,
+      "server_s_p50": 0.657,
+      "server_s_p95": 0.936
+    },
+    "enrich_context": {
+      "calls": 20,
+      "chars_p50": 5155,
+      "chars_max": 5406,
+      "prompt_tokens_p50": 1308,
+      "prompt_tokens_max": 1359,
+      "server_s_p50": 1.81,
+      "server_s_p95": 3.149
+    }
+  },
+  "before": {
+    "timeouts": "product",
+    "timeout_s": 4.0,
+    "keep_alive": null,
+    "load_wait_s": null,
+    "first_call": {
+      "model_loaded_before": false,
+      "seconds": 4.013,
+      "reason": "autorewrite_timeout"
+    },
+    "sets": {
+      "prompts": {
+        "takes": 15,
+        "correction_calls": 30,
+        "over_timeout_s": 30,
+        "today_reasons": {
+          "autorewrite_timeout": 15
+        },
+        "new_reasons": {
+          "autorewrite_timeout": 15
+        },
+        "today_correction_p50_s": 4.013,
+        "today_correction_p95_s": 4.04,
+        "new_correction_p50_s": 4.008,
+        "new_correction_p95_s": 4.016,
+        "enrichment_p50_s": null,
+        "enrichment_p95_s": null,
+        "enriched": 0,
+        "lost_new": 0,
+        "invented_new": 0,
+        "total_p50_s": 4.183,
+        "total_p95_s": 4.788
+      },
+      "dictation": {
+        "takes": 9,
+        "correction_calls": 18,
+        "over_timeout_s": 18,
+        "today_reasons": {
+          "autorewrite_timeout": 9
+        },
+        "new_reasons": {
+          "autorewrite_timeout": 9
+        },
+        "today_correction_p50_s": 4.008,
+        "today_correction_p95_s": 4.031,
+        "new_correction_p50_s": 4.012,
+        "new_correction_p95_s": 4.036,
+        "enrichment_p50_s": null,
+        "enrichment_p95_s": null,
+        "enriched": 0,
+        "lost_new": 0,
+        "invented_new": 0,
+        "total_p50_s": 4.026,
+        "total_p95_s": 4.166
+      }
+    }
+  },
+  "after": {
+    "timeouts": "product",
+    "timeout_s": 4.0,
+    "keep_alive": "30m",
+    "load_wait_s": 8.0,
+    "first_call": {
+      "model_loaded_before": false,
+      "seconds": 8.366,
+      "reason": "autorewrite_refused"
+    },
+    "sets": {
+      "prompts": {
+        "takes": 15,
+        "correction_calls": 30,
+        "over_timeout_s": 1,
+        "today_reasons": {
+          "autorewrite_refused": 13,
+          "autorewrite_rewritten": 2
+        },
+        "new_reasons": {
+          "autorewrite_refused": 2,
+          "autorewrite_rewritten": 4,
+          "autorewrite_unchanged": 9
+        },
+        "today_correction_p50_s": 2.034,
+        "today_correction_p95_s": 8.366,
+        "new_correction_p50_s": 0.67,
+        "new_correction_p95_s": 0.92,
+        "enrichment_p50_s": 1.907,
+        "enrichment_p95_s": 3.171,
+        "enriched": 2,
+        "lost_new": 0,
+        "invented_new": 0,
+        "total_p50_s": 2.342,
+        "total_p95_s": 3.879
+      },
+      "dictation": {
+        "takes": 9,
+        "correction_calls": 18,
+        "over_timeout_s": 0,
+        "today_reasons": {
+          "autorewrite_refused": 3,
+          "autorewrite_rewritten": 3,
+          "autorewrite_unchanged": 3
+        },
+        "new_reasons": {
+          "autorewrite_refused": 2,
+          "autorewrite_rewritten": 3,
+          "autorewrite_unchanged": 4
+        },
+        "today_correction_p50_s": 1.003,
+        "today_correction_p95_s": 2.083,
+        "new_correction_p50_s": 0.892,
+        "new_correction_p95_s": 1.04,
+        "enrichment_p50_s": 1.105,
+        "enrichment_p95_s": 3.797,
+        "enriched": 4,
+        "lost_new": 0,
+        "invented_new": 0,
+        "total_p50_s": 1.788,
+        "total_p95_s": 4.679
+      }
+    }
+  },
+  "after_warm_ups": {
+    "count": 24,
+    "first_cold_s": 7.471,
+    "others_max_s": 0.125
+  },
+  "after_calls_with_a_load_over_0_5_s": 0,
+  "after_call_errors": []
+}

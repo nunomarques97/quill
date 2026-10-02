@@ -20,7 +20,7 @@ As instruções do enriquecimento foram afinadas só com os textos dos 9 ditados
 - O botão 5 correu duas vezes em cada gravação, com o qwen3:8b no Ollama partilhado (nenhum modelo foi descarregado, nada foi instalado, 0 €):
   - **hoje:** a correção do botão 5 como era antes desta fase: a pista do título da janela, sem pacote, sem a regra «só termos» e sem enriquecimento;
   - **novo:** o projeto detetado, o seu pacote, a correção com contexto (com a regra «só termos») e o enriquecimento do prompt.
-- Na medição, cada chamada ao modelo teve até 120 s para as contagens não dependerem da carga do PC; as chamadas que passariam os limites da aplicação (4 s na correção, 15 s no enriquecimento) são contadas à parte: nenhuma passou.
+- Na medição, cada chamada ao modelo teve até 120 s para as contagens não dependerem da carga do PC; as chamadas que passariam os limites da aplicação (4 s na correção, 15 s no enriquecimento) são contadas à parte: nenhuma passou. Com os limites da aplicação e o modelo fora da memória, as correções acabavam todas aos 4 s; a causa e a correção estão em [LATENCIA-CORRECAO.md](LATENCIA-CORRECAO.md) (Fase 7).
 - Nada foi escrito em nenhuma janela e nada foi enviado para o Claude Code.
 
 ## Resultados

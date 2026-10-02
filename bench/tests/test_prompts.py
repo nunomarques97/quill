@@ -657,5 +657,76 @@ class CommittedFilesTest(unittest.TestCase):
         self.assertNotIn("\\Users\\", text)
 
 
+class ProductTimeoutsTest(Case):
+    """--timeouts product: the app's timeouts, the warm-up at each mouse 5 hold, the model left as it is."""
+
+    def test_product_mode_warms_at_each_hold_and_reports_the_first_call(self):
+        self.record()
+        model = ScriptedModel()
+        events = []
+        chat = model.chat
+
+        def chat_logged(*args, **kwargs):
+            events.append("chat")
+            return chat(*args, **kwargs)
+
+        model.chat = chat_logged
+        asked = []
+
+        def factory(vocab, generic, **options):
+            asked.append(options)
+            built = make_product(self.root, model)
+            built.info.update(timeouts="product", bench_timeout_s=None, keep_alive="30m", load_wait_s=8.0)
+            return replace(built, hold_start=lambda: events.append("hold"), model_loaded=lambda: False)
+
+        summary = self.results / "committed-summary.json"
+        vocabulary = self.root / "vocabulary.toml"
+        vocabulary.write_text("", encoding="utf-8")
+        lines = []
+        code = P.main(["--config", str(self.config), "--summary", str(summary), "--vocabulary", str(vocabulary),
+                       "--set", "prompts", "--timeouts", "product"], product_factory=factory,
+                      streamer_factory=FakeStreamer({row.id: spoken(row, heard=True) for row in self.rows()}).factory,
+                      results_dir=self.results, out=lines.append)
+        self.assertEqual(code, 0)
+        self.assertEqual(asked, [{"product_timeouts": True}])
+        # One warm-up per take, before its first model call (today's correction, the new one, the enrichment).
+        self.assertEqual(events, ["hold", "chat", "chat", "chat"] * 3)
+        data = json.loads(summary.read_text(encoding="utf-8"))
+        rewrite = data["rewrite"]
+        self.assertEqual((rewrite["timeouts"], rewrite["keep_alive"], rewrite["load_wait_s"], rewrite["bench_timeout_s"]),
+                         ("product", "30m", 8.0, None))
+        self.assertEqual(rewrite["first_call"]["model_loaded_before"], False)
+        self.assertEqual(rewrite["first_call"]["reason"], autorewrite.UNCHANGED)  # the take had no term to fix
+        over = data["sets"]["prompts"]["over_product_timeout"]
+        self.assertEqual((over["correction_calls"], over["correction"], over["enrichment"]), (6, 0, 0))
+        self.assertTrue(any(line.startswith("first model call: ") for line in lines))
+
+    def test_bench_mode_is_unchanged(self):
+        self.record()
+        asked = []
+
+        def factory(vocab, generic, **options):
+            asked.append(options)
+            return make_product(self.root, ScriptedModel())
+
+        summary = self.results / "committed-summary.json"
+        vocabulary = self.root / "vocabulary.toml"
+        vocabulary.write_text("", encoding="utf-8")
+        code = P.main(["--config", str(self.config), "--summary", str(summary), "--vocabulary", str(vocabulary),
+                       "--set", "prompts"], product_factory=factory,
+                      streamer_factory=FakeStreamer({row.id: spoken(row, heard=True) for row in self.rows()}).factory,
+                      results_dir=self.results, out=[].append)
+        self.assertEqual((code, asked), (0, [{}]))
+        rewrite = json.loads(summary.read_text(encoding="utf-8"))["rewrite"]
+        self.assertEqual(rewrite["bench_timeout_s"], P.BENCH_TIMEOUT_S)
+        self.assertNotIn("keep_alive", rewrite)
+        self.assertEqual(rewrite["first_call"]["model_loaded_before"], None)  # not known without model_loaded
+
+    def test_an_unreadable_model_state_is_reported_as_unknown(self):
+        product = SimpleNamespace(model_loaded=mock.Mock(side_effect=OSError("down")))
+        self.assertIsNone(P.model_state(product))
+        self.assertIsNone(P.first_call([], True))
+
+
 if __name__ == "__main__":
     unittest.main()

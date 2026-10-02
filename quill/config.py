@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from quill.notify import DEFAULT_FILTER, FILTERS
+from quill.ollama import keep_alive_seconds
 from quill.speech import DEFAULT_RATE, DEFAULT_VOLUME, RATE_RANGE, VOLUME_RANGE
 from quill.whisper import DEFAULT_MODEL, PRECISE_MODEL
 
@@ -56,6 +57,8 @@ REWRITE_AUDIO_RANGE = (5.0, 120.0)
 REWRITE_WORDS_RANGE = (10, 1000)
 REWRITE_TIMEOUT_RANGE = (0.5, 30.0)
 ENRICH_TIMEOUT_RANGE = (1.0, 60.0)
+KEEP_ALIVE_RANGE = (60, 4 * 3600)  # seconds the shared Ollama keeps Quill's own model after Quill's request
+LOAD_WAIT_RANGE = (0.0, 30.0)
 UNDO_WINDOW_RANGE = (5, 600)
 # The key that submits a prompt in the Claude Code panel of VS Code: Enter, or Ctrl+Enter when the
 # extension's claudeCode.useCtrlEnterToSend setting is on.
@@ -100,7 +103,7 @@ SCHEMA: dict[str, object] = {
     "cleanup": {"mode": None},
     "corrections": {"key": None, "edit_window_s": None},
     "autorewrite": {"enabled": None, "min_audio_s": None, "min_words": None, "timeout_s": None, "enrich_timeout_s": None,
-                    "undo_key": None, "undo_window_s": None},
+                    "keep_alive": None, "load_wait_s": None, "undo_key": None, "undo_window_s": None},
     "claude_alert": {"enabled": None, "sound": None, "filter": None, "speak_project": None, "speech_volume": None,
                      "speech_rate": None},
     "voice_commands": {"shortcut_dirs": None, "model": None},
@@ -150,14 +153,19 @@ class AutoRewrite:
     ``min_words`` words is checked by the local model, which may take ``timeout_s``.
     In Claude Code the send_polished trigger then turns the corrected text into a
     structured prompt (``quill.enrich``), a second model call that may take
-    ``enrich_timeout_s``. ``undo_key`` (None when disabled) puts the original text back for
-    ``undo_window_s`` seconds after an automatic rewrite."""
+    ``enrich_timeout_s``. ``keep_alive`` (None: not sent, the server's default) is how long
+    Ollama keeps Quill's model after each of Quill's requests; a correction waits at most
+    ``load_wait_s`` for that model to load before its ``timeout_s`` starts. ``undo_key`` (None
+    when disabled) puts the original text back for ``undo_window_s`` seconds after an
+    automatic rewrite."""
 
     enabled: bool = False
     min_audio_s: float = 15.0
     min_words: int = 40
     timeout_s: float = 4.0
     enrich_timeout_s: float = 15.0
+    keep_alive: str | None = None
+    load_wait_s: float = 8.0
     undo_key: Input | None = None
     undo_window_s: int = 30
 
@@ -420,6 +428,18 @@ def _integer(value: object, field: str, bounds: tuple[int, int]) -> int:
     return value
 
 
+def _keep_alive(value: object, field: str) -> str | None:
+    """A positive duration from 1 minute to 4 hours ("30m", "2h", "90s"); "" sends none (the server's default)."""
+    if value == "":
+        return None
+    seconds = keep_alive_seconds(value)
+    low, high = KEEP_ALIVE_RANGE
+    if seconds is None or not low <= seconds <= high:
+        raise ConfigError(f'quill config: {field} must be "" or a duration from {low // 60}m to {high // 3600}h '
+                          'such as "30m" (never 0 or negative: Quill never unloads a model)')
+    return value
+
+
 def _autorewrite(data: dict[str, object], triggers: tuple[Trigger, ...], correction: Input | None) -> AutoRewrite:
     words = _integer(_get(data, "autorewrite.min_words"), "autorewrite.min_words", REWRITE_WORDS_RANGE)
     return AutoRewrite(
@@ -429,6 +449,8 @@ def _autorewrite(data: dict[str, object], triggers: tuple[Trigger, ...], correct
         timeout_s=_number(_get(data, "autorewrite.timeout_s"), "autorewrite.timeout_s", REWRITE_TIMEOUT_RANGE),
         enrich_timeout_s=_number(_get(data, "autorewrite.enrich_timeout_s"), "autorewrite.enrich_timeout_s",
                                  ENRICH_TIMEOUT_RANGE),
+        keep_alive=_keep_alive(_get(data, "autorewrite.keep_alive"), "autorewrite.keep_alive"),
+        load_wait_s=_number(_get(data, "autorewrite.load_wait_s"), "autorewrite.load_wait_s", LOAD_WAIT_RANGE),
         undo_key=_undo_key(_get(data, "autorewrite.undo_key"), triggers, correction),
         undo_window_s=_integer(_get(data, "autorewrite.undo_window_s"), "autorewrite.undo_window_s",
                                UNDO_WINDOW_RANGE),

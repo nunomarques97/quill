@@ -69,6 +69,7 @@ class ExampleTest(ConfigCase):
         self.assertEqual((rewrite.enabled, rewrite.min_audio_s, rewrite.min_words, rewrite.timeout_s),
                          (True, 15.0, 40, 4.0))
         self.assertEqual(rewrite.enrich_timeout_s, 15.0)
+        self.assertEqual((rewrite.keep_alive, rewrite.load_wait_s), ("30m", 8.0))
         self.assertEqual((rewrite.undo_key.name, rewrite.undo_key.vk, rewrite.undo_window_s), ("f17", 0x80, 30))
 
     def test_claude_alert_defaults(self) -> None:
@@ -278,6 +279,24 @@ class RejectTest(ConfigCase):
                 message = self.rejected(f"[autorewrite]\n{text}\n", field)
                 self.assertTrue(message.isascii())
         self.assertIn("correction key", self.rejected('[autorewrite]\nundo_key = "f16"\n', "autorewrite.undo_key"))
+
+    def test_keep_alive_and_load_wait(self) -> None:
+        for text, expected in (('"1m"', "1m"), ('"45m"', "45m"), ('"2h"', "2h"), ('"4h"', "4h"), ('"90s"', "90s"),
+                               ('""', None)):
+            with self.subTest(keep_alive=text):
+                self.assertEqual(self.load(f"[autorewrite]\nkeep_alive = {text}\n").autorewrite.keep_alive, expected)
+        self.assertEqual(self.load("[autorewrite]\nload_wait_s = 0\n").autorewrite.load_wait_s, 0.0)
+        self.assertEqual(self.load("[autorewrite]\nload_wait_s = 12.5\n").autorewrite.load_wait_s, 12.5)
+        # Zero, negative or numeric values could unload Quill's model or keep it forever: refused.
+        for value in ('"0"', '"0m"', '"-1"', '"-5m"', '"30"', '"59s"', '"5h"', '"1.5h"', '"30M"', "0", "-1", "30",
+                      "true"):
+            with self.subTest(keep_alive=value):
+                message = self.rejected(f"[autorewrite]\nkeep_alive = {value}\n", "autorewrite.keep_alive")
+                self.assertTrue(message.isascii())
+                self.assertIn("never 0 or negative", message)
+        for value in ("-1", "31", '"8"', "true"):
+            with self.subTest(load_wait_s=value):
+                self.rejected(f"[autorewrite]\nload_wait_s = {value}\n", "autorewrite.load_wait_s")
 
     def test_claude_alert_values(self) -> None:
         alert = self.load('[claude_alert]\nenabled = false\nsound = false\nfilter = "unless-headless"\n').claude_alert

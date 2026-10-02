@@ -88,6 +88,8 @@ MAX_RECORD = 1024  # bytes: a record holds a kind, a name and a time
 MAX_PENDING = 32  # records and temporary files waiting: beyond this the hook writes none
 MAX_READ = 256  # folder entries one wake looks at
 MAX_AGE_S = 60.0  # older records (and records dated in the future) are stale
+OPEN_TRIES = 5  # opens of one record refused by a passing handle (a scanner on a fresh file)
+OPEN_RETRY_S = 0.02  # seconds between those opens: at most 0.08 s per record
 NAMED_GRACE_S = 2.0  # a wake without a record this soon after a named alert of its kind rings nothing
 MAX_NAME = 48  # characters of a project name
 MAX_CWD = 4096  # characters of a cwd worth looking at
@@ -565,8 +567,7 @@ class AlertListener:
             if not entry.is_file(follow_symlinks=False):
                 self._stuck.add(entry.name)
                 return None
-            with open(entry.path, "rb") as handle:
-                data: bytes | None = handle.read(MAX_RECORD + 1)
+            data: bytes | None = _read_record(entry.path)
         except OSError:
             data = None
         try:
@@ -591,6 +592,18 @@ class AlertListener:
         handles, self._handles = self._handles, []
         for _, handle in handles:
             self.events.close(handle)
+
+
+def _read_record(path: str) -> bytes:
+    """The first bytes of a record; an open refused while another handle holds the fresh file is tried again."""
+    for _ in range(OPEN_TRIES - 1):
+        try:
+            with open(path, "rb") as handle:
+                return handle.read(MAX_RECORD + 1)
+        except PermissionError:
+            time.sleep(OPEN_RETRY_S)
+    with open(path, "rb") as handle:
+        return handle.read(MAX_RECORD + 1)
 
 
 def _record_file(name: str, suffix: str) -> bool:

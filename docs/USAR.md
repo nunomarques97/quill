@@ -192,7 +192,25 @@ A F17 não existe na maioria dos teclados: atribua-a a um botão do Streamlabs, 
 undo_key = "f18"
 ```
 
-Se o Ollama estiver desligado, demorar mais de 4 segundos ou a revisão perder alguma informação, o Quill escreve logo o texto original e o indicador avisa. Para desligar a revisão automática, escreva em `local\quill.toml`:
+Se o Ollama estiver desligado, demorar mais de 4 segundos a responder ou a revisão perder alguma informação, o Quill escreve logo o texto original e o indicador avisa.
+
+**O modelo local fica pronto antes de precisar dele.** O Ollama é partilhado com outros projetos e só cabe um modelo de cada vez na placa gráfica. Carregar o modelo do Quill demora 2 a 8 segundos. Antes, quando o modelo não estava em memória (depois de ligar o Quill, depois de 5 minutos sem o usar ou depois de outro projeto usar o Ollama), a revisão desistia aos 4 segundos. Ao desistir, o carregamento era cancelado e o ditado seguinte voltava a falhar. Agora:
+
+- o Quill carrega o seu modelo ao ligar (só com a revisão automática ligada e se o Ollama não estiver a usar o modelo de outro projeto) e sempre que começa a premir o botão 5, enquanto fala;
+- antes de rever, espera pelo modelo no máximo 8 segundos e depois dá-lhe os 4 segundos de sempre: no pior caso, 12 segundos depois de largar o botão, o texto é escrito, revisto ou como o disse;
+- o Ollama guarda o modelo do Quill durante 30 minutos depois de cada uso, em vez de 5. Se outro projeto precisar da placa gráfica, o Ollama tira o modelo do Quill na mesma. O Quill nunca tira, apaga nem transfere modelos.
+
+Medido com as suas gravações (os 15 prompts e os 9 ditados para o Claude Code, com os limites da aplicação e o modelo fora da memória no início): antes, as 48 revisões acabaram todas aos 4 segundos sem rever nada. Agora, nenhuma acabou por tempo. A primeira demorou 8,4 s (7,5 s à espera do carregamento), porque a medição começa a carregar o modelo logo antes da revisão. Ao usar o Quill, o carregamento começa quando prime o botão e por isso espera menos. As seguintes demoraram, a meio da lista, 0,7 a 0,9 s (em 95 % dos casos, até 1,04 s). Detalhes em [research/LATENCIA-CORRECAO.md](research/LATENCIA-CORRECAO.md).
+
+Para mudar estes tempos, escreva em `local\quill.toml`. `keep_alive` vai de `"1m"` a `"4h"`, e `""` deixa o Ollama decidir (5 minutos). `load_wait_s` vai de 0 a 30 segundos.
+
+```
+[autorewrite]
+keep_alive = "30m"
+load_wait_s = 8
+```
+
+Para desligar a revisão automática, escreva em `local\quill.toml`:
 
 ```
 [autorewrite]
@@ -376,7 +394,7 @@ O indicador mostra "Erro" com a causa e o ditado seguinte funciona normalmente:
 - "O destino deixou de ser o Claude Code: escrito sem Enter": o texto foi escrito, mas, antes do Enter, a janela já não era o Claude Code (mudou de janela, o foco saiu da caixa do Claude Code ou o texto foi parar a um ficheiro). Confirme o texto e carregue em Enter à mão, se for o caso.
 - "Janela de administrador: não é possível escrever": o Quill não escreve em janelas abertas como administrador.
 - "Ollama indisponível: texto limpo pelas regras": o texto foi escrito na mesma, limpo pelas regras.
-- "Ollama indisponível; ficou o texto original", "A reescrita demorou demais; ficou o texto original" ou "Reescrita recusada; ficou o texto original": o ditado foi escrito sem a revisão automática, tal como o disse.
+- "Ollama indisponível; ficou o texto original", "A reescrita demorou demais; ficou o texto original" ou "Reescrita recusada; ficou o texto original": o ditado foi escrito sem a revisão automática, tal como o disse. Se "A reescrita demorou demais" aparecer em vários ditados seguidos, veja se o Ollama está ligado e se outro programa está a usar muito a placa gráfica: o primeiro ditado depois de ligar o Quill pode demorar até 12 segundos, os seguintes cerca de 1 segundo.
 - "Enriquecimento recusado; foi o texto corrigido", "Ollama indisponível; foi o texto corrigido" ou "O enriquecimento demorou demais; foi o texto corrigido": com o botão 5 no Claude Code, foi enviado o texto corrigido, sem ser organizado em prompt.
 - "Não há reescrita para desfazer", "Outra janela ativa; a reescrita ficou", "Já carregou em Enter; a reescrita ficou" e parecidos: a F17 não mudou nada, pelo motivo indicado.
 - "A reposição foi interrompida; verifique o texto": a F17 parou a meio (por exemplo, mudou de janela); confirme o texto no campo.

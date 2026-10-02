@@ -221,6 +221,7 @@ class SessionCase(unittest.TestCase):
         self.speaker = self.make_speaker()
         self.voice = self.make_voice()
         self.started = 0
+        self.started_actions = []  # the action passed to each on_session_start call
         self.scheduled = []  # (seconds, job) of each indicator restore after the "Aguarde" notice
         self.typed_hook = []
         self.undoable = []  # (original, newline) of each on_typed call
@@ -251,8 +252,9 @@ class SessionCase(unittest.TestCase):
     def make_context_pack(self):
         return None
 
-    def _started(self):
+    def _started(self, action):
         self.started += 1
+        self.started_actions.append(action)
 
     def _schedule(self, seconds, job):
         self.scheduled.append((seconds, job))

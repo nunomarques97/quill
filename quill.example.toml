@@ -152,12 +152,27 @@ edit_window_s = 30
 # edit tracking of [corrections]); otherwise it changes nothing and the
 # indicator says why. The key is not swallowed; it may not be a trigger key or
 # the correction key; "" disables it.
+# The model must be in memory to answer within timeout_s: loading it takes
+# about 2 to 8 s, and Ollama aborts a load when the request gives up. So
+# Quill loads its own model in the background (an empty chat, which writes
+# nothing): when the speech model is ready, with enabled = true (skipped
+# while Ollama holds another project's model, to leave it alone), and
+# whenever a mouse 5 hold starts. Before a correction, Quill waits at most load_wait_s seconds
+# (0-30) for its model to be in memory, then gives the model timeout_s: a
+# correction ends, or types the dictation as it was, within load_wait_s +
+# timeout_s seconds. keep_alive is how long Ollama keeps Quill's model after
+# each of Quill's requests (instead of its own 5 minutes): a duration from
+# "1m" to "4h", or "" to send none. Quill never sends 0 or a negative value,
+# never unloads, deletes or pulls a model; another project that needs the
+# memory still gets it from Ollama.
 [autorewrite]
 enabled = true
 min_audio_s = 15
 min_words = 40
 timeout_s = 4
 enrich_timeout_s = 15
+keep_alive = "30m"
+load_wait_s = 8
 undo_key = "f17"
 undo_window_s = 30
 

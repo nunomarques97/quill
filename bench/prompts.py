@@ -391,7 +391,10 @@ class Product:
     ``pipeline(raw, target)`` is a ``quill.app.TextPipeline`` whose
     ``describe`` is ``window.describe``; ``names`` are the personal-vocabulary
     names that today's title hint prefers; ``packs(folder)`` returns
-    (pack or None, reason code).
+    (pack or None, reason code). ``hold_start()`` runs at each take before
+    its model calls, as the app does when a mouse 5 hold starts (None:
+    nothing); ``model_loaded()`` says whether the model is in memory now,
+    read before the first model call (None: unknown).
     """
 
     pipeline: Callable[[str, object], object]
@@ -401,6 +404,8 @@ class Product:
     packs: Callable[[object], tuple[object | None, str]] | None = None
     info: dict = field(default_factory=dict)
     clock: Callable[[], float] = time.perf_counter
+    hold_start: Callable[[], None] | None = None
+    model_loaded: Callable[[], bool | None] | None = None
 
 
 @dataclass(frozen=True)
@@ -467,6 +472,8 @@ def run_take(take: Take, set_name: str, case: str, heard: str, asr_s: float, pro
     audio_s = take.duration_s
     profile = processed.rewrite_profile or processed.profile
     rewriter = product.rewriter
+    if product.hold_start is not None:
+        product.hold_start()  # with no hold time: the model call follows at once
     today = rewriter.rewrite(source, audio_s=audio_s, profile=profile, keep=processed.keep,
                              project=autorewrite.project_hint(info, product.names), force=True, context=False)
     folder = processed.project_folder
@@ -503,6 +510,24 @@ def measure(set_name: str, takes: Sequence[Take], cases: dict[str, str], transcr
             product: Product) -> list[TakeResult]:
     return [run_take(take, set_name, cases.get(take.id, take.case), heard, asr_s, product)
             for take, (heard, asr_s) in zip(takes, transcripts, strict=True)]
+
+
+def model_state(product: Product) -> bool | None:
+    """Whether the model is in memory now; None when unknown or unreadable (read-only)."""
+    if product.model_loaded is None:
+        return None
+    try:
+        return product.model_loaded()
+    except Exception:  # noqa: BLE001 - the state is only reported
+        return None
+
+
+def first_call(results: Sequence[TakeResult], loaded: bool | None) -> dict | None:
+    """The run's first model call (today's correction of the first spoken take): how long and how it ended."""
+    first = next((r for r in results if r.spoken), None)
+    if first is None:
+        return None
+    return {"model_loaded_before": loaded, "seconds": round(first.today_s, 3), "reason": first.today_reason}
 
 
 # ---------------------------------------------------------------- aggregates
@@ -566,6 +591,7 @@ def set_block(results: Sequence[TakeResult], dataset: dict, product_timeouts: di
             "total_p95_s": _seconds([r.total_s for r in spoken], 95),
         },
         "over_product_timeout": {
+            "correction_calls": 2 * len(spoken),
             "correction": (sum(r.correction_s > timeouts["timeout_s"] for r in spoken)
                            + sum(r.today_s > timeouts["timeout_s"] for r in spoken))
             if "timeout_s" in timeouts else None,
@@ -715,12 +741,15 @@ def default_streamer(hints: Sequence[str]) -> tuple[Streamer, dict]:
     return product_streamer(tuple(hints), None, load_config().engine_model)
 
 
-def default_product(vocabulary: object, generic_terms: Sequence[str]) -> Product:
+def default_product(vocabulary: object, generic_terms: Sequence[str], product_timeouts: bool = False) -> Product:
     """The app's text pipeline, project folders, context packs and rewriter from its config, warmed up.
 
     The rewriter gets ``BENCH_TIMEOUT_S`` for both calls; the local model is
     only listed and asked one short warm-up turn: nothing is pulled, loaded
-    on purpose or unloaded. Raises SettingsError when Ollama cannot answer.
+    on purpose or unloaded. With ``product_timeouts`` the rewriter is the
+    app's own, with the config's timeouts, and the model is left as it is
+    (no warm-up turn here), so a first call may meet a model that is not
+    loaded. Raises SettingsError when Ollama cannot answer.
     """
     from dataclasses import replace
 
@@ -728,19 +757,28 @@ def default_product(vocabulary: object, generic_terms: Sequence[str]) -> Product
     from quill.config import load_config
     from quill.context_pack import ContextPacks
     from quill.corrections import CorrectionStore, Learner
-    from quill.ollama import OllamaClient, OllamaError
+    from quill.ollama import ModelWarmer, OllamaClient, OllamaError
     from quill.projects import ProjectDetector, ProjectFolders
 
     config = load_config()
-    client = OllamaClient(config.ollama_url, timeout_s=BENCH_TIMEOUT_S)
+    client = OllamaClient(config.ollama_url,
+                          timeout_s=config.autorewrite.timeout_s if product_timeouts else BENCH_TIMEOUT_S,
+                          keep_alive=config.autorewrite.keep_alive if product_timeouts else None)
     try:
         if config.ollama_model not in client.installed():
             raise SettingsError(f"prompts: {config.ollama_model} is not installed in Ollama")
-        client.chat(config.ollama_model, "Reply with ok.", "ok", max_tokens=8)
+        if not product_timeouts:
+            client.chat(config.ollama_model, "Reply with ok.", "ok", max_tokens=8)
     except OllamaError as exc:
         raise SettingsError(f"prompts: Ollama unavailable: {' '.join(str(exc).split())[:160]}") from None
-    settings = replace(config.autorewrite, timeout_s=BENCH_TIMEOUT_S, enrich_timeout_s=BENCH_TIMEOUT_S)
-    rewriter = autorewrite.AutoRewriter(client, config.ollama_model, settings)
+    warmer = None
+    if product_timeouts:
+        # As the app: the warm-up at each mouse 5 hold and the bounded wait before a correction.
+        warmer = ModelWarmer(client, config.ollama_model)
+        rewriter = autorewrite.AutoRewriter(client, config.ollama_model, config.autorewrite, warmer=warmer)
+    else:
+        settings = replace(config.autorewrite, timeout_s=BENCH_TIMEOUT_S, enrich_timeout_s=BENCH_TIMEOUT_S)
+        rewriter = autorewrite.AutoRewriter(client, config.ollama_model, settings)
     holder = Window()
     folders = ProjectFolders(config.project_context.folders, config.voice.shortcut_dirs)
     pipeline = TextPipeline(config, vocabulary=vocabulary, generic_terms=generic_terms, describe=holder.describe,
@@ -749,10 +787,15 @@ def default_product(vocabulary: object, generic_terms: Sequence[str]) -> Product
                             projects=ProjectDetector(folders))
     packs = ContextPacks.from_settings(config.project_context)
     info = {"model": config.ollama_model, "timeout_s": config.autorewrite.timeout_s,
-            "enrich_timeout_s": config.autorewrite.enrich_timeout_s, "bench_timeout_s": BENCH_TIMEOUT_S,
-            "cleanup": config.cleanup_mode}
+            "enrich_timeout_s": config.autorewrite.enrich_timeout_s,
+            "bench_timeout_s": None if product_timeouts else BENCH_TIMEOUT_S,
+            "timeouts": "product" if product_timeouts else "bench", "cleanup": config.cleanup_mode}
+    if product_timeouts:
+        info.update(keep_alive=config.autorewrite.keep_alive, load_wait_s=config.autorewrite.load_wait_s)
     names = tuple(entry.text for entry in getattr(vocabulary, "names", ()))
-    return Product(pipeline, holder, rewriter, names, packs.lookup, info)
+    return Product(pipeline, holder, rewriter, names, packs.lookup, info,
+                   hold_start=(lambda: warmer.warm("mouse 5 hold")) if warmer is not None else None,
+                   model_loaded=lambda: config.ollama_model in client.loaded())
 
 
 @dataclass(frozen=True)
@@ -928,6 +971,14 @@ def report_lines(summary: dict) -> list[str]:
             f"{_pct(latency['total_p95_s'])}")
         lines.append("  reasons: " + "; ".join(f"{k} " + ", ".join(f"{a} {b}" for a, b in v.items())
                                                for k, v in block["reasons"].items() if v))
+        over = block.get("over_product_timeout") or {}
+        if over.get("correction") is not None:
+            lines.append(f"  over the product timeout: correction {over['correction']} of "
+                         f"{over.get('correction_calls', '?')} calls, enrichment {over.get('enrichment')}")
+    first = (summary.get("rewrite") or {}).get("first_call")
+    if first:
+        lines.append(f"first model call: {first['seconds']:g} s, {first['reason']} (model loaded before: "
+                     f"{first['model_loaded_before']})")
     return lines
 
 
@@ -961,6 +1012,9 @@ def main(
     parser.add_argument("--require", action="store_true",
                         help="exit 1 when a target is unmet or the prompts set has missing takes")
     parser.add_argument("--check", type=Path, default=None, help="check the targets of a saved summary")
+    parser.add_argument("--timeouts", choices=("bench", "product"), default="bench",
+                        help="bench: a long measurement timeout after one warm-up turn (default); product: the "
+                             "app's timeouts and warm-up, with the model as it is")
     args = parser.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -1014,7 +1068,8 @@ def main(
     from bench.engines.base import EngineError, EngineUnavailable
 
     try:
-        product = product_factory(vocabulary, generic)
+        product = (product_factory(vocabulary, generic) if args.timeouts == "bench"
+                   else product_factory(vocabulary, generic, product_timeouts=True))
     except SettingsError as exc:
         out(f"error: {exc}")
         return 2
@@ -1034,6 +1089,7 @@ def main(
             close()
 
     results: list[TakeResult] = []
+    loaded_before = model_state(product)
     for name, takes, cases in work:
         measured = measure(name, takes, cases, transcripts[name], product)
         results.extend(measured)
@@ -1045,7 +1101,9 @@ def main(
     ordered = {name: blocks[name] for name in SETS if name in blocks}
     engine = {**stream_options, "hints": {"count": len(hints), "chars": sum(len(h) for h in hints)}}
     rewrite = {key: product.info[key] for key in ("model", "timeout_s", "enrich_timeout_s", "bench_timeout_s",
-                                                  "cleanup") if key in product.info}
+                                                  "timeouts", "keep_alive", "load_wait_s", "cleanup")
+               if key in product.info}
+    rewrite["first_call"] = first_call(results, loaded_before)
     summary = build_summary(ordered, engine, rewrite)
 
     texts = private_texts(results)

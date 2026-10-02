@@ -80,7 +80,8 @@ from quill.notify import ALERTS_DIR, AlertListener
 from quill.projects import ProjectDetector, ProjectFolders
 from quill.profiles import (CLAUDE_CODE, GONE, Profiles, StyleError, WindowInfo, apply_profile, by_focus,
                             load_style_samples, style_prompt, window_info)
-from quill.session import CLEANUP_FALLBACK, Processed, SessionManager
+from quill.ollama import ModelWarmer
+from quill.session import CLEANUP_FALLBACK, SEND_POLISHED, Processed, SessionManager
 from quill.streaming import StreamingTranscriber, options_for
 from quill.triggers import KEY, InputEvent
 from quill.voice import VoiceCommands, VoiceHints, default_parser
@@ -420,6 +421,7 @@ class Parts:
     inject_options: dict = field(default_factory=dict)
     command_options: dict = field(default_factory=dict)
     voice_hint_options: dict = field(default_factory=dict)  # quill.voice.VoiceHints options (tests: lister)
+    warm_options: dict = field(default_factory=dict)  # quill.ollama.ModelWarmer options (tests: spawn)
 
 
 class QuillApp:
@@ -462,8 +464,12 @@ class QuillApp:
                 self.voice_transcriber = StreamingTranscriber(parts.voice_model, options_for(config.voice.model),
                                                               hints)
         self.rewriter: AutoRewriter | None = None
+        # Loads the rewrite model in the background (start, mouse 5 hold), so a correction meets it in memory.
+        self.warmer: ModelWarmer | None = None
         if wants_rewriter(config) and parts.rewrite_client is not None:
-            self.rewriter = AutoRewriter(parts.rewrite_client, config.ollama_model, config.autorewrite)
+            self.warmer = ModelWarmer(parts.rewrite_client, config.ollama_model, **parts.warm_options)
+            self.rewriter = AutoRewriter(parts.rewrite_client, config.ollama_model, config.autorewrite,
+                                         warmer=self.warmer)
         self.correction_key = CorrectionKey(self.learner, self._read_selection, api.foreground_window)
         self.edits: ManualEdits | None = None
         undo_key = config.autorewrite.undo_key
@@ -558,6 +564,15 @@ class QuillApp:
         self.sessions.loaded(error=bool(error))
         if not error:
             self._load_voice_model()
+            self._warm_rewrite_model()
+
+    def _warm_rewrite_model(self) -> None:
+        """At start, once the speech models are in: load the rewrite model unless Ollama holds another one.
+
+        Only with [autorewrite] on; with it off only mouse 5 asks the model, and its hold loads it.
+        """
+        if self.warmer is not None and self.config.autorewrite.enabled and not self._stopping.is_set():
+            self.warmer.warm("start", unless_other=True)
 
     def _load_voice_model(self) -> None:
         """Load the voice model after the engine model, so dictation is ready first."""
@@ -658,7 +673,10 @@ class QuillApp:
 
     # ------------------------------------------------------------ learning (hook worker and session threads)
 
-    def _session_started(self) -> None:
+    def _session_started(self, action: str) -> None:
+        if action == SEND_POLISHED and self.warmer is not None:
+            # Mouse 5 always asks the model: it loads while the Sponsor speaks (own thread, returns at once).
+            self.warmer.warm("mouse 5 hold")
         self.undo.forget()  # a new text is coming: the last rewrite is no longer the last text
         if self.edits is not None:
             self.edits.stop()
@@ -825,7 +843,8 @@ def real_parts(config: Config) -> Parts:
         client=OllamaClient(config.ollama_url) if config.cleanup_mode == "llm" else None,
         command_client=(OllamaClient(config.ollama_url, timeout_s=COMMAND_TIMEOUT_S)
                         if config.trigger("command").enabled else None),
-        rewrite_client=(OllamaClient(config.ollama_url, timeout_s=config.autorewrite.timeout_s)
+        rewrite_client=(OllamaClient(config.ollama_url, timeout_s=config.autorewrite.timeout_s,
+                                     keep_alive=config.autorewrite.keep_alive)
                         if wants_rewriter(config) else None),
         vocabulary=source.vocabulary,
         generic_terms=terms,

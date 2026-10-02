@@ -398,7 +398,8 @@ class SessionManager:
     voice session (``quill.whisper.SessionHints``; None: the vocabulary hints).
     ``voice_transcriber`` decodes the voice sessions with its own model once it
     is ready (None, still loading or failed: ``transcriber`` decodes them).
-    ``on_session_start`` runs when a hold starts recording and
+    ``on_session_start(action)`` runs when a hold starts recording (before the
+    microphone opens; it must return at once) and
     ``on_typed(target, text, original, newline)`` after a successful
     injection (manual-edit detection, the correction key and the undo key):
     ``text`` as typed, and ``original`` the text a rewrite replaced, as it
@@ -420,7 +421,7 @@ class SessionManager:
                  focus: object, injector: object, indicator: object, pipeline: TextPipeline,
                  command: object | None = None, rewriter: object | None = None, voice: object | None = None,
                  voice_hints: Callable[[], object] | None = None, voice_transcriber: object | None = None,
-                 on_session_start: Callable[[], None] | None = None,
+                 on_session_start: Callable[[str], None] | None = None,
                  on_typed: Callable[[Target, str, str | None, str], None] | None = None,
                  housekeeping: Callable[[], None] | None = None,
                  player: object | None = None, speaker: object | None = None,
@@ -653,7 +654,7 @@ class SessionManager:
         log.info("session %d: %s started (%s)", hold.number, hold.action, hold.trigger)
         if self.on_session_start is not None:
             try:
-                self.on_session_start()
+                self.on_session_start(hold.action)
             except Exception as exc:  # noqa: BLE001
                 log.error("session start hook failed (%s)", type(exc).__name__)
         hints = self._session_hints(hold)

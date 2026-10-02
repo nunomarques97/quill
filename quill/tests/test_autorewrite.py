@@ -8,10 +8,13 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+import time
 import unittest
 from types import SimpleNamespace
 
 from quill import autorewrite as A
+from quill import ollama as O
 from quill.config import AutoRewrite as Settings
 from quill.ollama import OllamaClient, OllamaError
 
@@ -585,6 +588,327 @@ class ClientTimeoutTest(unittest.TestCase):
         client.chat("m", "system", "user")
         self.assertEqual([timeout for _, timeout in sent], [2.5, 10.0])
         self.assertNotIn("keep_alive", sent[0][0])
+
+
+class _Opener:
+    """The real client's HTTP opener, replaced: records (method, path, payload, timeout), answers ``body``."""
+
+    def __init__(self, body: bytes = b'{"message": {"content": "ok"}}') -> None:
+        self.body = body
+        self.sent: list[tuple[str, str, dict | None, float]] = []
+
+    def open(self, request, timeout):
+        payload = json.loads(request.data.decode("utf-8")) if request.data else None
+        path = request.full_url.split("11434", 1)[1]
+        self.sent.append((request.get_method(), path, payload, timeout))
+        body = self.body
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self):
+                return body
+
+        return Response()
+
+
+def _client(keep_alive=None, body: bytes = b'{"message": {"content": "ok"}}') -> tuple[OllamaClient, _Opener]:
+    client = OllamaClient("http://127.0.0.1:11434", timeout_s=4.0, keep_alive=keep_alive)
+    client._opener = _Opener(body)
+    return client, client._opener
+
+
+class KeepAliveTest(unittest.TestCase):
+    """keep_alive: only a positive duration, only on Quill's own chat and warm-up; never an unload."""
+
+    def test_only_positive_durations_are_accepted(self) -> None:
+        self.assertEqual([O.keep_alive_seconds(v) for v in ("90s", "30m", "2h", "1m")], [90, 1800, 7200, 60])
+        for value in ("0", "0s", "0m", "00m", "-1", "-5m", "-1m", "1.5h", "30", "30M", " 30m", "30m ", "", "5d",
+                      "1e3s", 0, -1, 30, 1.5, True):
+            with self.subTest(value=value):
+                self.assertIsNone(O.keep_alive_seconds(value))
+                with self.assertRaises(ValueError):
+                    OllamaClient("http://127.0.0.1:11434", keep_alive=value)
+
+    def test_chat_and_warm_up_carry_the_clients_duration(self) -> None:
+        client, opener = _client("30m")
+        client.chat("m", "system", "user")
+        client.warm("m", timeout_s=60.0)
+        (chat_method, chat_path, chat, _), (warm_method, warm_path, warm, timeout) = opener.sent
+        self.assertEqual((chat_method, chat_path, chat["keep_alive"]), ("POST", "/api/chat", "30m"))
+        # The warm-up is a chat with no message: it loads the model and generates nothing.
+        self.assertEqual((warm_method, warm_path, timeout), ("POST", "/api/chat", 60.0))
+        self.assertEqual(warm, {"model": "m", "messages": [], "stream": False, "keep_alive": "30m"})
+
+    def test_without_a_duration_nothing_is_sent(self) -> None:
+        client, opener = _client()
+        client.chat("m", "system", "user")
+        client.warm("m")
+        self.assertEqual(len(opener.sent), 2)
+        self.assertTrue(all("keep_alive" not in payload for _, _, payload, _ in opener.sent))
+
+    def test_an_unload_value_is_refused_before_any_request(self) -> None:
+        client, opener = _client()
+        for value in (0, "0", "0s", -1, "-1", "-5m", None, ""):
+            with self.subTest(value=value):
+                with self.assertRaises(OllamaError):
+                    client._call("POST", "/api/chat", {"model": "m", "messages": [], "keep_alive": value})
+        with self.assertRaises(OllamaError):  # never on another call either
+            client._call("GET", "/api/tags", {"keep_alive": "30m"})
+        client.keep_alive = "0"  # even when set by hand after the constructor's check
+        with self.assertRaises(OllamaError):
+            client.warm("m")
+        with self.assertRaises(OllamaError):
+            client.chat("m", "system", "user")
+        self.assertEqual(opener.sent, [])
+
+    def test_no_call_can_pull_delete_or_unload_a_model(self) -> None:
+        self.assertEqual(O.ALLOWED_CALLS, {("GET", "/api/tags"), ("GET", "/api/ps"), ("POST", "/api/chat")})
+        client, opener = _client()
+        for method, path in (("POST", "/api/pull"), ("DELETE", "/api/delete"), ("POST", "/api/generate"),
+                             ("POST", "/api/create"), ("POST", "/api/copy"), ("POST", "/api/push")):
+            with self.subTest(path=path):
+                with self.assertRaises(OllamaError):
+                    client._call(method, path, {"model": "m"})
+        self.assertEqual(opener.sent, [])
+
+    def test_loaded_lists_the_models_in_memory_read_only(self) -> None:
+        client, opener = _client(body=b'{"models": [{"name": "qwen3:8b"}, {"name": 3}, "x"]}')
+        self.assertEqual(client.loaded(timeout_s=0.5), ["qwen3:8b"])
+        self.assertEqual(opener.sent, [("GET", "/api/ps", None, 0.5)])
+
+    def test_a_warm_up_error_raises_without_the_servers_text(self) -> None:
+        client, _ = _client(body=b'{"error": "model not found"}')
+        with self.assertRaises(OllamaError) as raised:
+            client.warm("m")
+        self.assertNotIn("model not found", str(raised.exception))
+
+
+class WarmClient:
+    """A fake Ollama for the warmer: ``memory`` is what /api/ps lists; ``gate`` holds a warm-up."""
+
+    def __init__(self, memory=(), error: Exception | None = None, gate: threading.Event | None = None,
+                 unreadable: bool = False) -> None:
+        self.memory = list(memory)
+        self.error = error
+        self.gate = gate
+        self.unreadable = unreadable
+        self.warms: list[tuple[str, str, float | None]] = []  # (model, thread name, timeout_s)
+        self.checks = 0
+        self.entered = threading.Event()
+
+    def loaded(self, timeout_s=None):
+        self.checks += 1
+        if self.unreadable:
+            raise OllamaError("Ollama unreachable: URLError")
+        return list(self.memory)
+
+    def warm(self, model, timeout_s=None):
+        self.warms.append((model, threading.current_thread().name, timeout_s))
+        self.entered.set()
+        if self.gate is not None:
+            self.gate.wait(5.0)
+        if self.error is not None:
+            raise self.error
+        self.memory = [model]
+
+
+def _wait(condition, what: str) -> None:
+    deadline = time.monotonic() + 5.0
+    while not condition():
+        if time.monotonic() > deadline:
+            raise AssertionError(f"timed out waiting for {what}")
+        time.sleep(0.005)
+
+
+class ModelWarmerTest(unittest.TestCase):
+    def warmer(self, client: WarmClient, **kwargs) -> O.ModelWarmer:
+        if client.gate is not None:
+            self.addCleanup(client.gate.set)
+        return O.ModelWarmer(client, "qwen3:8b", **kwargs)
+
+    def test_a_warm_up_runs_on_its_own_thread_and_returns_at_once(self) -> None:
+        client = WarmClient(gate=threading.Event())
+        warmer = self.warmer(client)
+        with self.assertLogs("quill.ollama", logging.INFO) as logs:
+            self.assertTrue(warmer.warm("mouse 5 hold"))  # returns while the load is still held
+            self.assertTrue(client.entered.wait(5.0))
+            self.assertTrue(warmer.busy)
+            self.assertFalse(warmer.warm("mouse 5 hold"))  # at most one in flight
+            self.assertFalse(warmer.warm("start", unless_other=True))
+            client.gate.set()
+            _wait(lambda: not warmer.busy, "the warm-up to end")
+        self.assertEqual(client.warms, [("qwen3:8b", "quill-model-warm-up", O.WARM_TIMEOUT_S)])
+        self.assertNotEqual(client.warms[0][1], threading.current_thread().name)
+        self.assertIn("model warm-up (mouse 5 hold) done", "\n".join(logs.output))
+        self.assertTrue(warmer.warm("again"))  # a new one once the last has ended
+        _wait(lambda: not warmer.busy, "the second warm-up")
+        self.assertEqual(len(client.warms), 2)
+
+    def test_a_failure_is_only_logged(self) -> None:
+        for error in (OllamaError("Ollama unreachable: TimeoutError"), ValueError("dictated words")):
+            with self.subTest(error=type(error).__name__):
+                client = WarmClient(error=error)
+                warmer = self.warmer(client)
+                with self.assertLogs("quill.ollama", logging.WARNING) as logs:
+                    self.assertTrue(warmer.warm("start"))
+                    _wait(lambda: not warmer.busy, "the failed warm-up")
+                self.assertIn(type(error).__name__, logs.output[0])
+                self.assertNotIn("dictated", logs.output[0])
+
+    def test_no_thread_is_only_logged(self) -> None:
+        def broken(job):
+            raise RuntimeError("no thread")
+
+        warmer = self.warmer(WarmClient(), spawn=broken)
+        with self.assertLogs("quill.ollama", logging.WARNING):
+            self.assertFalse(warmer.warm("start"))
+        self.assertFalse(warmer.busy)
+
+    def test_at_start_another_projects_model_is_left_alone(self) -> None:
+        for memory, warmed, message in ((["other:14b"], 0, "skipped: Ollama holds another model"),
+                                        (["qwen3:8b"], 0, "already in memory"),
+                                        ([], 1, "done")):
+            with self.subTest(memory=memory):
+                client = WarmClient(memory)
+                warmer = self.warmer(client)
+                with self.assertLogs("quill.ollama", logging.INFO) as logs:
+                    warmer.warm("start", unless_other=True)
+                    _wait(lambda: not warmer.busy, "the start warm-up")
+                self.assertEqual(len(client.warms), warmed)
+                self.assertIn(message, "\n".join(logs.output))
+                self.assertNotIn("other:14b", "\n".join(logs.output))
+
+    def test_before_a_call_a_model_in_memory_costs_one_check(self) -> None:
+        client = WarmClient(["qwen3:8b"])
+        warmer = self.warmer(client)
+        self.assertEqual(warmer.before_call(8.0), 0.0)
+        self.assertEqual((client.checks, client.warms), (1, []))
+
+    def test_before_a_call_a_cold_model_is_loaded_and_waited_for(self) -> None:
+        client = WarmClient([])
+        warmer = self.warmer(client)
+        waited = warmer.before_call(5.0)
+        self.assertEqual([warm[0] for warm in client.warms], ["qwen3:8b"])
+        self.assertEqual(client.memory, ["qwen3:8b"])
+        self.assertFalse(warmer.busy)
+        self.assertLess(waited, 5.0)
+
+    def test_the_wait_before_a_call_is_bounded(self) -> None:
+        client = WarmClient([], gate=threading.Event())
+        warmer = self.warmer(client)
+        warmer.warm("mouse 5 hold")
+        self.assertTrue(client.entered.wait(5.0))
+        started = time.monotonic()
+        waited = warmer.before_call(0.05)
+        self.assertGreaterEqual(waited, 0.04)
+        self.assertLess(time.monotonic() - started, 2.0)
+        self.assertTrue(warmer.busy)  # the load goes on, for the call that follows
+        self.assertEqual(client.checks, 0)  # a warm-up in flight: nothing to ask
+        self.assertEqual(len(client.warms), 1)  # and no second one
+
+    def test_a_slow_check_counts_in_the_wait(self) -> None:
+        clock = Clock()
+        client = WarmClient([], gate=threading.Event())
+        checks = client.loaded
+
+        def slow_check(timeout_s=None):
+            clock.now += 3.0  # /api/ps took the whole wait
+            return checks(timeout_s)
+
+        client.loaded = slow_check
+        warmer = self.warmer(client, clock=clock)
+        started = time.monotonic()
+        self.assertEqual(warmer.before_call(3.0), 3.0)
+        self.assertLess(time.monotonic() - started, 2.0)  # no further wait: the call goes ahead
+        self.assertTrue(client.entered.wait(5.0))  # the load started, for the next call
+
+    def test_an_unknown_state_lets_the_call_go_ahead(self) -> None:
+        client = WarmClient(unreadable=True)
+        warmer = self.warmer(client)
+        self.assertEqual(warmer.before_call(8.0), 0.0)
+        self.assertEqual(client.warms, [])
+
+
+class FakeWarmer:
+    """The rewriter's warmer: ``waits`` seconds on the clock before a call (at most the wait given)."""
+
+    def __init__(self, clock: Clock, waits: float = 0.0, error: Exception | None = None) -> None:
+        self.clock = clock
+        self.waits = waits
+        self.error = error
+        self.asked: list[float] = []
+        self.warms: list[str] = []
+
+    def before_call(self, wait_s: float) -> float:
+        self.asked.append(wait_s)
+        if self.error is not None:
+            raise self.error
+        waited = min(self.waits, wait_s)
+        self.clock.now += waited
+        return waited
+
+    def warm(self, reason: str, **kwargs) -> bool:
+        self.warms.append(reason)
+        return True
+
+
+class ColdModelTest(unittest.TestCase):
+    """A correction that meets a model still loading: bounded by load_wait_s + timeout_s, never loses text."""
+
+    SETTINGS = Settings(enabled=True, min_audio_s=15.0, min_words=40, timeout_s=4.0, load_wait_s=8.0)
+
+    def setUp(self) -> None:
+        self.clock = Clock()
+
+    def rewrite(self, client: FakeClient, warmer: FakeWarmer, text: str = LONG) -> A.AutoRewrite:
+        rewriter = A.AutoRewriter(client, "qwen3:8b", self.SETTINGS, clock=self.clock, warmer=warmer)
+        with self.assertLogs("quill.autorewrite", logging.INFO) as logs:
+            result = rewriter.rewrite(text, audio_s=18.0, keep=KEEP, force=True)
+        self.logs = "\n".join(logs.output)
+        self.assertNotIn("Orion", self.logs)
+        return result
+
+    def test_the_correction_waits_for_the_load_then_gets_its_whole_timeout(self) -> None:
+        warmer = FakeWarmer(self.clock, waits=5.0)
+        client = FakeClient(LONG, clock=self.clock, takes=3.5)  # 8.5 s in all: over timeout_s, within the bound
+        result = self.rewrite(client, warmer, LONG.replace("deploy", "de ploi"))
+        self.assertEqual((result.reason, result.text, result.seconds), (A.REWRITTEN, LONG, 8.5))
+        self.assertEqual(warmer.asked, [8.0])
+        self.assertEqual(warmer.warms, [])
+        self.assertIn("5.00 s waiting for the model to load", self.logs)
+
+    def test_a_load_longer_than_the_wait_falls_back_to_the_dictation_within_the_bound(self) -> None:
+        source = LONG.replace("deploy", "de ploi")
+        for client in (FakeClient(error=OllamaError("Ollama unreachable: TimeoutError"), clock=self.clock, takes=4.0),
+                       FakeClient(LONG, clock=self.clock, takes=4.5)):
+            with self.subTest(error=client.error is not None):
+                self.clock.now = 100.0
+                warmer = FakeWarmer(self.clock, waits=60.0)  # the load goes on past load_wait_s
+                result = self.rewrite(client, warmer, source)
+                self.assertEqual((result.reason, result.text), (A.TIMEOUT, source))  # the dictation is typed
+                self.assertLessEqual(result.seconds, self.SETTINGS.load_wait_s + self.SETTINGS.timeout_s + 0.5)
+                self.assertEqual(warmer.warms, ["after a slow or failed correction"])
+
+    def test_a_failure_warms_the_model_for_the_next_dictation(self) -> None:
+        warmer = FakeWarmer(self.clock)
+        result = self.rewrite(FakeClient(error=OllamaError("Ollama unreachable: URLError")), warmer)
+        self.assertEqual((result.reason, result.text), (A.FAILED, LONG))
+        self.assertEqual(len(warmer.warms), 1)
+
+    def test_a_broken_warmer_never_stops_the_correction(self) -> None:
+        warmer = FakeWarmer(self.clock, error=RuntimeError("broken"))
+        result = self.rewrite(FakeClient(LONG), warmer)
+        self.assertEqual(result.reason, A.UNCHANGED)
+
+    def test_without_a_warmer_nothing_waits(self) -> None:
+        client = FakeClient(LONG, clock=self.clock, takes=1.0)
+        result = A.AutoRewriter(client, "qwen3:8b", self.SETTINGS, clock=self.clock).rewrite(LONG, audio_s=18.0)
+        self.assertEqual((result.reason, result.seconds), (A.UNCHANGED, 1.0))
 
 
 if __name__ == "__main__":

@@ -543,14 +543,22 @@ class AutoRewrite:
 
 
 class AutoRewriter:
-    """One strict chat turn with the local model for a long dictation, then ``guard``."""
+    """One strict chat turn with the local model for a long dictation, then ``guard``.
+
+    ``warmer`` (a ``quill.ollama.ModelWarmer``; None: none) makes sure the
+    model is in memory before the correction: the correction first waits at
+    most ``settings.load_wait_s`` for it, then gives the model ``timeout_s``,
+    so it ends within their sum. After a timeout or a failure the warmer loads
+    the model in the background for the next dictation.
+    """
 
     def __init__(self, client: object, model: str, settings: Settings, *,
-                 clock: Callable[[], float] = time.perf_counter) -> None:
+                 clock: Callable[[], float] = time.perf_counter, warmer: object | None = None) -> None:
         self.client = client
         self.model = model
         self.settings = settings
         self.clock = clock
+        self.warmer = warmer
         self.enricher = enrich.Enricher(client, model, settings.enrich_timeout_s, clock=clock)
 
     def wants(self, text: str, audio_s: float | None) -> bool:
@@ -589,15 +597,26 @@ class AutoRewriter:
         return replace(result, text=typed, enrichment=enrichment.reason, enrich_detail=enrichment.detail,
                        enrich_seconds=enrichment.seconds)
 
+    def _warm_again(self) -> None:
+        """After a timeout or failure: load the model in the background for the next dictation."""
+        if self.warmer is None:
+            return
+        try:
+            self.warmer.warm("after a slow or failed correction")
+        except Exception as exc:  # noqa: BLE001 - only the next dictation is slower
+            log.error("autorewrite: model warm-up not started (%s)", type(exc).__name__)
+
     def _correct(self, text: str, *, audio_s: float | None, profile: str, keep: tuple[str, ...], project: str,
                  force: bool, context: bool, pack: object | None) -> AutoRewrite:
         words = word_count(text)
+        waited = 0.0
 
         def done(reason: str, result: str | None = None, detail: str = "", seconds: float = 0.0,
                  changes: int = 0, kept: int = 0) -> AutoRewrite:
             if reason not in (SHORT, DISABLED):
-                log.info("autorewrite: %s%s (%d words%s, %.2f s)", reason, f" ({detail})" if detail else "", words,
-                         f", {kept} fixes kept as dictated" if kept else "", seconds)
+                log.info("autorewrite: %s%s (%d words%s, %.2f s%s)", reason, f" ({detail})" if detail else "", words,
+                         f", {kept} fixes kept as dictated" if kept else "", seconds,
+                         f", {waited:.2f} s waiting for the model to load" if waited >= 0.01 else "")
             return AutoRewrite(text if result is None else result, text, reason, detail, seconds, changes, kept=kept)
 
         if not force and not self.settings.enabled:
@@ -609,15 +628,23 @@ class AutoRewriter:
         system, user = build_prompt(text, profile, keep, project, context=context, pack=pack)
         timeout = self.settings.timeout_s
         started = self.clock()
+        if self.warmer is not None:
+            try:
+                waited = self.warmer.before_call(self.settings.load_wait_s)
+            except Exception as exc:  # noqa: BLE001 - the correction goes ahead without waiting
+                log.error("autorewrite: model warm-up check failed (%s)", type(exc).__name__)
+        asked = self.clock()
         try:
             reply = self.client.chat(self.model, system, user, max_tokens=max(MIN_TOKENS, TOKENS_PER_WORD * words),
                                      timeout_s=timeout)
         except Exception as exc:  # noqa: BLE001 - Ollama down, HTTP error, timeout: never lose the dictation
-            seconds = self.clock() - started
-            timed_out = isinstance(exc, TimeoutError) or "timeout" in str(exc).casefold() or seconds >= timeout
+            seconds, answered = self.clock() - started, self.clock() - asked
+            timed_out = isinstance(exc, TimeoutError) or "timeout" in str(exc).casefold() or answered >= timeout
+            self._warm_again()
             return done(TIMEOUT if timed_out else FAILED, detail=type(exc).__name__, seconds=seconds)
         seconds = self.clock() - started
-        if seconds > timeout:
+        if self.clock() - asked > timeout:
+            self._warm_again()
             return done(TIMEOUT, seconds=seconds)
         content = getattr(reply, "content", None)
         if not isinstance(content, str):

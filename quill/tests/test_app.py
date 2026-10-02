@@ -1164,11 +1164,28 @@ class RewriteOllama:
         self.gate = None  # threading.Event the reply waits for
         self.entered = threading.Event()
         self.calls = []  # (system prompt, user message, timeout_s)
+        self.memory = ["qwen3:8b"]  # the models /api/ps lists
+        self.warms = []  # (model, thread name) of each warm-up
+        self.warm_gate = None  # threading.Event a warm-up waits for
+        self.order = []  # "warm" and "chat", in the order they were asked
+        self.lists = 0  # /api/ps reads
 
     def installed(self, timeout_s=None):
         return ["qwen3:8b"]
 
+    def loaded(self, timeout_s=None):
+        self.lists += 1
+        return list(self.memory)
+
+    def warm(self, model, timeout_s=None):
+        self.warms.append((model, threading.current_thread().name))
+        self.order.append("warm")
+        if self.warm_gate is not None:
+            self.warm_gate.wait(WAIT_S)
+        self.memory = [model]
+
     def chat(self, model, system, user, max_tokens=None, timeout_s=None):
+        self.order.append("chat")
         self.calls.append((system, user, timeout_s))
         self.entered.set()
         if self.gate is not None:
@@ -1948,6 +1965,122 @@ class MainTest(unittest.TestCase):
 
 def _forbidden(*args, **kwargs):
     raise AssertionError("tests must use a fake registry, never the real Run key")
+
+
+class WarmUpAppTest(RewriteCase):
+    """The rewrite model loads in the background: at start, and when a mouse 5 hold starts."""
+
+    def into_claude(self):
+        self.api.under_pointer = CLAUDE_HWND
+        self.api.foreground = CLAUDE_HWND
+
+    def started(self, quill=None):
+        quill = self.start(quill)
+        wait_for(lambda: self.ollama.lists, "the start warm-up check")  # it first reads what is in memory
+        wait_for(lambda: not quill.warmer.busy, "the start warm-up to end")
+        return quill
+
+    def test_start_loads_a_model_not_in_memory_on_its_own_thread(self):
+        self.ollama.memory = []
+        with self.assertLogs("quill", level="INFO") as logs:
+            self.started()
+        self.assertEqual(self.ollama.warms, [("qwen3:8b", "quill-model-warm-up")])
+        self.assertIn("model warm-up (start) done", "\n".join(logs.output))
+        self.assertEqual(self.ollama.calls, [])  # nothing is generated
+
+    def test_start_leaves_another_projects_model_alone(self):
+        self.ollama.memory = ["other:14b"]
+        with self.assertLogs("quill.ollama", level="INFO") as logs:
+            self.started()
+        self.assertEqual(self.ollama.warms, [])
+        self.assertEqual(self.ollama.memory, ["other:14b"])
+        self.assertIn("skipped: Ollama holds another model", "\n".join(logs.output))
+
+    def test_only_a_mouse_5_hold_warms_the_model(self):
+        self.started()
+        self.assertEqual(self.ollama.warms, [])  # already in memory at start
+        self.hold(WORDS)  # mouse 4, long: rewritten without a warm-up
+        self.hold((1, 2, 3), which=MIDDLE)
+        self.assertEqual(self.ollama.warms, [])
+        self.assertEqual(len(self.ollama.calls), 1)
+        self.into_claude()
+        self.ollama.reply = "W1 w2 w3."
+        self.hold((1, 2, 3), which=XBUTTON2)
+        outcome = self.app.sessions.outcomes[-1]
+        self.assertEqual((outcome.action, outcome.reason, outcome.rewrite), ("send_polished", S.SENT_ENTER,
+                                                                             R.REWRITTEN))
+        # Started by the hold, run on the warm-up thread: never on the hook or session threads.
+        self.assertEqual(self.ollama.warms, [("qwen3:8b", "quill-model-warm-up")])
+
+    def test_no_warm_up_without_the_rewrite(self):
+        triggers = tuple(dataclasses.replace(t, inputs=()) if t.action == "send_polished" else t
+                         for t in self.config.triggers)
+        rewrite = dataclasses.replace(self.config.autorewrite, enabled=False)
+        self.ollama.memory = []
+        quill = self.make_app(self.make_config(autorewrite=rewrite, triggers=triggers), rewrite_client=self.ollama)
+        self.assertIsNone(quill.warmer)
+        self.start(quill)
+        self.hold(WORDS, quill=quill)
+        quill.stop()
+        self.assertEqual((self.ollama.warms, self.ollama.calls), ([], []))
+
+    def test_with_the_rewrite_off_only_a_mouse_5_hold_warms_the_model(self):
+        quill = self.rewriting_app(enabled=False)
+        self.ollama.memory = []
+        with self.assertLogs("quill", level="INFO") as logs:
+            self.start(quill)
+            time.sleep(0.2)  # past the moment a start warm-up would begin
+        self.assertEqual((self.ollama.warms, self.ollama.lists), ([], 0))
+        self.assertNotIn("model warm-up (start)", "\n".join(logs.output))
+        self.hold(WORDS, quill=quill)  # mouse 4, long: [autorewrite] is off, no model call
+        self.assertEqual((self.ollama.warms, self.ollama.calls), ([], []))
+        self.into_claude()
+        self.ollama.reply = "W1 w2 w3."
+        self.hold((1, 2, 3), which=XBUTTON2, quill=quill)
+        self.assertEqual(self.ollama.warms, [("qwen3:8b", "quill-model-warm-up")])
+        self.assertEqual(quill.sessions.outcomes[-1].rewrite, R.REWRITTEN)
+
+    def test_a_cold_mouse_5_waits_for_the_load_then_is_corrected(self):
+        self.ollama.memory = ["other:14b"]  # left alone at start
+        self.started()
+        self.into_claude()
+        self.ollama.reply = "W1 w2 w3."
+        self.ollama.warm_gate = threading.Event()
+        self.addCleanup(self.ollama.warm_gate.set)
+        done = len(self.app.sessions.outcomes)
+        self.hold((1, 2, 3), which=XBUTTON2, wait=False)  # the capture started while the load is held
+        wait_for(lambda: self.ollama.warms, "the hold's warm-up")
+        time.sleep(0.1)
+        self.assertEqual(self.ollama.calls, [])  # the correction waits for the load
+        self.ollama.warm_gate.set()
+        outcome = self.outcomes(done + 1)[-1]
+        self.assertEqual((outcome.reason, outcome.rewrite), (S.SENT_ENTER, R.REWRITTEN))
+        self.assertEqual(self.ollama.order, ["warm", "chat"])
+        self.assertEqual(sent_segments(self.api), ["W1 w2 w3.", ""])
+
+    def test_a_load_slower_than_the_wait_types_the_dictation_within_the_bound(self):
+        quill = self.rewriting_app(load_wait_s=0.3)
+        self.ollama.memory = []
+        self.ollama.warm_gate = threading.Event()  # the load never ends during the session
+        self.addCleanup(self.ollama.warm_gate.set)
+        self.ollama.error = TimeoutError("timed out")  # the model call gives up at timeout_s
+        self.start(quill)
+        wait_for(lambda: self.ollama.warms, "the start warm-up")  # in flight from start
+        self.into_claude()
+        done = len(quill.sessions.outcomes)
+        self.hold((1, 2, 3), which=XBUTTON2, quill=quill, wait=False)
+        released = time.monotonic()
+        outcome = self.outcomes(done + 1, quill)[-1]
+        self.assertLess(time.monotonic() - released, 0.3 + 3.0)  # load_wait_s, then the (fake) timeout
+        self.assertEqual((outcome.reason, outcome.rewrite), (S.SENT_ENTER, R.TIMEOUT))
+        self.assertEqual(sent_segments(self.api), ["w1 w2 w3.", ""])  # the dictation as it was, then Enter
+        self.assertEqual(len(self.ollama.warms), 1)  # at most one warm-up in flight
+        self.ollama.warm_gate.set()
+        wait_for(lambda: not quill.warmer.busy, "the load to end")
+        self.ollama.error = None
+        self.ollama.reply = "W1 w2 w3."
+        self.hold((1, 2, 3), which=XBUTTON2, quill=quill)
+        self.assertEqual(quill.sessions.outcomes[-1].rewrite, R.REWRITTEN)
 
 
 if __name__ == "__main__":

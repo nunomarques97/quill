@@ -488,6 +488,29 @@ class ProjectContextTest(ConfigCase):
         self.assertNotIn("invented", str(caught.exception))
 
 
+class ClaudeCodeTest(ConfigCase):
+    """[claude_code]: the key that submits in the VS Code panel and the focus check of VS Code windows."""
+
+    def test_the_example_sends_with_enter_and_checks_the_focus(self) -> None:
+        settings = load_config(None).claude_code
+        self.assertEqual((settings.send_key, settings.focus_check), ("enter", True))
+        self.assertEqual(config.SEND_KEYS, ("enter", "ctrl+enter"))
+
+    def test_local_settings_are_read(self) -> None:
+        settings = self.load("[claude_code]\nsend_key = \"ctrl+enter\"\nfocus_check = false\n").claude_code
+        self.assertEqual((settings.send_key, settings.focus_check), ("ctrl+enter", False))
+        # One field alone keeps the other from the example.
+        self.assertEqual(self.load("[claude_code]\nfocus_check = false\n").claude_code.send_key, "enter")
+
+    def test_bad_values_are_refused(self) -> None:
+        for bad in ("\"Enter\"", "\"shift+enter\"", "\"ctrl + enter\"", "\"\"", "1", "true", "[\"enter\"]"):
+            message = self.rejected(f"[claude_code]\nsend_key = {bad}\n", "claude_code.send_key")
+            self.assertIn("enter, ctrl+enter", message)
+        for bad in ("1", "\"true\"", "\"yes\""):
+            self.rejected(f"[claude_code]\nfocus_check = {bad}\n", "claude_code.focus_check")
+        self.rejected("[claude_code]\nsend = \"enter\"\n", "claude_code.send")
+
+
 class CliTest(ConfigCase):
     def run_cli(self, *args: str) -> tuple[int, str, str]:
         out, err = io.StringIO(), io.StringIO()

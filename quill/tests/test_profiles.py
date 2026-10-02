@@ -14,7 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from quill import profiles
+from quill import profiles, uia
 from quill.cleanup import Cleanup, clean_text
 from quill.config import ProfileMatcher, load_config
 from quill.profiles import DEFAULT, Profiles, StyleError, WindowInfo, apply_profile, load_style_samples, style_prompt
@@ -378,6 +378,112 @@ class EnterRefusalTest(unittest.TestCase):
                          profiles.NO_LONGER_CLAUDE)
 
 
+EDITOR_TAB = "alpha | Invented topic - Visual Studio Code []"
+
+
+def focused(title=EDITOR_TAB, verdict=uia.CLAUDE_CODE_INPUT, process="Code.exe"):
+    return WindowInfo(process, "Chrome_WidgetWin_1", title, focus=verdict)
+
+
+class FocusVerdictTest(unittest.TestCase):
+    """A VS Code window without the marker is Claude Code only when its focused element is the message input."""
+
+    def test_only_the_claude_code_input_verdict_makes_claude_code(self):
+        for title in (EDITOR_TAB, "alpha | Invented topic - Visual Studio Code", "Invented topic - alpha - "
+                      "Visual Studio Code [] - Modified", "alpha - Visual Studio Code [Text Editor]"):
+            self.assertEqual(EXAMPLE.select(focused(title)), "claude-code", title)
+            self.assertTrue(EXAMPLE.is_claude_code(focused(title)))
+        for verdict in (uia.TEXT_EDITOR, uia.TERMINAL, uia.OTHER, uia.UNAVAILABLE, uia.TIMEOUT, None, "", "bogus"):
+            self.assertEqual(EXAMPLE.select(focused(verdict=verdict)), "vscode", verdict)
+            self.assertFalse(EXAMPLE.is_claude_code(focused(verdict=verdict)))
+
+    def test_the_verdict_counts_only_in_vscode(self):
+        self.assertEqual(EXAMPLE.select(focused(process="notepad.exe")), DEFAULT)
+        self.assertEqual(EXAMPLE.select(focused(process="")), DEFAULT)  # unreadable process
+        self.assertEqual(EXAMPLE.select(focused(title="PowerShell", process=TERMINAL)), DEFAULT)
+
+    def test_needs_focus_only_where_it_could_change_the_profile(self):
+        self.assertTrue(EXAMPLE.needs_focus(window("Code.exe", title=EDITOR_TAB)))
+        self.assertTrue(EXAMPLE.needs_focus(window("code.EXE", title="")))
+        self.assertFalse(EXAMPLE.needs_focus(window("Code.exe", title="a - Visual Studio Code [Claude Code]")))
+        self.assertFalse(EXAMPLE.needs_focus(window(TERMINAL, title="✳ Claude Code")))
+        self.assertFalse(EXAMPLE.needs_focus(window("notepad.exe")))
+        self.assertFalse(EXAMPLE.needs_focus(None))
+
+    def test_enter_after_typing_needs_the_input_focused_again(self):
+        before = focused()
+        self.assertIsNone(EXAMPLE.enter_refusal(before, focused()))
+        for verdict in (uia.TEXT_EDITOR, uia.TERMINAL, uia.OTHER, uia.UNAVAILABLE, uia.TIMEOUT, None):
+            self.assertEqual(EXAMPLE.enter_refusal(before, focused(verdict=verdict)), profiles.LEFT_INPUT, verdict)
+        # Even when the title now says Claude Code: the window was recognised by its focus.
+        marked = focused(title="alpha - Visual Studio Code [Claude Code]", verdict=uia.OTHER)
+        self.assertEqual(EXAMPLE.enter_refusal(before, marked), profiles.LEFT_INPUT)
+        self.assertEqual(EXAMPLE.enter_refusal(before, None), profiles.GONE)
+        dirty = focused(title="● a.py - " + EDITOR_TAB)
+        self.assertEqual(EXAMPLE.enter_refusal(before, dirty), profiles.BECAME_DIRTY)
+
+
+class FocusWindows(FakeWindows):
+    def __init__(self):
+        super().__init__()
+        self.titles[10] = EDITOR_TAB
+        self.windows[40] = 4
+        self.images[4] = "C:\\Invented\\notepad.exe"
+
+
+class Probe:
+    """A fake ``quill.uia.FocusProbe``: one verdict, or an error; records the windows asked."""
+
+    def __init__(self, verdict=uia.CLAUDE_CODE_INPUT, error=None):
+        self.verdict = verdict
+        self.error = error
+        self.asked = []
+        self.closed = False
+
+    def __call__(self, hwnd):
+        self.asked.append(hwnd)
+        if self.error is not None:
+            raise self.error
+        return self.verdict
+
+    def close(self):
+        self.closed = True
+
+
+class DescribeTest(unittest.TestCase):
+    def setUp(self):
+        self.api = FocusWindows()
+
+    def test_the_editor_tab_is_asked_and_recognised(self):
+        probe = Probe()
+        info = EXAMPLE.describe(self.api, 10, probe)
+        self.assertEqual((info.focus, EXAMPLE.select(info)), (uia.CLAUDE_CODE_INPUT, "claude-code"))
+        self.assertEqual(probe.asked, [10])
+
+    def test_no_question_where_the_answer_changes_nothing(self):
+        probe = Probe()
+        self.api.titles[10] = "alpha - Visual Studio Code [Claude Code]"
+        self.assertIsNone(EXAMPLE.describe(self.api, 10, probe).focus)  # the title already says Claude Code
+        self.assertIsNone(EXAMPLE.describe(self.api, 20, probe).focus)  # a terminal
+        self.assertIsNone(EXAMPLE.describe(self.api, 40, probe).focus)  # another program
+        self.assertIsNone(EXAMPLE.describe(self.api, 99, probe))  # gone
+        self.assertEqual(probe.asked, [])
+        self.assertIsNone(EXAMPLE.describe(self.api, 10, None, force_focus=True).focus)  # no probe at all
+        # Before an Enter, a window recognised by its focus is asked again even with the marker.
+        self.assertEqual(EXAMPLE.describe(self.api, 10, probe, force_focus=True).focus, uia.CLAUDE_CODE_INPUT)
+        self.assertIsNone(EXAMPLE.describe(self.api, 20, probe, force_focus=True).focus)  # never a terminal
+        self.assertEqual(probe.asked, [10])
+
+    def test_a_failing_or_odd_probe_is_never_claude_code(self):
+        with self.assertLogs("quill.profiles", level="WARNING") as logs:
+            info = EXAMPLE.describe(self.api, 10, Probe(error=RuntimeError("fake: zebracanary")))
+        self.assertEqual((info.focus, EXAMPLE.select(info)), (uia.UNAVAILABLE, "vscode"))
+        self.assertIn("focus check failed (RuntimeError)", "\n".join(logs.output))
+        self.assertNotIn("zebracanary", "\n".join(logs.output))
+        info = EXAMPLE.describe(self.api, 10, Probe(verdict=None))
+        self.assertEqual((info.focus, EXAMPLE.select(info)), (uia.UNAVAILABLE, "vscode"))
+
+
 # Invented words that must never reach the probe's output (titles, project names, paths).
 CANARIES = ("zebracanary", "quokkacanary", "lemurcanary", "Invented")
 
@@ -424,12 +530,13 @@ class ProbeTest(unittest.TestCase):
         folders = ProjectFolders([("zebracanary", "C:\\Invented\\zebracanary")], is_dir=lambda path: True,
                                  drives=lambda drive: 3)
         self.detector = ProjectDetector(folders, None)
+        self.focus = Probe(uia.OTHER)
 
     def run_main(self, *argv, sleeps=None):
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
                 mock.patch("quill.config.load_config", return_value=load_config(None)):
-            code = profiles.main(list(argv), parts=lambda config: (self.api, self.detector),
+            code = profiles.main(list(argv), parts=lambda config: (self.api, self.detector, self.focus),
                                  sleep=sleeps.append if sleeps is not None else self.fail)
         return code, out.getvalue(), err.getvalue()
 
@@ -442,23 +549,47 @@ class ProbeTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(out.strip(), "foreground: process Code.exe; class Chrome_WidgetWin_1; profile claude-code; "
                                       "rule claude-code #2 (process+title); marker claude-code; state suffix yes; "
-                                      "project vscode_title; mouse 5 Enter yes")
+                                      "focus other; project vscode_title; mouse 5 Enter yes")
         self.assert_private(out + err)
+        self.assertEqual((self.focus.asked, self.focus.closed), ([10], True))
+
+    def test_the_focused_claude_code_editor_tab(self):
+        self.api.foreground = 12
+        self.focus.verdict = uia.CLAUDE_CODE_INPUT
+        out = self.run_main("--probe")[1]
+        self.assertEqual(out.strip(), "foreground: process Code.exe; class Chrome_WidgetWin_1; profile claude-code; "
+                                      "rule claude-code (focus); marker empty; state suffix no; "
+                                      "focus claude_code_input; project vscode_title; mouse 5 Enter yes")
+        for verdict in (uia.TEXT_EDITOR, uia.TERMINAL, uia.OTHER, uia.UNAVAILABLE, uia.TIMEOUT):
+            self.focus.verdict = verdict
+            out = self.run_main("--probe")[1]
+            self.assertIn(f"profile vscode; rule vscode #1 (process); marker empty; state suffix no; focus {verdict}; ",
+                          out)
+            self.assertIn("mouse 5 Enter no", out)
+        self.assert_private(out)
+
+    def test_focus_check_off(self):
+        self.api.foreground = 12
+        self.focus = None
+        out = self.run_main("--probe")[1]
+        self.assertIn("profile vscode; rule vscode #1 (process); marker empty; state suffix no; focus n/a; ", out)
 
     def test_every_vscode_and_terminal_window(self):
         code, out, err = self.run_main("--probe", "--all")
         self.assertEqual(code, 0)
         lines = out.strip().splitlines()
         self.assertEqual(len(lines), 4)  # notepad and the untitled VS Code window are not listed
+        self.assertTrue(lines[0].startswith("window 1 (foreground): "))
         self.assertIn("profile claude-code; rule claude-code #2 (process+title); marker claude-code; "
-                      "state suffix yes", lines[0])
+                      "state suffix yes; focus other", lines[0])
         self.assertIn("profile vscode; rule vscode #1 (process); marker other; state suffix yes; "
-                      "project vscode_title; mouse 5 Enter no", lines[1])
+                      "focus n/a; project vscode_title; mouse 5 Enter no", lines[1])
         self.assertIn("profile vscode; rule vscode #1 (process); marker empty; state suffix no; "
-                      "project vscode_title; mouse 5 Enter no", lines[2])
+                      "focus n/a; project vscode_title; mouse 5 Enter no", lines[2])
         self.assertIn("process WindowsTerminal.exe; class CASCADIA_HOSTING_WINDOW_CLASS; profile claude-code; "
-                      "rule claude-code #1 (process+title); marker none; state suffix no; project terminal_title; "
-                      "mouse 5 Enter yes", lines[3])
+                      "rule claude-code #1 (process+title); marker none; state suffix no; focus n/a; "
+                      "project terminal_title; mouse 5 Enter yes", lines[3])
+        self.assertEqual(self.focus.asked, [10])  # the keyboard focus is in the foreground window only
         self.assert_private(out + err)
 
     def test_delay_unreadable_and_gone_windows(self):
@@ -466,7 +597,8 @@ class ProbeTest(unittest.TestCase):
         self.api.foreground = 30
         code, out, _ = self.run_main("--probe", "--delay", "2.5", sleeps=sleeps)
         self.assertEqual((code, sleeps), (0, [2.5]))
-        self.assertIn("profile default; rule none; marker none; state suffix no; project n/a; mouse 5 Enter no", out)
+        self.assertIn("profile default; rule none; marker none; state suffix no; focus n/a; project n/a; "
+                      "mouse 5 Enter no", out)
         self.api.foreground = 99
         self.assertIn("foreground: window gone", self.run_main("--probe")[1])
         self.api.foreground = 0

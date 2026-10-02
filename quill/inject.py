@@ -40,6 +40,7 @@ from quill.win32 import (
     SCAN_RETURN,
     SCAN_SHIFT,
     SHORTCUT_MODIFIERS,
+    VK_CONTROL,
     VK_RETURN,
     VK_SHIFT,
     KeyEvent,
@@ -47,6 +48,7 @@ from quill.win32 import (
 
 VK_BACK = 0x08
 SCAN_BACK = 0x0E
+SCAN_CONTROL = 0x1D
 
 # Modifiers that must be up for press_enter: Shift+Enter is a line break and
 # Ctrl/Alt/Windows+Enter are shortcuts, never the plain Enter that sends.
@@ -304,12 +306,14 @@ class Injector:
         log.info("erased %d characters", erased)
         return InjectResult(OK, erased, count)
 
-    def press_enter(self, target: Target | None) -> InjectResult:
-        """Press one plain Enter in ``target`` (the send-to-Claude triggers only).
+    def press_enter(self, target: Target | None, ctrl: bool = False) -> InjectResult:
+        """Press one plain Enter in ``target`` (the send-to-Claude triggers only); ``ctrl``: Ctrl+Enter.
 
         Refused, without waiting, when the target is gone, reused, hung,
         elevated or no longer the foreground window, or when Shift, Ctrl, Alt
-        or a Windows key is held.
+        or a Windows key is held. Ctrl+Enter is one SendInput call with its own
+        Ctrl down and up; when only part of it is inserted, a Ctrl up follows
+        so Ctrl is never left down.
         """
         problem = self._preflight(target)
         if problem is None and any(self.api.key_down(vk) for vk in ENTER_MODIFIERS):
@@ -317,11 +321,16 @@ class Injector:
         if problem is not None:
             return self._fail(problem[0], 0, 1, problem[1])
         events = [KeyEvent(VK_RETURN, SCAN_RETURN, 0), KeyEvent(VK_RETURN, SCAN_RETURN, KEYEVENTF_KEYUP)]
+        if ctrl:
+            events = [KeyEvent(VK_CONTROL, SCAN_CONTROL, 0), *events,
+                      KeyEvent(VK_CONTROL, SCAN_CONTROL, KEYEVENTF_KEYUP)]
         sent = self.api.send_input(events)
         if sent != len(events):
             detail = f"SendInput inserted {sent} of {len(events)} events (error {self.api.last_error()})"
+            if ctrl and sent > 0:
+                self.api.send_input([KeyEvent(VK_CONTROL, SCAN_CONTROL, KEYEVENTF_KEYUP)])
             return self._fail(SENDINPUT_FAILED, 0, 1, detail)
-        log.info("pressed Enter")
+        log.info("pressed %s", "Ctrl+Enter" if ctrl else "Enter")
         return InjectResult(OK, 1, 1)
 
     def _fail(self, reason: str, typed: int, total: int, detail: str, sequence: int | None = None) -> InjectResult:

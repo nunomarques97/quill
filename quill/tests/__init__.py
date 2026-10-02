@@ -1,7 +1,7 @@
 """Product tests. They never create windows, install hooks, send input, open the
 microphone, play sound, open shortcuts or programs, read other processes or touch
 the real clipboard or Claude Code settings: importing this package disables the real Win32 layer,
-the real hook installer, the real process reader, the real indicator window layer, the real sound
+the real hook installer, the real process reader, the real UI Automation reader, the real indicator window layer, the real sound
 player, the real speaker of the project names (Windows PowerShell), the real named events of the Claude Code alerts, the real launcher of
 the voice commands and the default path of the user's Claude Code settings,
 so any test that reaches them fails instead of acting.
@@ -17,6 +17,10 @@ def _forbidden(self: object, *args: object, **kwargs: object) -> None:
 win32.User32.__init__ = _forbidden  # type: ignore[method-assign]
 win32.LowLevelHooks.__init__ = _forbidden  # type: ignore[method-assign]
 win32.Processes.__init__ = _forbidden  # type: ignore[method-assign]
+
+from quill import uia as _uia  # noqa: E402
+
+_uia.ComUia.__init__ = _forbidden  # type: ignore[method-assign]
 
 from quill.indicator import window as _indicator_window  # noqa: E402
 

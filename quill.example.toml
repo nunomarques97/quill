@@ -254,6 +254,27 @@ cache = "local/context"
 max_age_h = 24
 build_timeout_s = 5.0
 
+# Claude Code in VS Code. focus_check: when the VS Code title does not say
+# Claude Code (the Claude Code editor tab, or a title without the
+# " [Claude Code]" marker), Quill asks Windows UI Automation, read-only,
+# which element has the keyboard focus. Only the message input of the Claude
+# Code extension (sidebar view or editor tab) counts as Claude Code; a file,
+# the integrated terminal, another webview (Markdown preview, settings) or
+# no answer within 0.8 s keeps the vscode profile: typed without Enter. The
+# check reads only the kind, class and id of the focused element and the
+# names of its parents, never text, and never moves the focus. It needs VS
+# Code to expose its accessibility tree, as it does with
+# "editor.accessibilitySupport": "on"; when it does not, the editor tab gets
+# the text without Enter. false turns the check off.
+# send_key: the key pressed after the text in the Claude Code panel of VS
+# Code: "enter" (default), or "ctrl+enter" when the extension setting
+# claudeCode.useCtrlEnterToSend is on (then Enter only adds a line). Line
+# breaks are typed as Shift+Enter either way. A Claude Code terminal always
+# gets Enter.
+[claude_code]
+send_key = "enter"
+focus_check = true
+
 # Personal data. Paths are relative to the repository and must stay inside
 # the ignored local/ folder. style is a folder of writing samples:
 # <profile>.txt (for example whatsapp.txt), or default.txt for every profile
@@ -298,8 +319,11 @@ style = "local/style"
 #   " [${focusedView}]" after ${appName} and the Claude Code view in the
 #   sidebar has the focus. Check a window with
 #   py -3.12 -m quill.profiles --probe --delay 5
-#   A Claude Code editor tab, the integrated terminal, a file or any other
-#   view gets the vscode profile: the text is typed without Enter.
+#   Any other focused view, an empty "[]" (the Claude Code editor tab) or no
+#   marker gets the vscode profile, unless the focus check of [claude_code]
+#   finds the Claude Code message input focused: then the window is
+#   claude-code too. The integrated terminal, a file or any other view keeps
+#   the vscode profile: the text is typed without Enter.
 [[profiles.claude-code]]
 processes = ["WindowsTerminal.exe"]
 titles = ["Claude Code"]

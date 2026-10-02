@@ -21,13 +21,16 @@ One finalizer thread takes the released sessions strictly in release order:
 it waits for the final text, runs the text pipeline (cleanup, vocabulary,
 learned corrections, the target's profile), types the text once into the
 session's own target and, for a send trigger (``send_polished``,
-``send_raw``, the older ``send_claude``), presses one plain Enter only after
-a successful injection into a Claude Code window; anywhere else the text
-stays typed without Enter, with the ``not_claude`` notice. Just before that
-Enter, ``enter_check(target, window)`` describes the target again (the
-``window`` the pipeline saw): when it is no longer the foreground window, no
-longer Claude Code, or its title gained a dirty marker (the text went into a
-file), no Enter is pressed and the ``enter_withheld`` notice is shown. A
+``send_raw``, the older ``send_claude``), presses one plain Enter (or
+Ctrl+Enter when the pipeline's ``send_key`` says so) only after a successful
+injection into a Claude Code window; anywhere else the text stays typed
+without Enter, with the ``not_claude`` notice. Just before that Enter,
+``enter_check(target, window)`` describes the target again (the ``window``
+the pipeline saw): when it is no longer the foreground window, no longer
+Claude Code (for a VS Code window recognised by its focused element: the
+focus is no longer in the Claude Code message input), or its title gained a
+dirty marker (the text went into a file), no Enter is pressed and the
+``enter_withheld`` notice is shown. A
 command session hands the final text, the spoken instruction, to
 ``quill.command.CommandMode``, which copies the selection, rewrites it with
 the local model and types the rewrite over it; the indicator shows ``command`` while it listens. A voice
@@ -139,6 +142,7 @@ SENT_ENTER = "sent"
 NOT_CLAUDE = "not_claude"
 ENTER_FAILED = "enter_failed"
 ENTER_WITHHELD = "enter_withheld"
+CTRL_ENTER = "ctrl+enter"  # [claude_code] send_key for claudeCode.useCtrlEnterToSend
 CANCELLED = "cancelled"
 WHILE_LOADING = "while_loading"
 MIC_ERROR = "mic_error"
@@ -283,6 +287,8 @@ class Processed:
     # The target window as the pipeline described it (``quill.profiles.WindowInfo``; None: unknown),
     # compared again before a send trigger's Enter.
     window: object | None = field(default=None, repr=False)
+    # The key a send trigger presses after the text: "enter", or "ctrl+enter" (``[claude_code] send_key``).
+    send_key: str = "enter"
 
 
 class TextPipeline(Protocol):
@@ -823,7 +829,7 @@ class SessionManager:
                     reason = NOT_CLAUDE
                 elif not self._may_press_enter(hold, processed):
                     reason = ENTER_WITHHELD
-                elif self._press_enter(hold):
+                elif self._press_enter(hold, processed):
                     reason = SENT_ENTER
                 else:
                     reason = ENTER_FAILED
@@ -929,9 +935,12 @@ class SessionManager:
             return False
         return True
 
-    def _press_enter(self, hold: _Hold) -> bool:
+    def _press_enter(self, hold: _Hold, processed: Processed) -> bool:
         try:
-            result = self.injector.press_enter(hold.target)
+            if processed.send_key == CTRL_ENTER:
+                result = self.injector.press_enter(hold.target, ctrl=True)
+            else:
+                result = self.injector.press_enter(hold.target)
         except Exception as exc:  # noqa: BLE001 - the text is typed already: report the Enter only
             log.error("session %d: Enter failed (%s)", hold.number, type(exc).__name__)
             return False

@@ -57,6 +57,9 @@ REWRITE_WORDS_RANGE = (10, 1000)
 REWRITE_TIMEOUT_RANGE = (0.5, 30.0)
 ENRICH_TIMEOUT_RANGE = (1.0, 60.0)
 UNDO_WINDOW_RANGE = (5, 600)
+# The key that submits a prompt in the Claude Code panel of VS Code: Enter, or Ctrl+Enter when the
+# extension's claudeCode.useCtrlEnterToSend setting is on.
+SEND_KEYS = ("enter", "ctrl+enter")
 
 # Virtual-key codes of the inputs a trigger may use.
 BUTTONS = {"middle": 0x04, "xbutton1": 0x05, "xbutton2": 0x06}
@@ -101,6 +104,7 @@ SCHEMA: dict[str, object] = {
     "claude_alert": {"enabled": None, "sound": None, "filter": None, "speak_project": None, "speech_volume": None,
                      "speech_rate": None},
     "voice_commands": {"shortcut_dirs": None, "model": None},
+    "claude_code": {"send_key": None, "focus_check": None},
     "project_context": {"folders": NAMES_TABLE, "cache": None, "max_age_h": None, "build_timeout_s": None},
     "paths": {"vocabulary": None, "corrections": None, "style": None},
     "profiles": {name: {"processes": None, "classes": None, "titles": None} for name in PROFILE_NAMES},
@@ -187,6 +191,17 @@ class VoiceSettings:
 
 
 @dataclass(frozen=True)
+class ClaudeCode:
+    """``[claude_code]``: ``send_key`` is the key the send triggers press after the text in the
+    Claude Code panel of VS Code (``SEND_KEYS``; a Claude Code terminal always gets Enter), and
+    ``focus_check`` lets Quill ask UI Automation which element has the focus in a VS Code window
+    whose title does not say Claude Code (``quill.uia``), so the Claude Code editor tab is found."""
+
+    send_key: str = "enter"
+    focus_check: bool = True
+
+
+@dataclass(frozen=True)
 class ProjectContext:
     """``[project_context]``: ``folders`` maps a project name to its absolute local
     folder (only in the ignored ``local/quill.toml``); ``quill.projects`` reads it
@@ -224,6 +239,7 @@ class Config:
     claude_alert: ClaudeAlert = ClaudeAlert()
     voice: VoiceSettings = VoiceSettings()
     project_context: ProjectContext = ProjectContext()
+    claude_code: ClaudeCode = ClaudeCode()
 
     def trigger(self, action: str) -> Trigger:
         for trigger in self.triggers:
@@ -486,6 +502,13 @@ def _project_context(data: dict[str, object]) -> ProjectContext:
     )
 
 
+def _claude_code(data: dict[str, object]) -> ClaudeCode:
+    return ClaudeCode(
+        send_key=_choice(_get(data, "claude_code.send_key"), "claude_code.send_key", SEND_KEYS),
+        focus_check=_bool(_get(data, "claude_code.focus_check"), "claude_code.focus_check"),
+    )
+
+
 def _min_hold(value: object) -> int:
     low, high = MIN_HOLD_RANGE
     if not isinstance(value, int) or isinstance(value, bool) or not low <= value <= high:
@@ -564,6 +587,7 @@ def validate(data: dict[str, object]) -> Config:
         claude_alert=_claude_alert(data),
         voice=_voice(data),
         project_context=_project_context(data),
+        claude_code=_claude_code(data),
     )
 
 

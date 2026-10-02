@@ -29,7 +29,7 @@ from quill import sound
 from quill import speech as SP
 from quill import startup
 from quill import vocabulary as V
-from quill.config import EXAMPLE_CONFIG, ClaudeAlert, VoiceSettings, load_config
+from quill.config import EXAMPLE_CONFIG, ClaudeAlert, ClaudeCode, VoiceSettings, load_config
 from quill.corrections import CorrectionStore
 from quill.edits import UNDO_EDITED, UNDO_ENTERED, UNDO_EXPIRED, UNDO_MESSAGES, UNDO_NOTHING, UNDO_OTHER_WINDOW, \
     UNDO_UNSURE
@@ -54,6 +54,8 @@ from quill.tests.test_edits import FakeLayout
 from quill.tests.test_shortcuts import CODE as SHORTCUT_CODE
 from quill.tests.test_shortcuts import FakeLauncher, write_link
 from quill.tests.test_streaming import FakeModel, speech
+from quill.tests.test_uia import CLAUDE_CHAIN, CLAUDE_INPUT, FakeReader, Node, webview, workbench
+from quill.uia import EDIT, Focus, FocusProbe
 from quill.tests.test_voice import word_tokens
 from quill.shortcuts import list_shortcuts
 from quill.voice import VOICE_PROMPT, voice_hints
@@ -61,6 +63,7 @@ from quill.whisper import Transcript, Word
 from quill.win32 import (
     INTEGRITY_MEDIUM,
     LLKHF_INJECTED,
+    VK_CONTROL,
     VK_MBUTTON,
     VK_RCONTROL,
     VK_RETURN,
@@ -1592,6 +1595,177 @@ class PolishAppTest(RewriteCase):
         outcome = quill.sessions.outcomes[-1]
         self.assertEqual((outcome.reason, outcome.enrichment), (S.SENT_ENTER, "enrich_enriched"))
         self.assertNotIn("<project_summary>", self.ollama.calls[1][1])
+
+
+def tree(element, ancestors, root=CLAUDE_HWND):
+    """A fake UI Automation read of the focused element in window ``root``."""
+    return Focus(element, ancestors, root)
+
+
+CLAUDE_FOCUSED = tree(CLAUDE_INPUT, CLAUDE_CHAIN)
+# Focused elements that are not the Claude Code input, as read in VS Code (invented names).
+NOT_CLAUDE_FOCUSED = {
+    "text editor": tree(Node(50026, "native-edit-context"),
+                        workbench(Node(50026, "overflow-guard"), Node(50026, "monaco-editor vs-dark"))),
+    "terminal": tree(Node(EDIT, "xterm-helper-textarea"), workbench(Node(50026, "terminal xterm"))),
+    "markdown preview": tree(Node(50030, "vscode-body"), webview()),
+    "settings": tree(Node(EDIT, "monaco-inputbox"), workbench(Node(50026, "settings-editor"))),
+    "another window": tree(CLAUDE_INPUT, CLAUDE_CHAIN, root=OTHER_HWND),
+    "nothing focused": None,
+}
+
+
+class EditorTabTest(RewriteCase):
+    """The Claude Code editor tab (and any VS Code title without the marker): recognised by its focused element."""
+
+    TAB_TITLE = "invented | Invented topic - Visual Studio Code []"
+    ENRICHED = PolishAppTest.ENRICHED
+
+    def setUp(self):
+        super().setUp()
+        self.project = self.folder / "invented"
+        self.project.mkdir()
+        self.packs = FakePacks()
+        self.ollama = SequenceOllama(REWRITTEN, self.ENRICHED)
+        self.reader = FakeReader(CLAUDE_FOCUSED)
+        self.gate = threading.Event()
+        self.addCleanup(self.gate.set)
+        self.api.images[CLAUDE_PID] = "C:\\Invented\\Code.exe"
+        self.api.titles[CLAUDE_HWND] = self.TAB_TITLE
+        self.api.under_pointer = CLAUDE_HWND
+        self.api.foreground = CLAUDE_HWND
+        self.app = self.tab_app()
+
+    def tab_app(self, budget_s=2.0, **changes):
+        context = dataclasses.replace(self.config.project_context, folders=(("invented", self.project),))
+        rewrite = dataclasses.replace(self.config.autorewrite, min_words=10)
+        self.probe = FocusProbe(lambda: self.reader, budget_s=budget_s)
+        return self.make_app(self.make_config(autorewrite=rewrite, project_context=context, **changes),
+                             rewrite_client=self.ollama, layout=FakeLayout(), context_packs=self.packs,
+                             focus_probe=self.probe)
+
+    def test_the_editor_tab_gets_the_pack_the_enrichment_and_one_enter(self):
+        self.start()
+        with self.assertLogs("quill.app", level="INFO") as logs:
+            self.hold(WORDS, which=XBUTTON2)
+        outcome = self.app.sessions.outcomes[-1]
+        self.assertEqual((outcome.reason, outcome.rewrite, outcome.enrichment),
+                         (S.SENT_ENTER, R.REWRITTEN, "enrich_enriched"))
+        self.assertEqual(self.packs.folders, [self.project])
+        self.assertIn("<project_terms>", self.ollama.calls[0][1])  # context mode
+        self.assertEqual(sent_segments(self.api), [self.ENRICHED, ""])
+        self.assertEqual(self.api.enter_presses(), [True, True, True, True, False])  # Shift+Enter lines, one Enter
+        self.assertEqual(self.reader.reads, 2)  # before typing, and again before the Enter
+        self.assertIn("focus check: claude_code_input (claude-code profile)", "\n".join(logs.output))
+        self.assertNotIn("invented", "\n".join(logs.output).replace("quill.app", ""))
+
+    def test_a_title_without_any_marker_gets_enter_too(self):
+        self.start()
+        for number, title in enumerate(("invented | Invented topic - Visual Studio Code",
+                                        "Invented topic - invented - Visual Studio Code [] - Modified"), start=1):
+            self.api.titles[CLAUDE_HWND] = title
+            self.hold((number,), which=MIDDLE)
+            self.assertEqual(self.app.sessions.outcomes[-1].reason, S.SENT_ENTER, title)
+        self.assertEqual(self.api.enter_presses(), [False, False])
+
+    def test_any_other_focus_types_without_enter(self):
+        self.start()
+        for label, read in NOT_CLAUDE_FOCUSED.items():
+            self.reader.focus = read
+            for which in (XBUTTON2, MIDDLE):
+                self.hold((1,), which=which)
+                outcome = self.app.sessions.outcomes[-1]
+                self.assertEqual((outcome.reason, outcome.enrichment), (S.NOT_CLAUDE, None), label)
+        self.assertEqual(self.api.enter_presses(), [])
+        self.assertEqual(self.packs.folders, [])  # mouse 5 kept today's plain correction
+
+    def test_a_raising_reader_never_gets_enter(self):
+        self.reader.error = OSError("fake: COM failure")
+        self.start()
+        self.hold((1,), which=XBUTTON2)
+        self.assertEqual(self.app.sessions.outcomes[-1].reason, S.NOT_CLAUDE)
+        self.assertEqual(self.api.enter_presses(), [])
+
+    def test_a_slow_reader_times_out_without_enter(self):
+        self.reader.gate = self.gate
+        quill = self.tab_app(budget_s=0.05)
+        self.start(quill)
+        self.hold((1,), which=XBUTTON2, quill=quill)
+        self.assertEqual(quill.sessions.outcomes[-1].reason, S.NOT_CLAUDE)
+        self.assertEqual(self.api.enter_presses(), [])
+
+    def withheld(self, change):
+        """Mouse 5 into the editor tab; ``change()`` runs once the text is typed, before Enter."""
+        self.start()
+        self.api.after_send = lambda index: change()
+        with self.assertLogs("quill.session", level="WARNING") as logs:
+            self.hold((1,), which=MIDDLE)
+        outcome = self.app.sessions.outcomes[-1]
+        self.assertEqual((outcome.reason, outcome.typed), (S.ENTER_WITHHELD, len("w1.")))
+        self.assertEqual(self.api.enter_presses(), [])
+        self.assertEqual(self.indicator.last, ("show", ERROR, S.MESSAGES[S.ENTER_WITHHELD]))
+        return "\n".join(logs.output)
+
+    def test_no_enter_when_the_focus_left_the_input_before_enter(self):
+        for label, read in NOT_CLAUDE_FOCUSED.items():
+            with self.subTest(label):
+                self.api.calls.clear()
+                self.reader.focus = CLAUDE_FOCUSED
+
+                def leave(read=read):
+                    self.reader.focus = read
+
+                self.assertIn("Enter withheld (left_claude_input)", self.withheld(leave))
+                self.app.stop()
+                self.app = self.tab_app()
+
+    def test_no_enter_when_the_title_now_says_claude_code_but_the_focus_left(self):
+        def change():
+            self.api.titles[CLAUDE_HWND] = "invented | notes.md - Visual Studio Code [Claude Code]"
+            self.reader.focus = NOT_CLAUDE_FOCUSED["text editor"]
+
+        self.assertIn("Enter withheld (left_claude_input)", self.withheld(change))
+
+    def test_no_enter_when_the_check_before_enter_times_out(self):
+        self.app = self.tab_app(budget_s=0.2)
+        self.assertIn("Enter withheld (left_claude_input)",
+                      self.withheld(lambda: setattr(self.reader, "gate", self.gate)))
+
+    def test_no_enter_when_the_tab_became_dirty(self):
+        logs = self.withheld(lambda: self.api.titles.__setitem__(CLAUDE_HWND, "● " + self.TAB_TITLE))
+        self.assertIn("Enter withheld (editor_dirty)", logs)
+
+    def test_the_sidebar_marker_needs_no_focus_check(self):
+        self.api.titles[CLAUDE_HWND] = "invented | notes.md - Visual Studio Code [Claude Code]"
+        self.reader.focus = None  # would refuse: never asked
+        self.start()
+        self.hold((1,), which=MIDDLE)
+        self.assertEqual(self.app.sessions.outcomes[-1].reason, S.SENT_ENTER)
+        self.assertEqual(self.reader.reads, 0)
+
+    def test_focus_check_off_keeps_the_editor_tab_without_enter(self):
+        quill = self.tab_app(claude_code=ClaudeCode(focus_check=False))
+        self.start(quill)
+        self.hold((1,), which=XBUTTON2, quill=quill)
+        self.assertEqual(quill.sessions.outcomes[-1].reason, S.NOT_CLAUDE)
+        self.assertEqual((self.reader.reads, self.api.enter_presses()), (0, []))
+
+    def test_ctrl_enter_send_key_in_the_panel_only(self):
+        quill = self.tab_app(claude_code=ClaudeCode(send_key="ctrl+enter"))
+        self.start(quill)
+        self.hold((1,), which=MIDDLE, quill=quill)
+        self.assertEqual(quill.sessions.outcomes[-1].reason, S.SENT_ENTER)
+        last = [(event.vk, event.is_keyup) for event in self.api.events[-4:]]
+        self.assertEqual(last, [(VK_CONTROL, False), (VK_RETURN, False), (VK_RETURN, True), (VK_CONTROL, True)])
+        self.assertEqual(sent_segments(self.api), ["w1.", ""])
+        # A Claude Code terminal always gets a plain Enter.
+        self.api.images[CLAUDE_PID] = "C:\\Invented\\WindowsTerminal.exe"
+        self.api.titles[CLAUDE_HWND] = "Claude Code"
+        self.api.calls.clear()
+        self.hold((2,), which=MIDDLE, quill=quill)
+        self.assertEqual(quill.sessions.outcomes[-1].reason, S.SENT_ENTER)
+        self.assertNotIn(VK_CONTROL, [event.vk for event in self.api.events])
+        self.assertEqual(self.api.enter_presses(), [False])
 
 
 class WarmModelTest(unittest.TestCase):

@@ -78,8 +78,8 @@ from quill.indicator.render import ERROR, LOADING
 from quill.inject import FOREGROUND_CHANGED, NEWLINE_SHIFT_ENTER, NEWLINE_SPACE, Injector, Target
 from quill.notify import ALERTS_DIR, AlertListener
 from quill.projects import ProjectDetector, ProjectFolders
-from quill.profiles import (CLAUDE_CODE, GONE, Profiles, StyleError, WindowInfo, apply_profile, load_style_samples,
-                            style_prompt, window_info)
+from quill.profiles import (CLAUDE_CODE, GONE, Profiles, StyleError, WindowInfo, apply_profile, by_focus,
+                            load_style_samples, style_prompt, window_info)
 from quill.session import CLEANUP_FALLBACK, Processed, SessionManager
 from quill.streaming import StreamingTranscriber, options_for
 from quill.triggers import KEY, InputEvent
@@ -347,6 +347,8 @@ class TextPipeline:
             log.warning("target window not described (%s)", type(exc).__name__)
             info = None
         profile = self.profiles.select(info)
+        if info is not None and info.focus is not None:
+            log.info("focus check: %s (%s profile)", info.focus, profile)
         keep, matcher, names = self._lexicon  # one vocabulary for the whole text
         notice = None
         if self.config.cleanup_mode == "llm":
@@ -364,9 +366,11 @@ class TextPipeline:
             text = self.learner.apply(text)
         text = apply_profile(text, profile, keep)
         terminal = is_terminal(info)
-        newline, rewrite_profile = NEWLINE_SPACE, profile
+        newline, rewrite_profile, send_key = NEWLINE_SPACE, profile, "enter"
         if profile == CLAUDE_CODE:
             newline, rewrite_profile = (NEWLINE_SPACE, EDITOR_PROFILE) if terminal else (NEWLINE_SHIFT_ENTER, profile)
+            if not terminal:
+                send_key = self.config.claude_code.send_key  # the VS Code panel; a terminal always gets Enter
         project, folder = "", None
         if profile in (CLAUDE_CODE, EDITOR_PROFILE):
             found = (self.projects.detect(info, target.pid, claude_code=profile == CLAUDE_CODE)
@@ -376,7 +380,8 @@ class TextPipeline:
             else:
                 project = project_hint(info, names)
         return Processed(text, profile, profile == CLAUDE_CODE, notice, keep=keep, project=project,
-                         project_folder=folder, rewrite_profile=rewrite_profile, newline=newline, window=info)
+                         project_folder=folder, rewrite_profile=rewrite_profile, newline=newline, window=info,
+                         send_key=send_key)
 
 
 # ---------------------------------------------------------------- parts and app
@@ -404,6 +409,7 @@ class Parts:
     voice_model: object | None = None  # decodes the voice holds (load / transcribe / close); None: ``model`` does
     processes: object | None = None  # reads a terminal's Claude Code session (quill.win32.Processes); None: titles only
     context_packs: object | None = None  # project context packs (quill.context_pack.ContextPacks); None: no pack
+    focus_probe: object | None = None  # focus verdict of a VS Code window (quill.uia.FocusProbe); None: titles only
     vocabulary: Vocabulary = field(default_factory=Vocabulary)
     generic_terms: Sequence[str] = ()
     vocabulary_file: VocabularyFile | None = None  # read again before each dictation; None: never reloaded
@@ -428,9 +434,12 @@ class QuillApp:
         self.learner = Learner(CorrectionStore(config.corrections_path), clock=parts.wall_clock)
         self.projects = ProjectDetector(ProjectFolders(config.project_context.folders, config.voice.shortcut_dirs),
                                         parts.processes)
+        # The Claude Code editor tab of VS Code is recognised by its focused element (quill.uia).
+        self.focus_probe = parts.focus_probe if config.claude_code.focus_check else None
         self.pipeline = TextPipeline(config, vocabulary=parts.vocabulary, generic_terms=parts.generic_terms,
-                                     describe=lambda target: window_info(api, target.hwnd), learner=self.learner,
-                                     client=parts.client, projects=self.projects)
+                                     describe=lambda target: self.pipeline.profiles.describe(api, target.hwnd,
+                                                                                             self.focus_probe),
+                                     learner=self.learner, client=parts.client, projects=self.projects)
         self.command: CommandMode | None = None
         if config.trigger("command").enabled and parts.command_client is not None:
             # The names and terms a rewrite keeps verbatim follow the reloaded vocabulary.
@@ -589,6 +598,7 @@ class QuillApp:
             ("loader", self._join_loader),
             ("corrections", self._join_correction),
             ("edits", self._stop_edits),
+            ("focus check", self._close_focus_probe),
             ("indicator", self.parts.indicator.stop),
         )
         for name, step in steps:
@@ -684,7 +694,9 @@ class QuillApp:
 
         The target is described again: still the foreground window of the same
         process, still Claude Code, and no dirty marker gained since the text
-        was typed (``Profiles.enter_refusal``).
+        was typed (``Profiles.enter_refusal``). A VS Code window recognised by
+        its focused element is asked for the focus verdict again: the focus
+        must still be in the Claude Code message input.
         """
         api = self.parts.api
         if target is None or not target.hwnd:
@@ -693,7 +705,14 @@ class QuillApp:
             return FOREGROUND_CHANGED
         if api.window_process_id(target.hwnd) != target.pid:
             return GONE
-        return self.pipeline.profiles.enter_refusal(before, window_info(api, target.hwnd))
+        profiles = self.pipeline.profiles
+        again = isinstance(before, WindowInfo) and by_focus(before)
+        return profiles.enter_refusal(before, profiles.describe(api, target.hwnd, self.focus_probe if again else None,
+                                                                force_focus=again))
+
+    def _close_focus_probe(self) -> None:
+        if self.focus_probe is not None and hasattr(self.focus_probe, "close"):
+            self.focus_probe.close()
 
     def _follow(self, target: Target, text: str) -> Dictation:
         """The correction key and the manual-edit tracker work on ``text`` from now on."""
@@ -791,6 +810,7 @@ def real_parts(config: Config) -> Parts:
     from quill.shortcuts import ShellLauncher
     from quill.sound import WinsoundPlayer
     from quill.speech import real_speaker
+    from quill.uia import FocusProbe
     from quill.whisper import Whisper
     from quill.win32 import Processes, User32
 
@@ -820,6 +840,7 @@ def real_parts(config: Config) -> Parts:
         voice_model=(WarmModel(Whisper(config.voice.model))
                      if config.trigger("voice").enabled and config.voice.model != config.engine_model else None),
         processes=Processes(),
+        focus_probe=FocusProbe() if config.claude_code.focus_check else None,
         context_packs=(ContextPacks.from_settings(config.project_context)
                        if config.trigger("send_polished").enabled else None),
     )

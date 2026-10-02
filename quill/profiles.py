@@ -29,14 +29,20 @@ Code with the " [Claude Code]" marker that its ``${focusedView}`` title
 variable shows while the Claude Code sidebar view has the focus).
 ``Profiles.is_claude_code`` is what the send triggers ask before they press
 Enter. Any other focused view ("Text Editor" or its translation, "Terminal",
-"Explorer") or an empty one ("[]": the Claude Code editor tab, whose title
-alone cannot tell it from another tab) keeps the ``vscode`` profile: no Enter.
+"Explorer"), an empty one ("[]": the Claude Code editor tab, whose title
+alone cannot tell it from another tab) or no marker keeps the ``vscode``
+profile, unless the window was described with its focus verdict
+(``describe`` with a ``quill.uia.FocusProbe``, ``WindowInfo.focus``): a
+``Code.exe`` window whose focused element is the Claude Code message input
+(``claude_code_input``) is ``claude-code`` too, in the sidebar view as in
+the editor tab. Any other verdict (a text editor, the terminal, another
+webview, unavailable, timeout) changes nothing: no Enter.
 
 ``py -3.12 -m quill.profiles --probe`` describes the foreground window (after
 ``--delay`` seconds, so another window can be brought forward first), or
 with ``--all`` every visible VS Code and terminal window: process, class,
-profile and why, the project-detection reason code and whether mouse 5 would
-press Enter. It prints no title, project name or path, and only reads.
+profile and why, the focus verdict (foreground window only), the
+project-detection reason code and whether mouse 5 would press Enter. It prints no title, project name or path, and only reads.
 
 Profile rules (``apply_profile``) run last, on the cleaned, matched and
 corrected text. They are deterministic, change only punctuation, spacing and
@@ -71,15 +77,19 @@ Usage: py -3.12 -m quill.profiles --check [STYLE_DIR]
 from __future__ import annotations
 
 import argparse
+import logging
 import ntpath
 import sys
 import time
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from quill.cleanup import Token, _keep_set, _set_marks, capitalize, tokenize, tidy_punctuation
 from quill.config import PROFILE_NAMES, ProfileMatcher
+from quill.uia import CLAUDE_CODE_INPUT, UNAVAILABLE
+
+log = logging.getLogger("quill.profiles")
 
 DEFAULT = "default"
 CLAUDE_CODE = "claude-code"
@@ -92,6 +102,7 @@ DIRTY_MARK = "●"  # VS Code's ${dirty}: an editor has unsaved changes
 GONE = "target_gone"
 NO_LONGER_CLAUDE = "not_claude_code"
 BECAME_DIRTY = "editor_dirty"
+LEFT_INPUT = "left_claude_input"  # the focus is no longer in the Claude Code message input
 PROFILES = (*PROFILE_NAMES, DEFAULT)
 
 TECHNICAL = "technical"
@@ -134,6 +145,8 @@ class WindowInfo:
     process: str = ""
     window_class: str = ""
     title: str = ""
+    # The focused element's verdict (``quill.uia``), or None when it was not read.
+    focus: str | None = None
 
 
 def _read(read: object, *args: object) -> str:
@@ -166,6 +179,15 @@ def window_info(api: object, hwnd: int) -> WindowInfo | None:
 
 def _fold(value: str) -> str:
     return " ".join(value.split()).casefold()
+
+
+def by_focus(info: WindowInfo) -> bool:
+    """A VS Code window whose focused element is the Claude Code message input."""
+    return info.focus == CLAUDE_CODE_INPUT and is_vscode(info)
+
+
+def is_vscode(info: WindowInfo | None) -> bool:
+    return info is not None and _fold(info.process) == VSCODE_PROCESS
 
 
 @dataclass(frozen=True)
@@ -244,13 +266,46 @@ class Profiles:
         self.matchers = tuple(matchers)
 
     def select(self, info: WindowInfo | None) -> str:
-        """The first matching profile, or ``default`` (also for an unknown window)."""
+        """The first matching profile, or ``default`` (also for an unknown window).
+
+        A VS Code window whose focused element is the Claude Code message input is ``claude-code``.
+        """
         if info is None:
             return DEFAULT
+        if by_focus(info):
+            return CLAUDE_CODE
+        return self.by_title(info)
+
+    def by_title(self, info: WindowInfo) -> str:
+        """The profile from the matchers alone (process, class, title), without the focus verdict."""
         for matcher in self.matchers:
             if matches(matcher, info):
                 return matcher.name
         return DEFAULT
+
+    def needs_focus(self, info: WindowInfo | None) -> bool:
+        """Whether the focus verdict could change the profile: a VS Code window the title does not make Claude Code."""
+        return is_vscode(info) and self.by_title(info) != CLAUDE_CODE
+
+    def describe(self, api: object, hwnd: int, focus_probe: Callable[[int], str] | None = None, *,
+                 force_focus: bool = False) -> WindowInfo | None:
+        """``window_info`` plus the focus verdict when it could make the window Claude Code.
+
+        ``focus_probe`` (``quill.uia.FocusProbe``; None: never asked) is asked
+        only for a VS Code window the matchers do not already make Claude
+        Code, or with ``force_focus`` (the re-check before an Enter of a
+        window recognised by its focus) for any VS Code window. A probe that
+        raises gives no verdict.
+        """
+        info = window_info(api, hwnd)
+        if info is None or focus_probe is None or not (self.needs_focus(info) or (force_focus and is_vscode(info))):
+            return info
+        try:
+            verdict = focus_probe(hwnd)
+        except Exception as exc:  # noqa: BLE001 - no verdict is never Claude Code
+            log.warning("focus check failed (%s)", type(exc).__name__)
+            verdict = UNAVAILABLE
+        return replace(info, focus=verdict if isinstance(verdict, str) else UNAVAILABLE)
 
     def is_claude_code(self, info: WindowInfo | None) -> bool:
         """Whether the send trigger may press Enter in this window."""
@@ -267,7 +322,9 @@ class Profiles:
         if now is None:
             return GONE
         if not self.is_claude_code(now):
-            return NO_LONGER_CLAUDE
+            return LEFT_INPUT if before is not None and by_focus(before) else NO_LONGER_CLAUDE
+        if before is not None and by_focus(before) and not by_focus(now):
+            return LEFT_INPUT  # recognised by its focus: the focus must still be in the input
         if DIRTY_MARK in now.title and (before is None or DIRTY_MARK not in before.title):
             return BECAME_DIRTY
         return None
@@ -396,7 +453,9 @@ def marker_kind(info: WindowInfo, claude_markers: set[str]) -> tuple[str, bool]:
 
 
 def _rule(profiles: Profiles, info: WindowInfo) -> str:
-    """Which configured matcher chose the profile ('<profile> #<n> (<fields>)'), or 'none'."""
+    """Which configured matcher chose the profile ('<profile> #<n> (<fields>)'), 'claude-code (focus)', or 'none'."""
+    if by_focus(info):
+        return f"{CLAUDE_CODE} (focus)"
     count: dict[str, int] = {}
     for matcher in profiles.matchers:
         count[matcher.name] = count.get(matcher.name, 0) + 1
@@ -408,11 +467,16 @@ def _rule(profiles: Profiles, info: WindowInfo) -> str:
 
 
 def probe_line(api: object, profiles: Profiles, detector: object | None, hwnd: int, *,
-               claude_markers: set[str] | None = None) -> str:
-    """One window described for the probe: no title text, project name or path."""
+               claude_markers: set[str] | None = None, focus_probe: Callable[[int], str] | None = None) -> str:
+    """One window described for the probe: no title text, project name or path.
+
+    ``focus_probe`` is given for the foreground window only (the keyboard
+    focus is there); a VS Code window then shows its focus verdict, else
+    "focus n/a".
+    """
     from quill.command import is_terminal
 
-    info = window_info(api, hwnd)
+    info = profiles.describe(api, hwnd, focus_probe, force_focus=True)
     if info is None:
         return "window gone"
     markers = _claude_markers(profiles.matchers) if claude_markers is None else claude_markers
@@ -427,21 +491,25 @@ def probe_line(api: object, profiles: Profiles, detector: object | None, hwnd: i
         project = detector.detect_reason(info, pid, claude_code=profile == CLAUDE_CODE)[1]
     return (f"process {_safe_name(info.process or '(unreadable)')}; class {_safe_name(info.window_class)}; "
             f"profile {profile}; rule {_rule(profiles, info)}; marker {kind}; "
-            f"state suffix {'yes' if state else 'no'}; project {project}; "
+            f"state suffix {'yes' if state else 'no'}; focus {info.focus or 'n/a'}; project {project}; "
             f"mouse 5 Enter {'yes' if profile == CLAUDE_CODE else 'no'}")
 
 
-def probe(api: object, profiles: Profiles, detector: object | None = None, *, all_windows: bool = False) -> list[str]:
+def probe(api: object, profiles: Profiles, detector: object | None = None, *, all_windows: bool = False,
+          focus_probe: Callable[[int], str] | None = None) -> list[str]:
     """The probe's lines: the foreground window, or every visible VS Code and terminal window.
 
-    Only reads (window, class, process image and title queries): nothing is
-    sent, clicked, focused or changed, and no title, name or path is printed.
+    Only reads (window, class, process image and title queries, and the
+    read-only focus verdict of ``quill.uia`` for the foreground window):
+    nothing is sent, clicked, focused or changed, and no title, name or path
+    is printed.
     """
     from quill.command import is_terminal
 
+    foreground = int(api.foreground_window() or 0)
     if not all_windows:
-        hwnd = int(api.foreground_window() or 0)
-        return ["foreground: " + (probe_line(api, profiles, detector, hwnd) if hwnd else "no window")]
+        return ["foreground: " + (probe_line(api, profiles, detector, foreground, focus_probe=focus_probe)
+                                  if foreground else "no window")]
     markers = _claude_markers(profiles.matchers)
     lines: list[str] = []
     for hwnd in api.top_level_windows():
@@ -456,14 +524,17 @@ def probe(api: object, profiles: Profiles, detector: object | None = None, *, al
         if len(lines) == MAX_PROBED_WINDOWS:
             lines.append(f"(more than {MAX_PROBED_WINDOWS} windows: the rest is not listed)")
             break
-        lines.append(f"window {len(lines) + 1}: "
-                     + probe_line(api, profiles, detector, hwnd, claude_markers=markers))
+        lines.append(f"window {len(lines) + 1}{' (foreground)' if hwnd == foreground else ''}: "
+                     + probe_line(api, profiles, detector, hwnd, claude_markers=markers,
+                                  focus_probe=focus_probe if hwnd == foreground else None))
     return lines or ["no visible VS Code or terminal window"]
 
 
-def _real_probe_parts(config: object) -> tuple[object, object]:
-    """The read-only Win32 layer and the project detector of the probe (Windows only)."""
+def _real_probe_parts(config: object) -> tuple[object, object, object | None]:
+    """The read-only Win32 layer, the project detector and the focus probe (None when
+    ``[claude_code] focus_check`` is off) of the probe (Windows only)."""
     from quill.projects import ProjectDetector, ProjectFolders
+    from quill.uia import FocusProbe
     from quill.win32 import Processes, User32
 
     api = User32()
@@ -472,10 +543,10 @@ def _real_probe_parts(config: object) -> tuple[object, object]:
     except OSError:
         processes = None
     folders = ProjectFolders(config.project_context.folders, config.voice.shortcut_dirs)
-    return api, ProjectDetector(folders, processes)
+    return api, ProjectDetector(folders, processes), FocusProbe() if config.claude_code.focus_check else None
 
 
-def main(argv: list[str] | None = None, *, parts: Callable[[object], tuple[object, object]] | None = None,
+def main(argv: list[str] | None = None, *, parts: Callable[[object], tuple[object, object, object]] | None = None,
          sleep: Callable[[float], None] = time.sleep) -> int:
     from quill.config import ConfigError, load_config
 
@@ -483,8 +554,8 @@ def main(argv: list[str] | None = None, *, parts: Callable[[object], tuple[objec
     parser.add_argument("--check", nargs="?", const="", metavar="STYLE_DIR",
                         help="count the style samples per profile (default: paths.style of the config)")
     parser.add_argument("--probe", action="store_true",
-                        help="describe the foreground window: profile and why, project reason code, mouse 5 Enter "
-                             "(no title, name or path is printed; nothing is sent, clicked or focused)")
+                        help="describe the foreground window: profile and why, focus verdict, project reason code, "
+                             "mouse 5 Enter (no title, name or path is printed; nothing is sent, clicked or focused)")
     parser.add_argument("--delay", type=float, default=0.0, metavar="SECONDS",
                         help=f"with --probe: wait first (0 to {MAX_PROBE_DELAY_S:.0f} s) to bring a window forward")
     parser.add_argument("--all", action="store_true", help="with --probe: every visible VS Code and terminal window")
@@ -505,15 +576,20 @@ def main(argv: list[str] | None = None, *, parts: Callable[[object], tuple[objec
         return 1
     if args.probe:
         try:
-            api, detector = (parts or _real_probe_parts)(config)
+            api, detector, focus_probe = (parts or _real_probe_parts)(config)
         except OSError as exc:
             print(f"quill profiles: window probe unavailable ({type(exc).__name__})", file=sys.stderr)
             return 1
         if args.delay:
             print(f"quill profiles: probing in {args.delay:g} s; bring the window forward", flush=True)
             sleep(args.delay)
-        for line in probe(api, Profiles(config.profiles), detector, all_windows=args.all):
-            print(line)
+        try:
+            for line in probe(api, Profiles(config.profiles), detector, all_windows=args.all,
+                              focus_probe=focus_probe):
+                print(line)
+        finally:
+            if focus_probe is not None:
+                focus_probe.close()
         return 0
     style_dir = Path(args.check) if args.check else config.style_dir
     counts = []

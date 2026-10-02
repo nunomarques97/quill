@@ -5,11 +5,14 @@
 - VS Code (``Code.exe``): the project is read from the title
   (``vscode_project``). A project hub title "<project> | <editor> - Visual
   Studio Code [<view>]" (or "<project> | Visual Studio Code" with no editor
-  open) gives "<project>"; VS Code's standard title gives its folder part
-  ("file - folder - Visual Studio Code", "file - folder - profile - Visual
-  Studio Code [view]", or "folder - Visual Studio Code"). A dirty marker and
-  a trailing "[...]" are ignored; a title with only a file name, an empty
-  title, or an overlong or unprintable candidate gives no project.
+  open, or "<project> | - Visual Studio Code") gives "<project>"; VS
+  Code's standard title gives its folder part ("file - folder - Visual
+  Studio Code", "file - folder - profile - Visual Studio Code [view]", or
+  "folder - Visual Studio Code"). A dirty marker, the focused-view "[...]"
+  and the editor state suffix VS Code appends after it with its screen
+  reader optimization (" - Modified", ``quill.profiles.split_vscode_title``)
+  are ignored; a title with only a file name, an empty title, or an
+  overlong or unprintable candidate gives no project.
 - Claude Code in a terminal (the ``claude-code`` profile and a terminal
   window): a known project name (``[project_context] folders`` or a
   shortcut name of ``[voice_commands] shortcut_dirs``) in the title wins.
@@ -57,6 +60,7 @@ from pathlib import Path
 
 from quill.command import is_terminal
 from quill.notify import clean_name
+from quill.profiles import split_vscode_title
 from quill.shortcuts import LinkTarget, Listing, list_shortcuts, name_key, opens_vscode, read_link
 
 log = logging.getLogger("quill.projects")
@@ -102,7 +106,6 @@ VANISHED = "vanished"
 NO_GIT_ROOT = "no_git_root"
 FAILED = "failed"
 
-_VIEWS = re.compile(r"(?:\s*\[[^\]]*\])+$")
 _BRACKETS = re.compile(r"\[[^\]]*\]|\([^)]*\)")
 _FILE_NAME = re.compile(r"\.\w{1,5}$")
 _DIRTY = "●* "
@@ -122,17 +125,17 @@ def vscode_project(title: object) -> str | None:
     """The project named by a VS Code window title, or None; see the module docstring."""
     if not isinstance(title, str) or len(title) > MAX_TITLE_CHARS:
         return None
-    text = _VIEWS.sub("", " ".join(title.split())).lstrip(_DIRTY).strip()
-    if not text.endswith(APP_NAME):
+    split = split_vscode_title(title)  # the focused-view marker and the editor state suffix cut off
+    if split is None:
         return None
-    head = text[: -len(APP_NAME)]
+    head = split.head.lstrip(_DIRTY)
     if not head.endswith((" - ", HUB_SEPARATOR)):
         return None  # "Visual Studio Code" alone, or a name that only ends with it
     head = head[:-3].strip()
     if not head:
         return None
-    if HUB_SEPARATOR in head:
-        return _candidate(head.split(HUB_SEPARATOR, 1)[0])
+    if HUB_SEPARATOR in head + " ":  # "<project> | - Visual Studio Code": no editor open
+        return _candidate((head + " ").split(HUB_SEPARATOR, 1)[0])
     parts = [part.strip() for part in head.split(" - ")]
     if len(parts) == 1:
         candidate = _candidate(parts[0])
@@ -574,13 +577,19 @@ class ProjectDetector:
 
     def detect(self, info: object | None, pid: int = 0, *, claude_code: bool = False) -> Project | None:
         """``info`` describes the window (``WindowInfo``), ``pid`` is its process; ``claude_code`` its profile."""
+        project, reason = self.detect_reason(info, pid, claude_code=claude_code)
+        if reason != FAILED:
+            log.info("project: %s", reason)
+        return project
+
+    def detect_reason(self, info: object | None, pid: int = 0, *,
+                      claude_code: bool = False) -> tuple[Project | None, str]:
+        """(project or None, reason code) of the window; never raises."""
         try:
-            project, reason = self._detect(info, pid, claude_code)
+            return self._detect(info, pid, claude_code)
         except Exception as exc:  # noqa: BLE001 - detection never stops a dictation
             log.warning("project: %s (%s)", FAILED, type(exc).__name__)
-            return None
-        log.info("project: %s", reason)
-        return project
+            return None, FAILED
 
     def _named(self, name: str, source: str) -> tuple[Project | None, str]:
         folder = self.folders.folder_for(name)

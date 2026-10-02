@@ -114,6 +114,53 @@ class MatcherTest(unittest.TestCase):
         self.assertFalse(EXAMPLE.is_claude_code(window("chrome.exe", title="Page [Claude Code]")))
         self.assertTrue(EXAMPLE.is_claude_code(window(TERMINAL, title="Claude Code")))
 
+    def test_vscode_marker_before_the_screen_reader_state_suffix(self):
+        # editor.accessibilitySupport "on" with accessibility.windowTitleOptimized appends
+        # " - ${activeEditorState}" after the focused-view marker.
+        for title in (
+            "main.py - invented - Visual Studio Code [Claude Code] - Modified",
+            "● main.py - invented - Visual Studio Code [Claude Code] - Modified, 2 problems",
+            "alpha-app | notes.md - Visual Studio Code [Claude Code] - Untracked",
+            "alpha-app | notes.md - Visual Studio Code [Claude Code]",
+            "alpha-app | - Visual Studio Code [Claude Code]",
+            "[Claude Code].md - invented - Visual Studio Code [Claude Code] - Modified",
+        ):
+            info = window("Code.exe", "Chrome_WidgetWin_1", title)
+            self.assertEqual(EXAMPLE.select(info), "claude-code", title)
+        for title in (
+            "main.py - invented - Visual Studio Code [Text Editor] - Modified",
+            "main.py - invented - Visual Studio Code [Editor de Texto] - Modificado",
+            "alpha-app | Invented topic - Visual Studio Code []",  # the editor-tab panel: no positive marker
+            "alpha-app | Invented topic - Visual Studio Code [] - Modified",
+            "alpha-app | notes.md - Visual Studio Code [Terminal] - Modified",
+            "alpha-app | notes.md - Visual Studio Code [Explorer]",
+            "alpha-app | notes.md - Visual Studio Code - Modified",  # no marker at all
+            # The marker text inside a name before the app name, or after a state, never counts.
+            "notes [Claude Code] - invented - Visual Studio Code [Text Editor] - Modified",
+            "Visual Studio Code [Claude Code] - notes.md - invented - Visual Studio Code [Text Editor]",
+            "alpha-app | x [Claude Code] - Visual Studio Code [] - Modified",
+            "main.py - invented - Visual Studio Code [Text Editor] - x [Claude Code]",
+            "main.py - invented - Visual Studio Code [Claude Code] -",
+            "main.py - invented - Visual Studio Code [Claude Code] extra",
+        ):
+            info = window("Code.exe", "Chrome_WidgetWin_1", title)
+            self.assertEqual(EXAMPLE.select(info), "vscode", title)
+            self.assertFalse(EXAMPLE.is_claude_code(info), title)
+        # Terminal matchers are unchanged: the plain substring rule, also with a suffix.
+        self.assertTrue(EXAMPLE.is_claude_code(window(TERMINAL, title="✳ Claude Code - Modified")))
+        self.assertFalse(EXAMPLE.is_claude_code(window(TERMINAL, title="Visual Studio Code [Claude] - x")))
+
+    def test_split_vscode_title(self):
+        split = profiles.split_vscode_title("● a.py - alpha - Visual  Studio Code [Claude Code] - Modified")
+        self.assertEqual((split.head, split.marker, split.state), ("● a.py - alpha - ", "Claude Code", "Modified"))
+        split = profiles.split_vscode_title("alpha | - Visual Studio Code []")
+        self.assertEqual((split.marker, split.state), ("", None))
+        split = profiles.split_vscode_title("alpha - Visual Studio Code")
+        self.assertEqual((split.marker, split.state), (None, None))
+        for title in ("", "Notepad", "alpha - Visual Studio Code Insiders", "alpha - Visual Studio Code [x",
+                      "alpha - Visual Studio Code [x] y", "a" * 1025 + " - Visual Studio Code", None):
+            self.assertIsNone(profiles.split_vscode_title(title), title)
+
     def test_claude_code_needs_the_process_and_the_title(self):
         self.assertEqual(EXAMPLE.select(window(TERMINAL, title="PowerShell")), DEFAULT)
         self.assertEqual(EXAMPLE.select(window("chrome.exe", title="Claude Code docs")), DEFAULT)
@@ -310,6 +357,142 @@ class CliTest(unittest.TestCase):
         self.assertIn("not used (cleanup mode is rules)", out)
         self.assertNotIn("inventado", out)
         self.assertEqual(self.run_main()[0], 2)
+
+
+class EnterRefusalTest(unittest.TestCase):
+    def test_enter_needs_claude_code_and_no_new_dirty_marker(self):
+        before = window("Code.exe", title="a.py - alpha - Visual Studio Code [Claude Code]")
+        self.assertIsNone(EXAMPLE.enter_refusal(before, before))
+        self.assertIsNone(EXAMPLE.enter_refusal(before, window("Code.exe", title=before.title + " - Modified")))
+        self.assertEqual(EXAMPLE.enter_refusal(before, None), profiles.GONE)
+        self.assertEqual(EXAMPLE.enter_refusal(before, window("Code.exe", title="a.py - alpha - Visual Studio Code "
+                                                                                 "[Text Editor]")),
+                         profiles.NO_LONGER_CLAUDE)
+        dirty = window("Code.exe", title="● a.py - alpha - Visual Studio Code [Claude Code]")
+        self.assertEqual(EXAMPLE.enter_refusal(before, dirty), profiles.BECAME_DIRTY)
+        self.assertEqual(EXAMPLE.enter_refusal(None, dirty), profiles.BECAME_DIRTY)
+        self.assertIsNone(EXAMPLE.enter_refusal(dirty, dirty))  # already dirty before typing
+        terminal = window(TERMINAL, title="✳ Claude Code")
+        self.assertIsNone(EXAMPLE.enter_refusal(terminal, terminal))
+        self.assertEqual(EXAMPLE.enter_refusal(terminal, window(TERMINAL, title="PowerShell")),
+                         profiles.NO_LONGER_CLAUDE)
+
+
+# Invented words that must never reach the probe's output (titles, project names, paths).
+CANARIES = ("zebracanary", "quokkacanary", "lemurcanary", "Invented")
+
+
+class ProbeWindows(FakeWindows):
+    """The read-only queries of the probe; any other call (input, focus, window changes) fails the test."""
+
+    def __init__(self):
+        super().__init__()
+        self.windows = {10: 1, 11: 1, 12: 1, 20: 2, 30: 3, 40: 1}
+        self.images = {1: "C:\\Invented\\lemurcanary\\Code.exe", 2: "C:\\Invented\\WindowsTerminal.exe",
+                       3: "C:\\Invented\\notepad.exe"}
+        self.classes = {hwnd: "Chrome_WidgetWin_1" for hwnd in (10, 11, 12, 40)}
+        self.classes.update({20: "CASCADIA_HOSTING_WINDOW_CLASS", 30: "Notepad"})
+        self.titles = {
+            10: "● quokkacanary.py - zebracanary - Visual Studio Code [Claude Code] - Modified",
+            11: "zebracanary | quokkacanary.md - Visual Studio Code [Text Editor] - Modified",
+            12: "zebracanary | quokkacanary topic - Visual Studio Code []",
+            20: "✳ Claude Code zebracanary",
+            30: "zebracanary notes - Notepad",
+            40: "",
+        }
+        self.visible = {10, 11, 12, 20, 30, 40}
+        self.foreground = 10
+
+    def __getattr__(self, name):  # only the read queries above exist: send_input, focus calls, ... fail
+        raise AssertionError(f"the probe called {name}")
+
+    def foreground_window(self):
+        return self.foreground
+
+    def top_level_windows(self):
+        return list(self.windows)
+
+    def is_visible(self, hwnd):
+        return hwnd in self.visible
+
+
+class ProbeTest(unittest.TestCase):
+    def setUp(self):
+        from quill.projects import ProjectDetector, ProjectFolders
+
+        self.api = ProbeWindows()
+        folders = ProjectFolders([("zebracanary", "C:\\Invented\\zebracanary")], is_dir=lambda path: True,
+                                 drives=lambda drive: 3)
+        self.detector = ProjectDetector(folders, None)
+
+    def run_main(self, *argv, sleeps=None):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+                mock.patch("quill.config.load_config", return_value=load_config(None)):
+            code = profiles.main(list(argv), parts=lambda config: (self.api, self.detector),
+                                 sleep=sleeps.append if sleeps is not None else self.fail)
+        return code, out.getvalue(), err.getvalue()
+
+    def assert_private(self, text):
+        for canary in CANARIES:
+            self.assertNotIn(canary.casefold(), text.casefold())
+
+    def test_foreground_window(self):
+        code, out, err = self.run_main("--probe")
+        self.assertEqual(code, 0)
+        self.assertEqual(out.strip(), "foreground: process Code.exe; class Chrome_WidgetWin_1; profile claude-code; "
+                                      "rule claude-code #2 (process+title); marker claude-code; state suffix yes; "
+                                      "project vscode_title; mouse 5 Enter yes")
+        self.assert_private(out + err)
+
+    def test_every_vscode_and_terminal_window(self):
+        code, out, err = self.run_main("--probe", "--all")
+        self.assertEqual(code, 0)
+        lines = out.strip().splitlines()
+        self.assertEqual(len(lines), 4)  # notepad and the untitled VS Code window are not listed
+        self.assertIn("profile claude-code; rule claude-code #2 (process+title); marker claude-code; "
+                      "state suffix yes", lines[0])
+        self.assertIn("profile vscode; rule vscode #1 (process); marker other; state suffix yes; "
+                      "project vscode_title; mouse 5 Enter no", lines[1])
+        self.assertIn("profile vscode; rule vscode #1 (process); marker empty; state suffix no; "
+                      "project vscode_title; mouse 5 Enter no", lines[2])
+        self.assertIn("process WindowsTerminal.exe; class CASCADIA_HOSTING_WINDOW_CLASS; profile claude-code; "
+                      "rule claude-code #1 (process+title); marker none; state suffix no; project terminal_title; "
+                      "mouse 5 Enter yes", lines[3])
+        self.assert_private(out + err)
+
+    def test_delay_unreadable_and_gone_windows(self):
+        sleeps = []
+        self.api.foreground = 30
+        code, out, _ = self.run_main("--probe", "--delay", "2.5", sleeps=sleeps)
+        self.assertEqual((code, sleeps), (0, [2.5]))
+        self.assertIn("profile default; rule none; marker none; state suffix no; project n/a; mouse 5 Enter no", out)
+        self.api.foreground = 99
+        self.assertIn("foreground: window gone", self.run_main("--probe")[1])
+        self.api.foreground = 0
+        self.assertIn("foreground: no window", self.run_main("--probe")[1])
+        self.api.foreground = 10
+        del self.api.images[1]  # an elevated VS Code: the process cannot be read, so no process list matches
+        out = self.run_main("--probe")[1]
+        self.assertIn("process (unreadable); class Chrome_WidgetWin_1; profile default", out)
+        self.assertIn("mouse 5 Enter no", out)
+        self.assert_private(out)
+
+    def test_bad_arguments(self):
+        for argv in ((), ("--delay", "3"), ("--all",), ("--probe", "--delay", "61"), ("--probe", "--delay", "-1"),
+                     ("--probe", "--delay", "nan"), ("--probe", "--check")):
+            self.assertEqual(self.run_main(*argv)[0], 2, argv)
+
+    def test_probe_unavailable(self):
+        out, err = io.StringIO(), io.StringIO()
+
+        def broken(config):
+            raise OSError("fake: no Win32")
+
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+                mock.patch("quill.config.load_config", return_value=load_config(None)):
+            self.assertEqual(profiles.main(["--probe"], parts=broken), 1)
+        self.assertIn("window probe unavailable (OSError)", err.getvalue())
 
 
 if __name__ == "__main__":

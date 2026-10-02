@@ -52,7 +52,7 @@ O Enter só é carregado no Claude Code (a caixa do Claude Code na barra lateral
 
 Enquanto o Quill está ligado, o botão do meio deixa de fazer o que fazia nos outros programas (por exemplo, abrir uma ligação num separador novo ou fechar um separador no browser).
 
-No VS Code, o Quill só reconhece o Claude Code quando ele está aberto na barra lateral e tem o foco. Prepare o VS Code uma vez:
+No VS Code, o Quill reconhece o Claude Code pelo título da janela: quando a caixa do Claude Code na barra lateral tem o foco, o título tem `[Claude Code]` logo a seguir a "Visual Studio Code". Isto também funciona no formato da Central de Projetos («<projeto> | <ficheiro> - Visual Studio Code [<vista>]»). Se já fez a preparação abaixo, não precisa de mudar mais nenhuma definição do VS Code para a barra lateral. Se ainda não a fez, prepare o VS Code uma vez:
 
 1. No VS Code, carregue em Ctrl+Shift+P, escreva `Open User Settings (JSON)` e carregue em Enter.
 2. Dentro das chavetas `{ }`, acrescente estas duas linhas (se já existir uma linha `"claudeCode.preferredLocation"`, substitua-a):
@@ -66,6 +66,29 @@ No VS Code, o Quill só reconhece o Claude Code quando ele está aberto na barra
 4. Abra o Claude Code (o ícone do Claude na barra lateral) e clique na caixa de texto dele. O título da janela do VS Code passa a acabar em `[Claude Code]`.
 
 A partir daí, o botão 5 na caixa do Claude Code na barra lateral envia com Enter. Num ficheiro, no terminal integrado ou num separador do Claude Code aberto no editor, o texto é escrito sem Enter.
+
+**O que estava errado (2026-10-02):** o botão 5 no Claude Code do VS Code escrevia o texto sem Enter e sem o prompt enriquecido, e o projeto não era reconhecido. Foram analisados três casos do título; dois ficam corrigidos agora:
+
+- **Projeto sem ficheiro aberto (corrigido):** quando o projeto da Central de Projetos não tem nenhum ficheiro aberto, o título é «<projeto> | - Visual Studio Code». O Quill não lia o projeto neste formato e registava `no_name`. Agora lê.
+- **Estado do ficheiro no fim do título (corrigido, mas não foi visto nas suas janelas):** com `"editor.accessibilitySupport": "on"` (o modo para leitores de ecrã, ligado neste PC) e a opção `accessibility.windowTitleOptimized` (ligada por omissão), o código do VS Code instalado acrescenta ao fim do título o estado do ficheiro ativo, por exemplo «… - Visual Studio Code [Claude Code] - Modified». Isto só acontece quando o ficheiro ativo tem um estado (alterado, novo no Git ou com problemas). Nas janelas do VS Code abertas durante a verificação, nenhum título tinha este estado, por isso não está provado que tenha sido a causa dos seus registos. O Quill passa a aceitar `[Claude Code]` logo a seguir a "Visual Studio Code", com ou sem esse estado no fim, e lê o projeto nos dois casos. Um `[Claude Code]` no nome de um ficheiro, de uma pasta ou de um separador não conta.
+- **Claude Code num separador do editor (ainda não corrigido):** nas janelas verificadas, o que estava ativo era quase sempre uma conversa do Claude Code aberta como separador do editor. Aí o título acaba em `[]` (vazio), igual ao de outras janelas, por isso o Quill não consegue saber pelo título que é o Claude Code e continua a escrever o texto sem Enter nem enriquecimento. Este parece ser o caso principal do que viu. O reconhecimento deste caso é o passo seguinte desta fase; até lá, use o Claude Code na barra lateral para o botão 5 carregar em Enter.
+
+Para a barra lateral, não precisa de mudar nenhuma definição.
+
+Antes de carregar em Enter, o Quill volta a confirmar a janela: tem de continuar a ser a janela ativa, continuar a ser o Claude Code e o título não pode ter passado a mostrar `●` (o sinal do VS Code de um ficheiro com alterações por guardar, que indicaria que o texto foi parar a um ficheiro). Se algo disto falhar, o texto fica escrito sem Enter e o indicador avisa "O destino deixou de ser o Claude Code: escrito sem Enter".
+
+Para ver como o Quill classifica uma janela (só lê; não escreve, não clica e não muda de janela; não mostra títulos, nomes de projetos nem pastas):
+
+1. Abra o Terminal do Windows na pasta do Quill e escreva (sem carregar ainda em Enter):
+
+   ```
+   py -3.12 -m quill.profiles --probe --delay 5
+   ```
+
+2. Carregue em Enter e, nos 5 segundos seguintes, clique na caixa de texto do Claude Code no VS Code.
+3. Volte ao terminal. A linha deve dizer `profile claude-code`, `marker claude-code` e `mouse 5 Enter yes`; `project vscode_title` quer dizer que o projeto foi reconhecido pelo título. Num ficheiro aberto aparece `profile vscode`, `marker other` e `mouse 5 Enter no`. Se clicar num separador do Claude Code aberto no editor, aparece `profile vscode`, `marker empty` e `mouse 5 Enter no`: por agora, esse caso é escrito sem Enter (veja acima). `state suffix yes` quer dizer que o título tinha o estado do ficheiro no fim.
+
+Com `--all` em vez de `--delay 5`, a lista mostra todas as janelas visíveis do VS Code e dos terminais, uma por linha, sem precisar de mudar de janela.
 
 ## Reescrever texto selecionado (modo comando)
 
@@ -331,6 +354,7 @@ O indicador mostra "Erro" com a causa e o ditado seguinte funciona normalmente:
 - "Microfone indisponível; verifique o headset": ligue o headset e tente de novo.
 - "Nenhum campo de texto sob o ponteiro": aponte para um campo de texto antes de premir.
 - "A janela ativa mudou; o texto não foi escrito": não mude de janela até o texto aparecer.
+- "O destino deixou de ser o Claude Code: escrito sem Enter": o texto foi escrito, mas, antes do Enter, a janela já não era o Claude Code (mudou de janela, o foco saiu da caixa do Claude Code ou o texto foi parar a um ficheiro). Confirme o texto e carregue em Enter à mão, se for o caso.
 - "Janela de administrador: não é possível escrever": o Quill não escreve em janelas abertas como administrador.
 - "Ollama indisponível: texto limpo pelas regras": o texto foi escrito na mesma, limpo pelas regras.
 - "Ollama indisponível; ficou o texto original", "A reescrita demorou demais; ficou o texto original" ou "Reescrita recusada; ficou o texto original": o ditado foi escrito sem a revisão automática, tal como o disse.

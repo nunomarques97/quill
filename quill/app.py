@@ -75,10 +75,11 @@ from quill.edits import EditTracker, KeyTranslator, ManualEdits, RewriteUndo, Un
 from quill.focus import ClickToFocus
 from quill.hooks import TriggerHooks, monotonic_ms, real_hooks
 from quill.indicator.render import ERROR, LOADING
-from quill.inject import NEWLINE_SHIFT_ENTER, NEWLINE_SPACE, Injector, Target
+from quill.inject import FOREGROUND_CHANGED, NEWLINE_SHIFT_ENTER, NEWLINE_SPACE, Injector, Target
 from quill.notify import ALERTS_DIR, AlertListener
 from quill.projects import ProjectDetector, ProjectFolders
-from quill.profiles import CLAUDE_CODE, Profiles, StyleError, WindowInfo, apply_profile, load_style_samples, style_prompt, window_info
+from quill.profiles import (CLAUDE_CODE, GONE, Profiles, StyleError, WindowInfo, apply_profile, load_style_samples,
+                            style_prompt, window_info)
 from quill.session import CLEANUP_FALLBACK, Processed, SessionManager
 from quill.streaming import StreamingTranscriber, options_for
 from quill.triggers import KEY, InputEvent
@@ -375,7 +376,7 @@ class TextPipeline:
             else:
                 project = project_hint(info, names)
         return Processed(text, profile, profile == CLAUDE_CODE, notice, keep=keep, project=project,
-                         project_folder=folder, rewrite_profile=rewrite_profile, newline=newline)
+                         project_folder=folder, rewrite_profile=rewrite_profile, newline=newline, window=info)
 
 
 # ---------------------------------------------------------------- parts and app
@@ -476,7 +477,7 @@ class QuillApp:
             housekeeping=self._housekeeping, player=parts.player if config.claude_alert.sound else None,
             speaker=parts.speaker if config.claude_alert.sound and config.claude_alert.speak_project else None,
             context_pack=parts.context_packs.get if parts.context_packs is not None else None,
-            clock=parts.clock,
+            enter_check=self._enter_check, clock=parts.clock,
         )
         self.alerts: AlertListener | None = None
         if config.claude_alert.enabled and parts.alert_events is not None:
@@ -677,6 +678,22 @@ class QuillApp:
             self.undo.forget()
         else:
             self.undo.remember(dictation, original, target, newline)
+
+    def _enter_check(self, target: Target | None, before: WindowInfo | None) -> str | None:
+        """None when a send trigger may press Enter in ``target`` now, else a reason code (session thread).
+
+        The target is described again: still the foreground window of the same
+        process, still Claude Code, and no dirty marker gained since the text
+        was typed (``Profiles.enter_refusal``).
+        """
+        api = self.parts.api
+        if target is None or not target.hwnd:
+            return GONE
+        if api.foreground_window() != target.hwnd:
+            return FOREGROUND_CHANGED
+        if api.window_process_id(target.hwnd) != target.pid:
+            return GONE
+        return self.pipeline.profiles.enter_refusal(before, window_info(api, target.hwnd))
 
     def _follow(self, target: Target, text: str) -> Dictation:
         """The correction key and the manual-edit tracker work on ``text`` from now on."""

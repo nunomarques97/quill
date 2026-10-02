@@ -457,6 +457,81 @@ class SendClaudeTest(AppCase):
         self.assertEqual(self.api.enter_presses(), [False, False])
 
 
+class ScreenReaderTitleTest(AppCase):
+    """VS Code with its screen reader optimization: " - <editor state>" follows the focused-view marker."""
+
+    def setUp(self):
+        super().setUp()
+        self.api.images[CLAUDE_PID] = "C:\\Invented\\Code.exe"
+        self.start()
+        self.api.under_pointer = CLAUDE_HWND
+        self.api.foreground = CLAUDE_HWND
+
+    def test_the_claude_code_view_with_the_state_suffix_gets_enter(self):
+        titles = ("● main.py - invented - Visual Studio Code [Claude Code] - Modified",
+                  "invented | notes.md - Visual Studio Code [Claude Code] - Untracked, 1 problem",
+                  "invented | - Visual Studio Code [Claude Code]")
+        for number, title in enumerate(titles, start=1):
+            self.api.titles[CLAUDE_HWND] = title
+            self.hold((number,), which=XBUTTON2)
+            self.assertEqual(self.app.sessions.outcomes[-1].reason, S.SENT_ENTER, title)
+        self.assertEqual(self.api.enter_presses(), [False, False, False])
+
+    def test_an_ordinary_editor_tab_with_the_suffix_never_gets_enter(self):
+        titles = ("main.py - invented - Visual Studio Code [Text Editor] - Modified",
+                  "main.py - invented - Visual Studio Code [Editor de Texto] - Modificado",
+                  "invented | notes.md - Visual Studio Code [Terminal] - Modified",
+                  "invented | notes.md - Visual Studio Code [Explorer]",
+                  "invented | Invented topic - Visual Studio Code []",
+                  "invented | Invented topic - Visual Studio Code [] - Modified")
+        for number, title in enumerate(titles, start=1):
+            self.api.titles[CLAUDE_HWND] = title
+            for which in (XBUTTON2, MIDDLE):
+                self.hold((number,), which=which)
+                self.assertEqual(self.app.sessions.outcomes[-1].reason, S.NOT_CLAUDE, title)
+        self.assertEqual(self.api.enter_presses(), [])
+
+    def withheld_after_typing(self, change):
+        """Mouse 5 into the Claude Code view; ``change()`` runs once the text is typed, before Enter."""
+        self.api.titles[CLAUDE_HWND] = "main.py - invented - Visual Studio Code [Claude Code]"
+        self.api.after_send = lambda index: change()
+        with self.assertLogs("quill.session", level="WARNING") as logs:
+            self.hold((1,), which=XBUTTON2)
+        outcome = self.app.sessions.outcomes[-1]
+        self.assertEqual((outcome.reason, outcome.typed), (S.ENTER_WITHHELD, len("w1.")))
+        self.assertEqual(self.api.enter_presses(), [])
+        self.assertEqual(self.indicator.last, ("show", ERROR, S.MESSAGES[S.ENTER_WITHHELD]))
+        return "\n".join(logs.output)
+
+    def test_no_enter_when_the_title_gains_a_dirty_marker(self):
+        logs = self.withheld_after_typing(lambda: self.api.titles.__setitem__(
+            CLAUDE_HWND, "● main.py - invented - Visual Studio Code [Claude Code]"))
+        self.assertIn("Enter withheld (editor_dirty)", logs)
+        self.assertNotIn("invented", logs)
+
+    def test_no_enter_when_the_focus_left_the_claude_code_view(self):
+        logs = self.withheld_after_typing(lambda: self.api.titles.__setitem__(
+            CLAUDE_HWND, "main.py - invented - Visual Studio Code [Text Editor]"))
+        self.assertIn("Enter withheld (not_claude_code)", logs)
+
+    def test_no_enter_when_another_window_came_forward(self):
+        logs = self.withheld_after_typing(lambda: setattr(self.api, "foreground", TARGET.hwnd))
+        self.assertIn("Enter withheld (foreground_changed)", logs)
+
+    def test_no_enter_when_the_window_was_reused(self):
+        logs = self.withheld_after_typing(lambda: self.api.windows.__setitem__(CLAUDE_HWND, OTHER_PID_FOR_REUSE))
+        self.assertIn("Enter withheld (target_gone)", logs)
+
+    def test_an_already_dirty_title_still_gets_enter(self):
+        self.api.titles[CLAUDE_HWND] = "● main.py - invented - Visual Studio Code [Claude Code] - Modified"
+        self.hold((1,), which=XBUTTON2)
+        self.assertEqual(self.app.sessions.outcomes[-1].reason, S.SENT_ENTER)
+        self.assertEqual(self.api.enter_presses(), [False])
+
+
+OTHER_PID_FOR_REUSE = 77
+
+
 class LifecycleTest(AppCase):
     def test_start_stop_start(self):
         self.start()

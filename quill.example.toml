@@ -288,11 +288,16 @@ style = "local/style"
 # claude-code is also what the send triggers check before pressing Enter, so
 # it comes first and matches only a window that is Claude Code:
 # - Windows Terminal with "Claude Code" in the title;
-# - VS Code with the marker "[Claude Code]" at the end of the title. A title
-#   entry written in square brackets matches only at the end of the title,
-#   after a space, so a file named "[Claude Code].md" does not count. VS Code
-#   shows the marker only when its window.title setting ends with
-#   " [${focusedView}]" and the Claude Code view in the sidebar has the focus.
+# - VS Code with the marker "[Claude Code]" right after the last "Visual
+#   Studio Code" of the title. A title entry written in square brackets
+#   matches only at the end of the title, after a space; in VS Code it is the
+#   focused view after the app name, optionally followed by the " - <editor
+#   state>" suffix VS Code adds with editor.accessibilitySupport "on" (for
+#   example " - Modified"), so a file named "[Claude Code].md" does not
+#   count. VS Code shows the marker only when its window.title setting has
+#   " [${focusedView}]" after ${appName} and the Claude Code view in the
+#   sidebar has the focus. Check a window with
+#   py -3.12 -m quill.profiles --probe --delay 5
 #   A Claude Code editor tab, the integrated terminal, a file or any other
 #   view gets the vscode profile: the text is typed without Enter.
 [[profiles.claude-code]]

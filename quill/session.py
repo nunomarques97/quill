@@ -23,10 +23,14 @@ learned corrections, the target's profile), types the text once into the
 session's own target and, for a send trigger (``send_polished``,
 ``send_raw``, the older ``send_claude``), presses one plain Enter only after
 a successful injection into a Claude Code window; anywhere else the text
-stays typed without Enter, with the ``not_claude`` notice. A command session hands
-the final text, the spoken instruction, to ``quill.command.CommandMode``,
-which copies the selection, rewrites it with the local model and types the
-rewrite over it; the indicator shows ``command`` while it listens. A voice
+stays typed without Enter, with the ``not_claude`` notice. Just before that
+Enter, ``enter_check(target, window)`` describes the target again (the
+``window`` the pipeline saw): when it is no longer the foreground window, no
+longer Claude Code, or its title gained a dirty marker (the text went into a
+file), no Enter is pressed and the ``enter_withheld`` notice is shown. A
+command session hands the final text, the spoken instruction, to
+``quill.command.CommandMode``, which copies the selection, rewrites it with
+the local model and types the rewrite over it; the indicator shows ``command`` while it listens. A voice
 session (the ``voice`` trigger) never clicks, captures no target, types
 nothing and presses no Enter: its final text goes to ``quill.voice``
 (``voice.run``), and the indicator shows ``voice`` with the live words while
@@ -134,6 +138,7 @@ TYPED = "typed"
 SENT_ENTER = "sent"
 NOT_CLAUDE = "not_claude"
 ENTER_FAILED = "enter_failed"
+ENTER_WITHHELD = "enter_withheld"
 CANCELLED = "cancelled"
 WHILE_LOADING = "while_loading"
 MIC_ERROR = "mic_error"
@@ -159,6 +164,7 @@ MESSAGES = {
     INTERNAL_ERROR: "Erro interno; o texto não foi escrito",
     NOT_CLAUDE: "Não é o Claude Code: escrito sem Enter",
     ENTER_FAILED: "Texto escrito, mas o Enter não foi enviado",
+    ENTER_WITHHELD: "O destino deixou de ser o Claude Code: escrito sem Enter",
     CLEANUP_FALLBACK: "Ollama indisponível: texto limpo pelas regras",
     FOCUS_FAILED: "Nenhum campo de texto sob o ponteiro",
     inject.NO_TARGET: "Nenhum campo de texto sob o ponteiro",
@@ -181,8 +187,8 @@ MESSAGES = {
 }
 INTERRUPTED = " (escrita interrompida)"
 # Endings where the whole text was typed but something is worth showing.
-TYPED_NOTICES = frozenset({NOT_CLAUDE, ENTER_FAILED, CLEANUP_FALLBACK, *autorewrite.MESSAGES, *enrich.MESSAGES,
-                           enrich.ENRICHED})
+TYPED_NOTICES = frozenset({NOT_CLAUDE, ENTER_FAILED, ENTER_WITHHELD, CLEANUP_FALLBACK, *autorewrite.MESSAGES,
+                           *enrich.MESSAGES, enrich.ENRICHED})
 # The words line of the ``reviewing`` state while the model enriches a mouse 5 prompt.
 ENRICHING = "A enriquecer o prompt para o Claude Code…"
 # PCM16 mono at 16 kHz: bytes per second of audio.
@@ -274,6 +280,9 @@ class Processed:
     rewrite_profile: str | None = None
     # How line breaks are typed (``quill.inject`` newline policy).
     newline: str = NEWLINE_SPACE
+    # The target window as the pipeline described it (``quill.profiles.WindowInfo``; None: unknown),
+    # compared again before a send trigger's Enter.
+    window: object | None = field(default=None, repr=False)
 
 
 class TextPipeline(Protocol):
@@ -364,7 +373,9 @@ class SessionManager:
     ``speaker`` says the project names after them (``quill.speech.Speaker``;
     None: only the chime). ``context_pack(folder)`` returns the context pack
     of a project folder or None (``quill.context_pack.ContextPacks.get``;
-    None: mouse 5 corrects and enriches without a pack).
+    None: mouse 5 corrects and enriches without a pack). ``enter_check(target,
+    window)`` returns None when the send trigger may press Enter in ``target``
+    now, else a reason code (None: no check beyond the injector's own).
     """
 
     def __init__(self, *, transcriber: object, capture_factory: Callable[[Callable[[bytes], None]], object],
@@ -376,6 +387,7 @@ class SessionManager:
                  housekeeping: Callable[[], None] | None = None,
                  player: object | None = None, speaker: object | None = None,
                  context_pack: Callable[[Path], object | None] | None = None,
+                 enter_check: Callable[[Target | None, object | None], str | None] | None = None,
                  alert_repeat_s: float = ALERT_REPEAT_S,
                  clock: Callable[[], float] = time.perf_counter,
                  final_timeout_s: float = FINAL_TIMEOUT_S, poll_s: float = POLL_S) -> None:
@@ -396,6 +408,7 @@ class SessionManager:
         self.player = player
         self.speaker = speaker
         self.context_pack = context_pack
+        self.enter_check = enter_check
         self.alert_repeat_s = alert_repeat_s
         self.clock = clock
         self.final_timeout_s = final_timeout_s
@@ -808,6 +821,8 @@ class SessionManager:
             if hold.action in SEND_ACTIONS:
                 if not processed.claude_code:
                     reason = NOT_CLAUDE
+                elif not self._may_press_enter(hold, processed):
+                    reason = ENTER_WITHHELD
                 elif self._press_enter(hold):
                     reason = SENT_ENTER
                 else:
@@ -899,6 +914,20 @@ class SessionManager:
                  latency * 1000, (engine_at - hold.released_at) * 1000)
         seconds = VOICE_OPEN_SHOW_S if outcome.state == VOICE_OPEN else VOICE_NONE_SHOW_S
         self._end(hold, outcome.reason, latency=latency, shown=(outcome.state, outcome.text, seconds))
+
+    def _may_press_enter(self, hold: _Hold, processed: Processed) -> bool:
+        """The target is still the Claude Code window the text was typed into; False on any doubt."""
+        if self.enter_check is None:
+            return True
+        try:
+            problem = self.enter_check(hold.target, processed.window)
+        except Exception as exc:  # noqa: BLE001 - an unknown target never gets an Enter
+            log.error("session %d: target check before Enter failed (%s)", hold.number, type(exc).__name__)
+            return False
+        if problem is not None:
+            log.warning("session %d: Enter withheld (%s)", hold.number, problem)
+            return False
+        return True
 
     def _press_enter(self, hold: _Hold) -> bool:
         try:

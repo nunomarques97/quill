@@ -616,6 +616,67 @@ class SendClaudeTest(SessionCase):
         self.assertEqual(self.indicator.last, ("show", ERROR, S.MESSAGES[S.ENTER_FAILED]))
 
 
+class EnterCheckTest(SessionCase):
+    """The target is described again just before a send trigger's Enter."""
+
+    def setUp(self):
+        super().setUp()
+        self.checks = []  # (target, window) of each check
+        self.problem = None
+        self.check_error = None
+        self.manager.enter_check = self._check
+        self.ready()
+
+    def _check(self, target, window):
+        self.checks.append((target, window))
+        if self.check_error is not None:
+            raise self.check_error
+        return self.problem
+
+    def test_enter_when_the_target_is_still_claude_code(self):
+        self.focus.targets = [CLAUDE]
+        self.dictate(action="send_polished")
+        self.assertEqual(self.wait_outcomes(1)[0].reason, S.SENT_ENTER)
+        self.assertEqual(self.injector.enters, [CLAUDE])
+        self.assertEqual(len(self.checks), 1)
+        self.assertEqual(self.checks[0][0], CLAUDE)
+
+    def test_no_enter_when_the_check_refuses_on_every_send_trigger(self):
+        self.problem = "not_claude_code"
+        for number, action in enumerate(("send_polished", "send_claude", "send_raw"), 1):
+            self.focus.targets = [CLAUDE]
+            self.dictate(action=action)
+            outcome = self.wait_outcomes(number)[-1]
+            self.assertEqual(outcome.reason, S.ENTER_WITHHELD, action)
+            self.assertEqual(self.indicator.last, ("show", ERROR, S.MESSAGES[S.ENTER_WITHHELD]))
+        self.assertEqual(len(self.injector.typed), 3)
+        self.assertEqual(self.injector.enters, [])
+
+    def test_a_failing_check_never_gives_an_enter(self):
+        self.check_error = OSError("fake")
+        self.focus.targets = [CLAUDE]
+        self.dictate(action="send_claude")
+        self.assertEqual(self.wait_outcomes(1)[0].reason, S.ENTER_WITHHELD)
+        self.assertEqual(self.injector.enters, [])
+        self.assertEqual(len(self.injector.typed), 1)
+
+    def test_no_check_outside_claude_code_or_without_a_send_trigger(self):
+        self.dictate(action="send_polished")  # another window: typed without Enter, nothing to check
+        self.focus.targets = [CLAUDE]
+        self.dictate()  # dictation into Claude Code: never an Enter
+        outcomes = self.wait_outcomes(2)
+        self.assertEqual([o.reason for o in outcomes], [S.NOT_CLAUDE, S.TYPED])
+        self.assertEqual(self.checks, [])
+        self.assertEqual(self.injector.enters, [])
+
+    def test_no_check_when_typing_failed(self):
+        self.focus.targets = [CLAUDE]
+        self.injector.results = [inject.FOREGROUND_CHANGED]
+        self.dictate(action="send_claude")
+        self.assertEqual(self.wait_outcomes(1)[0].reason, inject.FOREGROUND_CHANGED)
+        self.assertEqual((self.checks, self.injector.enters), ([], []))
+
+
 LONG = "um dois três quatro cinco seis sete"  # 7 words: long for FakeRewriter
 LONG_TYPED = "Um dois três quatro cinco seis sete."
 

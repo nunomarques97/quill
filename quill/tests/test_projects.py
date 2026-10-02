@@ -76,6 +76,25 @@ class VscodeTitleTest(unittest.TestCase):
             with self.subTest(title=title):
                 self.assertEqual(P.vscode_project(title), "nimbus")
 
+    def test_screen_reader_state_suffix_and_empty_view(self) -> None:
+        # With VS Code's screen reader optimization the active editor's state follows the marker.
+        for title in (f"alpha-app | notes.md - {APP} [Claude Code] - Modified",
+                      f"alpha-app | notes.md - {APP} [] - Modified, 2 problems",
+                      f"alpha-app | Invented topic - {APP} []", f"alpha-app | - {APP} []",
+                      f"alpha-app | - {APP}", f"alpha-app | - {APP} [Text Editor] - Untracked",
+                      f"alpha-app | {APP} - Modified", f"● alpha-app | notes.md - {APP} [Explorer] - Modified"):
+            with self.subTest(title=title):
+                self.assertEqual(P.vscode_project(title), "alpha-app")
+        for title in (f"● main.py - nimbus - {APP} [Claude Code] - Modified",
+                      f"main.py - nimbus - Work - {APP} [] - Untracked", f"nimbus - {APP} - Modified"):
+            with self.subTest(title=title):
+                self.assertEqual(P.vscode_project(title), "nimbus")
+        for title in (f"{APP} []", f"{APP} [] - Modified", f"README.md - {APP} [Text Editor] - Modified",
+                      f"nimbus - {APP} [Claude Code] -", f"nimbus - {APP} [Claude Code] extra",
+                      f"nimbus - {APP} [Claude Code"):
+            with self.subTest(title=title):
+                self.assertIsNone(P.vscode_project(title))
+
     def test_titles_without_a_project(self) -> None:
         for title in ("", "   ", APP, f"{APP} [Claude Code]", f"README.md - {APP}", f"● notes.txt - {APP}",
                       "nimbus - Notepad", f"nimbus - {APP} Insiders", f"x{APP}", f" | {APP}",

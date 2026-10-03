@@ -19,6 +19,7 @@ from quill import autorewrite as A
 from quill import ollama as O
 from quill.config import AutoRewrite as Settings
 from quill.ollama import OllamaClient, OllamaError
+from quill.vocabulary import Entry, Vocabulary, hint_list
 
 # 49 invented words: long by words.
 LONG = ("Abre o ficheiro de definições do serviço e muda o limite de pedidos para 30 por minuto. "
@@ -1065,6 +1066,286 @@ class LikelyTermsTest(unittest.TestCase):
                 off, _ = self.rewrite(Replies(reply), likely_terms=False)
                 self.assertEqual((on.reason, on.detail, on.text, on.kept), (off.reason, off.detail, off.text, off.kept))
 
+
+
+# Invented names: a personal vocabulary name said with a Portuguese "j", a project said with a soft "g".
+NAME = "verja"
+PROJECT = "gelmora"
+NAME_PACK = SimpleNamespace(summary="Um serviço que emite faturas mensais.", terms=("faturas", "ledger", "Lomira"))
+NAME_KEEP = (NAME, "deploy", "commit")
+NAME_HEARD = ("Abre o repositório do Verza e corre os testes do módulo de faturas antes de publicar a versão nova "
+              "no servidor.")
+NAME_FIXED = NAME_HEARD.replace("Verza", NAME)
+NAME_REPLACEMENTS = (*NAME_KEEP, *NAME_PACK.terms, PROJECT)
+
+
+class PtSoundKeyTest(unittest.TestCase):
+    def test_portuguese_j_z_and_soft_g_are_one_sound(self) -> None:
+        self.assertEqual(A.pt_sound_key("Verza"), A.pt_sound_key("verja"))
+        self.assertEqual(A.pt_sound_key("Jelmora"), A.pt_sound_key("gelmora"))
+        self.assertEqual(A.pt_sound_key("Zelmora"), A.pt_sound_key("gelmora"))
+        self.assertEqual(A.pt_sound_key("vergi"), A.pt_sound_key("verji"))
+        self.assertEqual(A.pt_sound_key("gyro"), A.pt_sound_key("jiro"))
+        # A hard g (before a, o, u or a consonant) stays g.
+        self.assertNotEqual(A.pt_sound_key("gato"), A.pt_sound_key("jato"))
+        self.assertNotEqual(A.pt_sound_key("Verga"), A.pt_sound_key("verja"))
+
+    def test_soft_c_and_c_cedilla_are_s(self) -> None:
+        self.assertEqual(A.pt_sound_key("Cetrova"), A.pt_sound_key("setrova"))
+        self.assertEqual(A.pt_sound_key("cinora"), A.pt_sound_key("sinora"))
+        self.assertEqual(A.pt_sound_key("Raçum"), A.pt_sound_key("rasum"))
+        self.assertEqual(A.pt_sound_key("RAÇUM"), A.pt_sound_key("rasum"))
+        # A hard c stays k.
+        self.assertNotEqual(A.pt_sound_key("caro"), A.pt_sound_key("saro"))
+        self.assertEqual(A.pt_sound_key("caro"), A.pt_sound_key("karo"))
+
+    def test_every_fold_of_sound_key_still_applies(self) -> None:
+        for a, b in (("wallet", "ualet"), ("Phyton", "fiton"), ("kick", "qic"), ("hora", "ora"), ("vila", "uila"),
+                     ("Ledger", "leddger")):
+            with self.subTest(word=a):
+                self.assertEqual(A.pt_sound_key(a), A.pt_sound_key(b))
+                self.assertEqual(A.sound_key(a), A.sound_key(b))
+
+    def test_names_that_differ_otherwise_keep_different_keys(self) -> None:
+        for a, b in (("verja", "berja"), ("verja", "verka"), ("verja", "versa"), ("Lomira", "Lumira"),
+                     ("gelmora", "kelmora"), ("Cetrova", "Zetrova"), ("Raçum", "Razum"), ("gelmora", "gelmara")):
+            with self.subTest(pair=(a, b)):
+                self.assertNotEqual(A.pt_sound_key(a), A.pt_sound_key(b))
+
+    def test_sound_key_keeps_its_phase_8_folds(self) -> None:
+        # Heard-term decoding hints match on sound_key: unchanged in this phase.
+        self.assertNotEqual(A.sound_key("Verza"), A.sound_key("verja"))
+        self.assertNotEqual(A.sound_key("Cetrova"), A.sound_key("setrova"))
+        self.assertEqual(A.sound_key("Verza"), "uerza")
+
+
+class NameGuardTest(unittest.TestCase):
+    """Context mode: a protected capitalised word may be replaced by a listed name or term that sounds close."""
+
+    def guard(self, reply: str, source: str = NAME_HEARD, **kwargs: object) -> A.Verdict:
+        options = {"profile": "claude-code", "keep": NAME_KEEP, "terms": (*NAME_KEEP, *NAME_PACK.terms),
+                   "replacements": NAME_REPLACEMENTS, "name_fixes": True, **kwargs}
+        return A.guard(source, reply, **options)
+
+    def test_a_misheard_name_is_replaced_by_a_listed_name(self) -> None:
+        verdict = self.guard(NAME_FIXED)
+        self.assertEqual((verdict.reason, verdict.text, verdict.changes, verdict.kept), ("ok", NAME_FIXED, 1, 0))
+        # The project name, a pack term and a vocabulary term are listed too.
+        source = NAME_HEARD.replace("Verza", "Jelmora")
+        self.assertTrue(self.guard(NAME_FIXED.replace(NAME, PROJECT), source=source).ok)
+        source = NAME_HEARD.replace("do Verza", "da Lumira")
+        self.assertTrue(self.guard(NAME_FIXED.replace(f"do {NAME}", "da Lomira"), source=source).ok)
+        source = NAME_HEARD.replace("Verza", "Deploi")
+        self.assertTrue(self.guard(NAME_FIXED.replace(NAME, "deploy"), source=source).ok)
+
+    def test_without_name_fixes_or_outside_context_mode_a_name_never_changes(self) -> None:
+        self.assertEqual(self.guard(NAME_FIXED, name_fixes=False).reason, A.NAME)
+        self.assertEqual(self.guard(NAME_FIXED, replacements=None).reason, A.NAME)
+        self.assertEqual(A.guard(NAME_HEARD, NAME_FIXED, keep=NAME_KEEP).reason, A.NAME)
+        self.assertEqual(A.guard(NAME_HEARD, NAME_FIXED, profile="claude-code", keep=NAME_KEEP,
+                                 terms=NAME_KEEP).reason, A.NAME)
+
+    def test_an_ordinary_word_never_replaces_a_name(self) -> None:
+        for word in ("verde", "versa", "verja nova", "o verja"):
+            with self.subTest(word=word):
+                self.assertEqual(self.guard(NAME_HEARD.replace("Verza", word)).reason, A.NAME)
+
+    def test_a_listed_name_or_term_is_never_replaced(self) -> None:
+        # The replaced word is itself listed: a pack term, the project name, a vocabulary name.
+        for listed, new in (("Lomira", NAME), ("Gelmora", NAME), ("Verza", NAME), ("Verja", "Verza")):
+            with self.subTest(listed=listed):
+                source = NAME_HEARD.replace("Verza", listed)
+                verdict = self.guard(source.replace(listed, new), source=source, keep=(),
+                                     replacements=(*NAME_REPLACEMENTS, "Verza"))
+                self.assertEqual(verdict.reason, A.NAME)
+        # A vocabulary name kept verbatim is refused even sooner.
+        source = NAME_HEARD.replace("Verza", "Verja")
+        self.assertEqual(self.guard(source.replace("Verja", "Verza"), source=source,
+                                    replacements=(*NAME_REPLACEMENTS, "Verza")).reason, A.TERM)
+
+    def test_a_name_that_does_not_sound_close_is_refused(self) -> None:
+        for name in ("Lomira", PROJECT, "ledger"):
+            with self.subTest(name=name):
+                self.assertEqual(self.guard(NAME_HEARD.replace("Verza", name)).reason, A.NAME)
+
+    def test_numbers_and_the_content_rules_are_unchanged(self) -> None:
+        # A changed or added number.
+        source = NAME_HEARD.replace("versão nova", "versão 2")
+        self.assertEqual(self.guard(NAME_FIXED.replace("versão nova", "versão 3"), source=source).reason, A.NUMBER)
+        self.assertEqual(self.guard(NAME_FIXED.replace("Abre", "Abre 2")).reason, A.NUMBER)
+        # A word with a digit is never a misheard name.
+        source = NAME_HEARD.replace("do Verza", "do V3rza")
+        self.assertEqual(self.guard(NAME_FIXED, source=source).reason, A.NUMBER)
+        # A lost or an added content word beside the fixed name.
+        self.assertEqual(self.guard(NAME_FIXED.replace(" do módulo de faturas", "")).reason, A.DROPPED)
+        self.assertEqual(self.guard(NAME_FIXED.replace("servidor.", "servidor de testes.")).reason,
+                         A.EXPLANATION)
+        self.assertEqual(self.guard("Por favor, " + NAME_FIXED[0].lower() + NAME_FIXED[1:]).reason, A.PREAMBLE)
+        self.assertEqual(self.guard(NAME_FIXED.replace("testes do", "testes unitários do")).reason, A.ADDED)
+        # A listed name with an extra word in place of the misheard one.
+        self.assertEqual(self.guard(NAME_FIXED.replace(NAME, f"{NAME} principal")).reason, A.NAME)
+
+    def test_the_change_budget_counts_the_name_fix(self) -> None:
+        source = NAME_HEARD.replace("testes", "testis").replace("publicar", "pubicar")
+        two = source.replace("testis", "testes").replace("pubicar", "publicar")
+        self.assertEqual(A.guard(source, two).changes, 2)
+        verdict = self.guard(two.replace("Verza", NAME), source=source, replacements=None)
+        self.assertEqual(verdict.reason, A.NAME)
+        verdict = self.guard(two.replace("Verza", NAME), source=source,
+                             replacements=(*NAME_REPLACEMENTS, "testes", "publicar"))
+        self.assertEqual((verdict.reason, verdict.changes), (A.TOO_MANY, 3))
+
+
+class FixNamesTest(unittest.TestCase):
+    """The deterministic pre-step: exact Portuguese sound keys of a vocabulary name or the project name."""
+
+    def test_a_span_with_the_exact_key_is_written_as_listed(self) -> None:
+        self.assertEqual(A.fix_names(NAME_HEARD, (NAME, PROJECT)), (NAME_FIXED, 1))
+        self.assertEqual(A.fix_names("Corre o Jel mora e o Ver-za.", (NAME, PROJECT)),
+                         ("Corre o gelmora e o verja.", 2))
+        # A sentence starts with a capital; a name with its own capitals keeps them.
+        self.assertEqual(A.fix_names("Verza abre. Jelmora fecha.", (NAME, PROJECT)), ("Verja abre. Gelmora fecha.", 2))
+        self.assertEqual(A.fix_names("abre o zelmora", ("GelMora",)), ("abre o GelMora", 1))
+
+    def test_only_exact_keys_of_at_least_four_letters(self) -> None:
+        for heard in ("Abre o Verda agora.", "Abre o Berza agora.", "Abre o Verz agora."):
+            with self.subTest(heard=heard):
+                self.assertEqual(A.fix_names(heard, (NAME,)), (heard, 0))
+        self.assertEqual(A.fix_names("Abre o Zua agora.", ("jua",)), ("Abre o Zua agora.", 0))
+
+    def test_numbers_function_words_and_written_terms_are_left_alone(self) -> None:
+        cases = (("Abre o Uera 1 agora.", ("vera1",), ()),  # a span with a number
+                 ("Abre da na pasta.", ("dana",), ()),  # a function word
+                 ("Abre se na pasta.", ("sena",), ()),  # a polarity word
+                 ("Abre o Verza agora.", (NAME,), ("Verza",)),  # already written as another listed term
+                 ("Abre o verja agora.", (NAME,), ()),  # already the name
+                 ("Abre o Uerja agora.", (NAME, "Verza"), ()),  # two names with one key
+                 ("Abre o Ver, za agora.", (NAME,), ()))  # not one span
+        for heard, names, listed in cases:
+            with self.subTest(heard=heard):
+                self.assertEqual(A.fix_names(heard, names, listed), (heard, 0))
+
+    def test_nothing_listed_changes_nothing(self) -> None:
+        self.assertEqual(A.fix_names(NAME_HEARD, ()), (NAME_HEARD, 0))
+        self.assertEqual(A.fix_names(NAME_HEARD, ("", "  ", None)), (NAME_HEARD, 0))
+
+
+class NameRewriterTest(unittest.TestCase):
+    """AutoRewriter in context mode: the name pre-step, the prompt rule and the guard's name allowance."""
+
+    def rewrite(self, client: FakeClient, text: str = NAME_HEARD, **kwargs: object) -> tuple[A.AutoRewrite, list[str]]:
+        rewriter_options = {key: kwargs.pop(key) for key in ("name_fixes", "names") if key in kwargs}
+        rewriter_options.setdefault("names", lambda: (NAME,))
+        rewriter = A.AutoRewriter(client, "m", CONTEXT_ON, clock=Clock(), **rewriter_options)
+        options = {"audio_s": 3.0, "profile": "claude-code", "keep": NAME_KEEP, "project": PROJECT, "force": True,
+                   "pack": NAME_PACK, **kwargs}
+        with self.assertLogs("quill", logging.INFO) as logs:
+            logging.getLogger("quill").info("start")
+            result = rewriter.rewrite(text, **options)
+        for line in logs.output:
+            for word in ("erza", "erja", "elmora", "Lomira", "faturas"):
+                self.assertNotIn(word, line)
+        return result, logs.output
+
+    def test_the_pre_step_fixes_the_name_before_the_model_is_asked(self) -> None:
+        client = Replies(NAME_FIXED)
+        result, logs = self.rewrite(client)
+        self.assertEqual((result.reason, result.text, result.original, result.names),
+                         (A.REWRITTEN, NAME_FIXED, NAME_HEARD, 1))
+        self.assertIn(f"<dictation>\n{NAME_FIXED}\n</dictation>", client.calls[0].user)
+        self.assertIn(A.NAME_RULE, client.calls[0].system)
+        self.assertIn("1 names fixed", logs[-1])
+
+    def test_the_pre_fixed_text_is_typed_when_the_correction_fails(self) -> None:
+        for reply, reason in (("", A.REFUSED), (NAME_FIXED + " Obrigado.", A.REFUSED), (OSError("down"), A.FAILED),
+                              (TimeoutError("slow"), A.TIMEOUT), (None, A.FAILED)):
+            with self.subTest(reason=reason, reply=str(reply)[-10:]):
+                result, logs = self.rewrite(Replies(reply))
+                self.assertEqual((result.reason, result.text, result.original, result.names),
+                                 (reason, NAME_FIXED, NAME_HEARD, 1))
+                self.assertTrue(result.rewritten)  # so the session types the pre-fixed text
+                self.assertIn("1 names fixed", logs[-1])
+        # A reply later than the timeout.
+        clock = Clock()
+        rewriter = A.AutoRewriter(Replies(NAME_FIXED, clock=clock, takes=9.0), "m", CONTEXT_ON, clock=clock,
+                                  names=lambda: (NAME,))
+        result = rewriter.rewrite(NAME_HEARD, audio_s=3.0, profile="claude-code", keep=NAME_KEEP, project=PROJECT,
+                                  force=True, pack=NAME_PACK)
+        self.assertEqual((result.reason, result.text), (A.TIMEOUT, NAME_FIXED))
+
+    def test_the_project_name_is_fixed_without_personal_names(self) -> None:
+        heard = NAME_HEARD.replace("do Verza", "do Jelmora")
+        fixed = heard.replace("Jelmora", PROJECT)
+        result, _ = self.rewrite(Replies(fixed), text=heard, names=None)
+        self.assertEqual((result.reason, result.text, result.names), (A.REWRITTEN, fixed, 1))
+
+    def test_the_model_may_fix_a_name_the_pre_step_cannot(self) -> None:
+        heard = NAME_HEARD.replace("Verza", "Verda")  # one sound off: no exact key
+        result, logs = self.rewrite(Replies(NAME_FIXED), text=heard)
+        self.assertEqual((result.reason, result.text, result.names, result.changes), (A.REWRITTEN, NAME_FIXED, 0, 1))
+        self.assertNotIn("names fixed", logs[-1])
+        # An ordinary word in its place is still refused.
+        result, _ = self.rewrite(Replies(heard.replace("Verda", "verde")), text=heard)
+        self.assertEqual((result.reason, result.detail, result.text), (A.REFUSED, A.NAME, heard))
+
+    def test_a_failing_names_source_keeps_the_correction(self) -> None:
+        result, logs = self.rewrite(Replies(NAME_FIXED), names=lambda: 1 / 0)
+        self.assertEqual((result.reason, result.names, result.text), (A.REWRITTEN, 0, NAME_FIXED))
+        self.assertTrue(any("names not fixed (ZeroDivisionError)" in line for line in logs))
+
+    def test_outside_context_mode_the_text_is_untouched(self) -> None:
+        for case in ({"profile": "default"}, {"context": False}, {"force": False, "audio_s": 20.0}):
+            with self.subTest(**case):
+                client = Replies(NAME_FIXED)
+                result, logs = self.rewrite(client, **case)
+                profile = case.get("profile", "claude-code")
+                self.assertEqual((client.calls[0].system, client.calls[0].user),
+                                 A.build_prompt(NAME_HEARD, profile, NAME_KEEP, PROJECT))
+                self.assertEqual((result.reason, result.detail, result.text, result.names),
+                                 (A.REFUSED, A.NAME, NAME_HEARD, 0))
+                self.assertNotIn("names fixed", logs[-1])
+
+    def test_name_fixes_off_is_the_phase_8_correction(self) -> None:
+        self.assertIs(A.NAME_FIXES, True)
+        client = Replies(NAME_FIXED)
+        result, _ = self.rewrite(client, name_fixes=False)
+        self.assertEqual((result.reason, result.detail, result.text, result.names),
+                         (A.REFUSED, A.NAME, NAME_HEARD, 0))
+        self.assertFalse(result.rewritten)
+        system, user = A.build_prompt(NAME_HEARD, "claude-code", NAME_KEEP, PROJECT, context=True, pack=NAME_PACK,
+                                      name_fixes=False)
+        self.assertEqual((client.calls[0].system, client.calls[0].user), (system, user))
+        self.assertNotIn(A.NAME_RULE, system)
+        # The Phase 8 prompt is the context prompt without the name rule, byte for byte.
+        on = A.build_prompt(NAME_HEARD, "claude-code", NAME_KEEP, PROJECT, context=True, pack=NAME_PACK)
+        self.assertEqual((on[0].replace(" " + A.NAME_RULE, ""), on[1]), (system, user))
+        # The same guard verdicts as the Phase 8 guard on the same replies.
+        for reply in (NAME_FIXED, NAME_HEARD.replace("faturas", "fatura"), NAME_HEARD + " Obrigado.",
+                      NAME_HEARD.replace("módulo", "modulo"), NAME_HEARD.replace("publicar", "publikar")):
+            with self.subTest(reply=reply[-25:]):
+                result, _ = self.rewrite(Replies(reply), name_fixes=False)
+                phase8 = A.guard(NAME_HEARD, reply, profile="claude-code", keep=NAME_KEEP,
+                                 terms=(*NAME_KEEP, *NAME_PACK.terms), replacements=NAME_REPLACEMENTS)
+                self.assertEqual((result.detail or "ok", result.kept, result.changes),
+                                 (phase8.reason, phase8.kept, phase8.changes))
+
+    def test_the_prompt_rule_only_in_context_mode(self) -> None:
+        for profile in ("default", "claude-code", "vscode"):
+            self.assertNotIn(A.NAME_RULE, A.build_prompt(NAME_HEARD, profile, NAME_KEEP, PROJECT)[0])
+        self.assertIn(A.NAME_RULE, A.build_prompt(NAME_HEARD, "claude-code", NAME_KEEP, PROJECT, context=True)[0])
+        self.assertIn("capitalised word may be a misheard vocabulary or project name", A.NAME_RULE)
+
+    def test_personal_names_lead_the_vocabulary_line(self) -> None:
+        vocabulary = Vocabulary(names=(Entry(NAME, "name"), Entry("Cetrova", "name")),
+                                terms=tuple(Entry(f"termo{index:03d}longo", "term") for index in range(200)))
+        generic = tuple(f"generic{index:03d}" for index in range(100))
+        keep = hint_list(vocabulary, (), generic)
+        _, user = A.build_prompt(NAME_HEARD, "claude-code", keep, PROJECT, context=True, pack=NAME_PACK)
+        line = next(line for line in user.split("\n") if line.startswith("Vocabulary"))
+        self.assertTrue(line.startswith(f"Vocabulary (write these exactly like this): {NAME}, Cetrova, generic000"))
+        self.assertLessEqual(len(line) - len(A.VOCABULARY_LINE.format(terms="")), A.MAX_VOCABULARY_CHARS)
+        self.assertNotIn("termo199longo", line)  # the budget ends the list, never before the names
+        self.assertIn(f"<project_name>\n{PROJECT}\n</project_name>", user)
 
 if __name__ == "__main__":
     unittest.main()

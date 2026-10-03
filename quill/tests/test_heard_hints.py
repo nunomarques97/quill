@@ -194,5 +194,46 @@ class SelectionTest(unittest.TestCase):
         self.assertGreater(sum(a != b for a, b in zip([source.initial, *stateless], stateless)), changes)
 
 
+
+class NamesInHintsTest(unittest.TestCase):
+    """Mouse 5 into Claude Code: personal names, the project name and pack terms all reach the decoding hints."""
+
+    NAMES = ("verja", "Cetrova")
+    TERMS = tuple(f"termo{n:02d}pessoal" for n in range(40))
+    GENERIC = tuple(f"generic{n:02d}" for n in range(60))
+    # A pack whose spoken terms alone would fill the project budget twice.
+    PACK = ("BrakMora", "DelvoTrin", "FendaRux", "HolmBari", "KestUvor", "LumaPrex", "MordiVal", "NakoTesh",
+            "PlinVar", "QuessaDor", "RindoBel", "SalvoNiq", "TorkEmin", "VendaLux", "WixoMar", "YarmoTil",
+            "ZebuKran", "OrnaPlet", "IskaDrum", "AbriNoz")
+
+    def setUp(self):
+        self.vocabulary = V.Vocabulary(names=tuple(V.Entry(name, "name") for name in self.NAMES),
+                                       terms=tuple(V.Entry(term, "term") for term in self.TERMS))
+
+    def test_names_project_and_pack_terms_are_hints_even_when_the_pack_fills_its_budget(self):
+        self.assertGreater(len(", ".join(self.PACK)), PROJECT_HINT_MAX_CHARS)
+        for heard in ("", "abre o zebu cran agora", "o verza e o setrova"):
+            with self.subTest(heard=heard):
+                source = H.HeardHints("gelmora", self.PACK, self.vocabulary, self.GENERIC)
+                words = source.words(heard)
+                self.assertEqual(words[:2], list(self.NAMES))
+                self.assertIn("gelmora", words)
+                self.assertTrue(any(term in words for term in self.PACK))
+                part = [word for word in words if word == "gelmora" or word in self.PACK]
+                self.assertLessEqual(len(", ".join(part)), PROJECT_HINT_MAX_CHARS)
+                self.assertLessEqual(len(", ".join(words)), V.HINT_MAX_CHARS)
+                self.assertIn("verja", source(heard).prompt)
+        # A heard pack term comes first in the project part, the names still before it.
+        words = H.HeardHints("gelmora", self.PACK, self.vocabulary, self.GENERIC).words("o zebu cran")
+        self.assertEqual(words[:4], [*self.NAMES, "ZebuKran", "gelmora"])
+
+    def test_heard_term_matching_keeps_its_phase_8_keys(self):
+        from quill.autorewrite import pt_sound_key, sound_key
+
+        self.assertIs(H.sound_key, sound_key)
+        self.assertEqual(H.span_keys("Verza"), [sound_key("Verza")])
+        self.assertNotEqual(H.span_keys("Verza"), [pt_sound_key("Verza")])
+        self.assertEqual(H.span_keys("Cetrova"), ["ketroua"])
+
 if __name__ == "__main__":
     unittest.main()

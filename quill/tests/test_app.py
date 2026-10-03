@@ -1644,6 +1644,23 @@ class PolishAppTest(RewriteCase):
         self.assertEqual(self.press_undo(), ("hide",))  # no Enter: the dictation comes back
         self.assertEqual(self.api.received_text(), SPOKEN)
 
+    def test_the_correction_gets_the_reloaded_personal_names_and_the_name_rule(self):
+        path = self.config.vocabulary_path
+        path.write_bytes(b'names = ["verja"]\n')
+        source = V.VocabularyFile(path)
+        quill = self.make_app(self.app.config, rewrite_client=self.ollama, layout=FakeLayout(),
+                              context_packs=self.packs, vocabulary=source.load(), vocabulary_file=source)
+        self.assertEqual(quill.rewriter.names(), ("verja",))
+        self.in_the_panel()
+        self.start(quill)
+        V.add_entries(path, names=["Cetrova"])
+        self.hold(WORDS, which=XBUTTON2, quill=quill)  # the press reloads the vocabulary
+        self.assertEqual(quill.rewriter.names(), ("verja", "Cetrova"))
+        system, user = self.ollama.calls[0][:2]
+        self.assertIn(R.NAME_RULE, system)
+        self.assertIn("Vocabulary (write these exactly like this): verja, Cetrova", user)
+        self.assertEqual(quill.sessions.outcomes[-1].reason, S.SENT_ENTER)
+
     # Decoding hints: the project's pack terms for mouse 5 into Claude Code only.
 
     PROJECT_PROMPT = "Vocabulário: invented, carteira, saldo."
@@ -2253,6 +2270,27 @@ class ProjectHintsTest(unittest.TestCase):
         self.assertLess(len(listed) - len(project_part), len(today))
         self.assertEqual(hints.hotwords, join_vocabulary(listed, separator=" "))
         self.assertIsNone(hints.language)
+
+    def test_names_project_and_pack_terms_reach_the_hints_when_the_pack_fills_its_budget(self):
+        from quill.whisper import HINTS_PREFIX, PROJECT_HINT_MAX_CHARS
+
+        self.vocabulary = V.Vocabulary(names=(V.Entry("verja", "name"), V.Entry("Cetrova", "name")),
+                                       terms=tuple(V.Entry(f"termo{n:02d}", "term") for n in range(30)))
+        self.pack = SimpleNamespace(summary="", terms=("BrakMora", "DelvoTrin", "FendaRux", "HolmBari", "KestUvor",
+                                                       "LumaPrex", "MordiVal", "NakoTesh", "PlinVar", "QuessaDor",
+                                                       "RindoBel", "SalvoNiq", "TorkEmin", "VendaLux"))
+        self.assertGreater(len(", ".join(self.pack.terms)), PROJECT_HINT_MAX_CHARS)
+        source, reason = self.hints()
+        self.assertEqual(reason, A.PROJECT_HINTS)
+        for heard in ("", "o verza e o setrova", "abre o venda lux"):
+            with self.subTest(heard=heard):
+                listed = source(heard).prompt[len(HINTS_PREFIX):-1].split(", ")
+                self.assertEqual(listed[:2], ["verja", "Cetrova"])
+                self.assertIn("orchard", listed)
+                self.assertIn("BrakMora", listed)
+                self.assertLessEqual(len(", ".join(listed)), V.HINT_MAX_CHARS)
+        self.assertEqual(source("abre o venda lux").prompt[len(HINTS_PREFIX):-1].split(", ")[2:4],
+                         ["VendaLux", "orchard"])
 
     def test_claude_code_gets_a_heard_term_source(self):
         from quill.heard import HeardHints

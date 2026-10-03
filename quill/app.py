@@ -513,8 +513,10 @@ class QuillApp:
         self.warmer: ModelWarmer | None = None
         if wants_rewriter(config) and parts.rewrite_client is not None:
             self.warmer = ModelWarmer(parts.rewrite_client, config.ollama_model, **parts.warm_options)
+            # Mouse 5 into Claude Code fixes misheard personal names: the reloaded vocabulary's, at each dictation.
             self.rewriter = AutoRewriter(parts.rewrite_client, config.ollama_model, config.autorewrite,
-                                         warmer=self.warmer)
+                                         warmer=self.warmer,
+                                         names=lambda: tuple(entry.text for entry in self.vocabulary.names))
         self.correction_key = CorrectionKey(self.learner, self._read_selection, api.foreground_window)
         self.edits: ManualEdits | None = None
         undo_key = config.autorewrite.undo_key

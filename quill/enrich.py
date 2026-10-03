@@ -10,8 +10,10 @@ only when the dictation supports it (the prompt asks for as few parts as the
 dictation needs, each dictated sentence once, and carries short invented
 examples, ``EXAMPLES``). The Contexto part may hold facts from
 the project's context pack (``quill.context_pack``): the model sees the
-project name, the summary's first sentence (``brief``) and the terms; the
-pack, like the dictation, is data and never instructions to the model.
+project name, the summary's first sentence (``brief``) and the terms, all
+without words that hold a digit (a number the dictation does not have is
+always refused, so the data never offers one); the pack, like the
+dictation, is data and never instructions to the model.
 
 Before the guard, ``tidy`` removes deterministically what the prompt asks
 the model never to write and what would only make the guard refuse the
@@ -214,17 +216,31 @@ def pack_parts(pack: object | None) -> tuple[str, tuple[str, ...]]:
 
 _SENTENCE_END = re.compile(r"[.!?…](?=\s|$)")
 _NUMBERED_ASIDE = re.compile(r"\s*\([^()]*\d[^()]*\)")
+# A word with what joins it to its parts ("11", "v2", "Python-3.12"); never a closing full stop.
+_JOINED_WORD = re.compile(r"(?:[\w'’/+-]|\.(?=\w))+")
+
+
+def _without_numbers(text: str) -> str:
+    """``text`` without its words that hold a digit (as the guard counts them), spaces and punctuation tidied."""
+    text = _JOINED_WORD.sub(lambda match: " " if _number(match.group()) else match.group(), text)
+    text = re.sub(r"\(\s*\)", " ", text)
+    text = re.sub(r"\s+([.,;:!?…)])", r"\1", " ".join(text.split()))
+    return re.sub(r"([,;:])(?:\s*[,;:])+", r"\1", text).strip(" ,;:-(")
 
 
 def brief(summary: str) -> str:
     """The first sentence of ``summary``, cut at a word to ``MAX_BRIEF_CHARS``.
 
-    Asides in brackets with a number ("(Apache-2.0)") are left out: the guard
-    refuses a number the dictation does not have, even one from the pack.
+    Asides in brackets with a number ("(Apache-2.0)") and other words with a
+    digit ("Windows 11") are left out: the prompt asks for a summary sentence
+    word for word, and the guard refuses a number the dictation does not have,
+    even one from the pack. '' when no content word is left.
     """
     summary = _NUMBERED_ASIDE.sub("", summary)
     end = _SENTENCE_END.search(summary)
-    sentence = (summary[: end.end()] if end else summary).strip()
+    sentence = _without_numbers((summary[: end.end()] if end else summary).strip())
+    if not content_words(sentence):
+        return ""
     if len(sentence) <= MAX_BRIEF_CHARS:
         return sentence
     cut = sentence[:MAX_BRIEF_CHARS]
@@ -236,14 +252,18 @@ def pack_data(pack: object | None, project: str = "", *, short: bool = False, li
     """The user-message blocks of the project context; '' without a project, a pack and ``likely`` terms.
 
     ``short`` gives only the summary's first sentence (``brief``): the
-    enrichment's context part holds at most one sentence. ``likely`` (the
-    correction's terms that sound like the dictation, already bounded) is a
-    block of its own just before the pack terms.
+    enrichment's context part holds at most one sentence. It also leaves out
+    the terms and a project name with a digit, so the enrichment data holds
+    no number the model could copy into a reply the guard refuses. ``likely``
+    (the correction's terms that sound like the dictation, already bounded)
+    is a block of its own just before the pack terms.
     """
     summary, terms = pack_parts(pack)
+    project = _clean(project, MAX_PROJECT_CHARS)
     if short:
         summary = brief(summary)
-    project = _clean(project, MAX_PROJECT_CHARS)
+        terms = tuple(term for term in terms if not _number(term))
+        project = "" if _number(project) else project
     likely = [term for term in (_clean(term, MAX_TERMS_CHARS) for term in likely if isinstance(term, str)) if term]
     lines = []
     if project:

@@ -291,6 +291,90 @@ class BriefTest(unittest.TestCase):
             self.assertIn("Never copy it from the examples", system)
 
 
+class NumberTest(unittest.TestCase):
+    """The enrichment data offers no number to copy; the guard still refuses any added, lost or reshaped number."""
+
+    NUMBERED = SimpleNamespace(summary="Assistente de voz para Windows 11 (offline, sem nuvem). Tem 3 modos.",
+                               terms=("encomendas", "python3", "utf-8", "painel de gestão", "nimbus-v2"))
+    SOURCE = "Revê a função que calcula os descontos e explica-me porque arredonda para baixo."
+    REQUEST = "Pedido: Revê a função que calcula os descontos e explica-me porque arredonda para baixo."
+
+    def test_brief_leaves_out_words_with_a_digit(self) -> None:
+        self.assertEqual(E.brief(self.NUMBERED.summary), "Assistente de voz para Windows (offline, sem nuvem).")
+        self.assertEqual(E.brief("Ferramenta com 3 modos, 2 vozes e cache."), "Ferramenta com modos, vozes e cache.")
+        self.assertEqual(E.brief("Painel em Python-3.12 para lojas."), "Painel em para lojas.")
+        self.assertEqual(E.brief("Corre em 3 servidores"), "Corre em servidores")
+        self.assertEqual(E.brief("v2."), "")
+        self.assertEqual(E.brief("A 2."), "")
+        # What the guard counts as a number goes too ("m²" is a word with a digit for the guard).
+        self.assertEqual(E.brief("Mede a área em m² e (v3) mostra-a."), "Mede a área em e mostra-a.")
+
+    def test_the_enrichment_data_holds_no_digit(self) -> None:
+        for project in ("nimbus", "nimbus2"):
+            with self.subTest(project=project):
+                short = E.pack_data(self.NUMBERED, project, short=True)
+                self.assertFalse(any(ch.isdigit() for ch in short), short)
+                self.assertIn("<project_terms>\nencomendas, painel de gestão\n</project_terms>", short)
+                self.assertIn("<project_summary>\nAssistente de voz para Windows (offline, sem nuvem).\n", short)
+                self.assertEqual("<project_name>" in short, project == "nimbus")
+                user = E.build_prompt(self.SOURCE, E.PT, self.NUMBERED, project)[1]
+                self.assertFalse(any(ch.isdigit() for ch in user))
+        # A dictated number stays in the dictation block, the only place the user message has one.
+        user = E.build_prompt("Corrige os 3 testes do painel de gestão e explica a falha.", E.PT, self.NUMBERED,
+                              "nimbus2")[1]
+        self.assertEqual([ch for ch in user if ch.isdigit()], ["3"])
+        # The correction still sees the whole pack, numbers and all.
+        full = E.pack_data(self.NUMBERED, "nimbus2")
+        for kept in ("Windows 11", "Tem 3 modos", "python3", "utf-8", "nimbus-v2", "<project_name>\nnimbus2\n"):
+            self.assertIn(kept, full)
+
+    def test_the_system_prompt_offers_no_number_either(self) -> None:
+        # The invented examples hold no digit the model could copy.
+        for lang in (E.PT, E.EN):
+            self.assertFalse(any(ch.isdigit() for ch in E.examples(lang)))
+
+    def test_the_brief_copied_word_for_word_is_accepted(self) -> None:
+        reply = "Contexto: Assistente de voz para Windows (offline, sem nuvem).\n" + self.REQUEST
+        self.assertEqual(E.guard(self.SOURCE, reply, pack=self.NUMBERED, project="nimbus").reason, "ok")
+
+    def test_number_verdicts_are_unchanged(self) -> None:
+        def reason(source: str, reply: str, project: str = "nimbus") -> str:
+            return E.guard(source, reply, pack=self.NUMBERED, project=project).reason
+
+        # A number from the pack summary, a pack term or the project name is still an added number.
+        self.assertEqual(reason(self.SOURCE, "Contexto: Assistente de voz para Windows 11.\n" + self.REQUEST),
+                         E.NUMBER)
+        self.assertEqual(reason(self.SOURCE, "Contexto: encomendas em python3.\n" + self.REQUEST), E.NUMBER)
+        self.assertEqual(reason(self.SOURCE, "Contexto: projeto nimbus2.\n" + self.REQUEST, "nimbus2"), E.NUMBER)
+        self.assertEqual(reason(self.SOURCE, self.REQUEST.replace("baixo.", "baixo em 2 casos.")), E.NUMBER)
+        # A spoken number written as digits, and the other way round, is refused.
+        spoken = "Corre os dois testes do painel de gestão e mostra-me um erro de cada."
+        self.assertEqual(reason(spoken, f"Pedido: {spoken}"), "ok")
+        self.assertEqual(reason(spoken, "Pedido: " + spoken.replace("dois", "2")), E.NUMBER)
+        self.assertEqual(reason(spoken, "Pedido: " + spoken.replace("um erro", "1 erro")), E.NUMBER)
+        digits = "Corre os 3 testes do painel de gestão e mostra-me o erro de cada."
+        self.assertEqual(reason(digits, "Pedido: " + digits.replace("3", "três")), E.NUMBER)
+        # A lost or changed dictated number is refused.
+        self.assertEqual(reason(digits, "Pedido: " + digits.replace("os 3 ", "os ")), E.NUMBER)
+        self.assertEqual(reason(digits, "Pedido: " + digits.replace("3", "4")), E.NUMBER)
+
+    def test_a_reply_from_the_new_data_is_typed_and_logs_counts_only(self) -> None:
+        reply = "Contexto: Assistente de voz para Windows (offline, sem nuvem).\n" + self.REQUEST
+        client = FakeClient(reply)
+        with self.assertLogs("quill.enrich", logging.INFO) as logs:
+            result = E.Enricher(client, "m", 12.0).enrich(self.SOURCE, pack=self.NUMBERED, project="nimbus2")
+        self.assertEqual((result.reason, result.text), (E.ENRICHED, reply))
+        self.assertFalse(any(ch.isdigit() for ch in client.calls[0].user))
+        # The same reply with the pack's number is refused and gives the input back; the log holds counts only.
+        client = FakeClient(reply.replace("Windows", "Windows 11"))
+        with self.assertLogs("quill.enrich", logging.INFO) as logs:
+            result = E.Enricher(client, "m", 12.0).enrich(self.SOURCE, pack=self.NUMBERED, project="nimbus2")
+        self.assertEqual((result.reason, result.detail, result.text), (E.REFUSED, E.NUMBER, self.SOURCE))
+        for word in ("Windows", "Assistente", "descontos", "nimbus", "11"):
+            self.assertNotIn(word, "\n".join(logs.output))
+        self.assertIn("enrich_refused (number) (pt, 13 words, 0 parts, 0 tidied", logs.output[-1])
+
+
 class TidyTest(unittest.TestCase):
     """Deterministic removals before the guard: only text goes, the guard still checks the result in full."""
 

@@ -92,7 +92,7 @@ class ScriptedModel:
         return SimpleNamespace(content=text)
 
 
-def make_product(root, model, packs=PACKS, projects=PROJECTS):
+def make_product(root, model, packs=PACKS, projects=PROJECTS, likely_terms=True):
     """The app's text pipeline, project detection and rewriter with invented folders and packs."""
     config = load_config(None, EXAMPLE_CONFIG)
     folders = {}
@@ -105,7 +105,7 @@ def make_product(root, model, packs=PACKS, projects=PROJECTS):
     pipeline = TextPipeline(config, vocabulary=_vocabulary(),
                             generic_terms=(), describe=holder.describe, projects=detector)
     settings = replace(config.autorewrite, timeout_s=P.BENCH_TIMEOUT_S, enrich_timeout_s=P.BENCH_TIMEOUT_S)
-    rewriter = autorewrite.AutoRewriter(model, "fake-model", settings)
+    rewriter = autorewrite.AutoRewriter(model, "fake-model", settings, likely_terms=likely_terms)
     by_folder = {str(folder): packs.get(name) for name, folder in folders.items()}
 
     def lookup(folder):
@@ -937,6 +937,82 @@ class CommittedFilesTest(unittest.TestCase):
                         "[prompts.terms]", "[prompts.projects]"):
             self.assertIn(command, text)
         self.assertNotIn("\\Users\\", text)
+
+
+class LikelyModel(ScriptedModel):
+    """The local model: fixes a misheard term only when the correction prompt lists it as sounding like the text."""
+
+    def chat(self, model, system, user, max_tokens=None, history=(), timeout_s=None):
+        if system.startswith("You turn one dictated request"):
+            return super().chat(model, system, user, max_tokens, history, timeout_s)
+        text = re.search(r"<dictation>\n(.*)\n</dictation>", user, re.S).group(1)
+        self.calls.append(SimpleNamespace(enrich=False, user=user, timeout_s=timeout_s))
+        listed = re.search(r"<likely_terms>\n(.*)\n</likely_terms>", user)
+        for term in (listed.group(1).split(", ") if listed else ()):
+            if term in MISHEARD:
+                text = text.replace(MISHEARD[term], term)
+        return SimpleNamespace(content=text)
+
+
+class CorrectionCandidatesTest(Case):
+    """--no-correction-candidates: the ablation of the terms the correction prompt lists as sounding like the text."""
+
+    def run_main(self, *args):
+        model = LikelyModel()
+        asked = []
+
+        def factory(vocab, generic, **options):
+            asked.append(options)
+            return make_product(self.root, model, likely_terms=options.get("correction_candidates", True))
+
+        summary = self.results / "committed-summary.json"
+        vocabulary = self.root / "vocabulary.toml"
+        vocabulary.write_text("", encoding="utf-8")
+        lines = []
+        code = P.main(["--config", str(self.config), "--summary", str(summary), "--vocabulary", str(vocabulary),
+                       "--set", "prompts", *args], product_factory=factory,
+                      streamer_factory=FakeStreamer({row.id: spoken(row, heard=True) for row in self.rows()}).factory,
+                      results_dir=self.results, out=lines.append)
+        self.assertEqual(code, 0)
+        return json.loads(summary.read_text(encoding="utf-8")), asked, model, lines
+
+    def test_on_by_default_the_listed_terms_are_fixed_and_counted(self):
+        self.record()
+        summary, asked, model, lines = self.run_main()
+        self.assertEqual(asked, [{}])
+        self.assertIs(summary["rewrite"]["correction_candidates"], True)
+        block = summary["sets"]["prompts"]
+        # Three misheard terms, one per take, each listed (written terms are not): all fixed.
+        self.assertEqual(block["term_errors"], {"pipeline": 3, "today": 3, "new": 0})
+        self.assertEqual(block["likely_terms"], {"takes": 3, "terms": 3})
+        self.assertEqual(block["relevance_hints"]["likely_terms"], {"takes": 3, "terms": 3})
+        self.assertEqual((block["lost"]["new"], block["invented"]["new"]), (0, 0))
+        new = [call for call in model.calls if not call.enrich and "<project_terms>" in call.user]
+        self.assertEqual(sum("<likely_terms>" in call.user for call in new), 3)
+        # Today's correction (no context mode) never lists them.
+        today = [call for call in model.calls if not call.enrich and "<project_terms>" not in call.user]
+        self.assertTrue(today and not any("<likely_terms>" in call.user for call in today))
+        self.assertIn("  correction prompts listing terms that sound like the dictation: 3 (3 terms)", lines)
+        self.assertNotIn("correction candidates: off (ablation)", lines)
+        serialized = json.dumps(summary)
+        for secret in ("Kwartz", "ledgerly", "quartz", "nimbus", "orchard"):
+            self.assertNotIn(secret.casefold(), serialized.casefold())
+
+    def test_off_the_prompt_lists_nothing_and_the_summary_says_so(self):
+        self.record()
+        summary, asked, model, lines = self.run_main("--no-correction-candidates")
+        self.assertEqual(asked, [{"correction_candidates": False}])
+        self.assertIs(summary["rewrite"]["correction_candidates"], False)
+        block = summary["sets"]["prompts"]
+        self.assertEqual(block["term_errors"], {"pipeline": 3, "today": 3, "new": 3})
+        self.assertEqual(block["likely_terms"], {"takes": 0, "terms": 0})
+        self.assertFalse(any("<likely_terms>" in call.user for call in model.calls))
+        self.assertIn("correction candidates: off (ablation)", lines)
+
+    def test_the_ablation_combines_with_product_timeouts(self):
+        self.record()
+        _, asked, _, _ = self.run_main("--no-correction-candidates", "--timeouts", "product")
+        self.assertEqual(asked, [{"product_timeouts": True, "correction_candidates": False}])
 
 
 class ProductTimeoutsTest(Case):

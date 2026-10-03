@@ -3,6 +3,7 @@
 Usage:
     py -3.12 -m bench.prompts --dry-run [--set all|prompts|dictation] [--require]
     .venv\\Scripts\\python -m bench.prompts [--set all|prompts|dictation] [--summary PATH] [--require]
+        [--timeouts bench|product] [--no-correction-candidates]
     py -3.12 -m bench.prompts --check SUMMARY
 
 Two sets are measured. ``prompts`` (``bench/dictation/guiao-prompts-pt.md``,
@@ -55,6 +56,10 @@ of the quill config), exactly as the session asks it:
   (``quill.autorewrite.project_hint``, which takes the whole left part of a
   hub title), no pack, no context mode and no enrichment;
 - new: the detected project, its pack, context mode and the enrichment.
+  Its correction prompt lists the terms that sound like the dictation
+  first (``quill.autorewrite.likely_terms``; counted per set as
+  ``likely_terms``); ``--no-correction-candidates`` leaves them out, an
+  ablation reported as ``rewrite.correction_candidates``.
 
 Measured, against targets that are never lowered here:
 
@@ -477,6 +482,7 @@ class TakeResult:
     enrich_tidied: int = 0  # removals quill.enrich.tidy made before the guard
     hints: str = ""  # the reason code of the take's decoding hints ("" with today's hints)
     hint_switches: int = 0  # hint changes the heard-term source chose from the replay's partials
+    likely: int = 0  # terms the new correction's prompt listed as sounding like the dictation
 
     @property
     def spoken(self) -> bool:
@@ -556,7 +562,7 @@ def run_take(take: Take, set_name: str, case: str, heard: str, asr_s: float, pro
         lost_new=lost_words(take.clean, source, new.text),
         invented_new=invented_new, pack_outside_context=from_pack,
         pack_s=pack_s, correction_s=new.seconds, enrich_s=new.enrich_seconds,
-        enrich_tidied=getattr(capture.result, "tidied", 0) or 0,
+        enrich_tidied=getattr(capture.result, "tidied", 0) or 0, likely=new.likely,
     )
 
 
@@ -657,6 +663,11 @@ def dataset_counts(dataset: Dataset, takes: int | None = None) -> dict:
             "pending": len(dataset.pending), "invalid": len(dataset.invalid)}
 
 
+def likely_block(spoken: Sequence[TakeResult]) -> dict:
+    """Takes whose new correction prompt listed terms that sound like the dictation, and those terms in all."""
+    return {"takes": sum(r.likely > 0 for r in spoken), "terms": sum(r.likely for r in spoken)}
+
+
 def set_block(results: Sequence[TakeResult], dataset: dict, product_timeouts: dict | None = None,
               terms: bool = False) -> dict:
     """Counts, reasons and timings of one set; never text, names or terms."""
@@ -686,6 +697,7 @@ def set_block(results: Sequence[TakeResult], dataset: dict, product_timeouts: di
         "enrichment_refused": sum(r.enrichment == enrich.REFUSED for r in spoken),
         "tidied": {"replies": sum(r.enrich_tidied > 0 for r in called),
                    "enriched": sum(r.enrich_tidied > 0 and r.enrichment == enrich.ENRICHED for r in called)},
+        "likely_terms": likely_block(spoken),
         "reasons": {
             "today": dict(sorted(Counter(r.today_reason for r in spoken).items())),
             "correction": dict(sorted(Counter(r.reason for r in spoken).items())),
@@ -736,6 +748,7 @@ def before_block(results: Sequence[TakeResult], terms: bool = False) -> dict:
         "enriched": sum(r.enrichment == enrich.ENRICHED for r in spoken),
         "enrichment_requests": len(called),
         "enrichment_refused": sum(r.enrichment == enrich.REFUSED for r in spoken),
+        "likely_terms": likely_block(spoken),
         "latency": {
             "transcription_p50_s": _seconds([r.asr_s for r in results], 50),
             "transcription_p95_s": _seconds([r.asr_s for r in results], 95),
@@ -962,7 +975,8 @@ def default_streamer(hints: Sequence[str]) -> tuple[Streamer, dict]:
     return stream, {"model": name, **asdict(options)}
 
 
-def default_product(vocabulary: object, generic_terms: Sequence[str], product_timeouts: bool = False) -> Product:
+def default_product(vocabulary: object, generic_terms: Sequence[str], product_timeouts: bool = False,
+                    correction_candidates: bool = True) -> Product:
     """The app's text pipeline, project folders, context packs and rewriter from its config, warmed up.
 
     The rewriter gets ``BENCH_TIMEOUT_S`` for both calls; the local model is
@@ -970,7 +984,9 @@ def default_product(vocabulary: object, generic_terms: Sequence[str], product_ti
     on purpose or unloaded. With ``product_timeouts`` the rewriter is the
     app's own, with the config's timeouts, and the model is left as it is
     (no warm-up turn here), so a first call may meet a model that is not
-    loaded. Raises SettingsError when Ollama cannot answer.
+    loaded. ``correction_candidates`` False leaves the terms that sound like
+    the dictation out of the correction prompt (``AutoRewriter(likely_terms=
+    False)``). Raises SettingsError when Ollama cannot answer.
     """
     from dataclasses import replace
 
@@ -996,10 +1012,11 @@ def default_product(vocabulary: object, generic_terms: Sequence[str], product_ti
     if product_timeouts:
         # As the app: the warm-up at each mouse 5 hold and the bounded wait before a correction.
         warmer = ModelWarmer(client, config.ollama_model)
-        rewriter = autorewrite.AutoRewriter(client, config.ollama_model, config.autorewrite, warmer=warmer)
+        rewriter = autorewrite.AutoRewriter(client, config.ollama_model, config.autorewrite, warmer=warmer,
+                                            likely_terms=correction_candidates)
     else:
         settings = replace(config.autorewrite, timeout_s=BENCH_TIMEOUT_S, enrich_timeout_s=BENCH_TIMEOUT_S)
-        rewriter = autorewrite.AutoRewriter(client, config.ollama_model, settings)
+        rewriter = autorewrite.AutoRewriter(client, config.ollama_model, settings, likely_terms=correction_candidates)
     holder = Window()
     folders = ProjectFolders(config.project_context.folders, config.voice.shortcut_dirs)
     pipeline = TextPipeline(config, vocabulary=vocabulary, generic_terms=generic_terms, describe=holder.describe,
@@ -1240,12 +1257,18 @@ def report_lines(summary: dict) -> list[str]:
         if isinstance(heard, dict):
             lines.append(f"  heard-term hints: switched in {heard['takes_switched']} of {heard['sources']} takes "
                          f"({heard['switches']} switches); heard otherwise than before {heard['heard_changed']}")
+        likely = block.get("likely_terms")
+        if isinstance(likely, dict):
+            lines.append(f"  correction prompts listing terms that sound like the dictation: {likely['takes']} "
+                         f"({likely['terms']} terms)")
         if block.get("hints"):
             lines.append("  decoding hints: " + ", ".join(f"{k or 'today'} {v}" for k, v in block["hints"].items()))
         over = block.get("over_product_timeout") or {}
         if over.get("correction") is not None:
             lines.append(f"  over the product timeout: correction {over['correction']} of "
                          f"{over.get('correction_calls', '?')} calls, enrichment {over.get('enrichment')}")
+    if (summary.get("rewrite") or {}).get("correction_candidates") is False:
+        lines.append("correction candidates: off (ablation)")
     first = (summary.get("rewrite") or {}).get("first_call")
     if first:
         lines.append(f"first model call: {first['seconds']:g} s, {first['reason']} (model loaded before: "
@@ -1286,6 +1309,8 @@ def main(
     parser.add_argument("--timeouts", choices=("bench", "product"), default="bench",
                         help="bench: a long measurement timeout after one warm-up turn (default); product: the "
                              "app's timeouts and warm-up, with the model as it is")
+    parser.add_argument("--no-correction-candidates", action="store_true",
+                        help="ablation: leave the terms that sound like the dictation out of the correction prompt")
     args = parser.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -1338,9 +1363,13 @@ def main(
     hints = whisper_hints(vocabulary, (), generic)
     from bench.engines.base import EngineError, EngineUnavailable
 
+    options: dict[str, bool] = {}
+    if args.timeouts == "product":
+        options["product_timeouts"] = True
+    if args.no_correction_candidates:
+        options["correction_candidates"] = False
     try:
-        product = (product_factory(vocabulary, generic) if args.timeouts == "bench"
-                   else product_factory(vocabulary, generic, product_timeouts=True))
+        product = product_factory(vocabulary, generic, **options)
     except SettingsError as exc:
         out(f"error: {exc}")
         return 2
@@ -1413,6 +1442,7 @@ def main(
     rewrite = {key: product.info[key] for key in ("model", "timeout_s", "enrich_timeout_s", "bench_timeout_s",
                                                   "timeouts", "keep_alive", "load_wait_s", "cleanup")
                if key in product.info}
+    rewrite["correction_candidates"] = not args.no_correction_candidates
     rewrite["first_call"] = first_call(earlier, loaded_before)
     summary = build_summary(ordered, engine, rewrite)
 

@@ -60,7 +60,7 @@ import re
 import time
 import unicodedata
 from collections import Counter
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 
 from quill.cleanup import HESITATIONS
@@ -232,21 +232,26 @@ def brief(summary: str) -> str:
     return (cut[:space] if space > 0 else cut).rstrip(" ,;:-(")
 
 
-def pack_data(pack: object | None, project: str = "", *, short: bool = False) -> str:
-    """The user-message blocks of the project context; '' without a project and a pack.
+def pack_data(pack: object | None, project: str = "", *, short: bool = False, likely: Sequence[str] = ()) -> str:
+    """The user-message blocks of the project context; '' without a project, a pack and ``likely`` terms.
 
     ``short`` gives only the summary's first sentence (``brief``): the
-    enrichment's context part holds at most one sentence.
+    enrichment's context part holds at most one sentence. ``likely`` (the
+    correction's terms that sound like the dictation, already bounded) is a
+    block of its own just before the pack terms.
     """
     summary, terms = pack_parts(pack)
     if short:
         summary = brief(summary)
     project = _clean(project, MAX_PROJECT_CHARS)
+    likely = [term for term in (_clean(term, MAX_TERMS_CHARS) for term in likely if isinstance(term, str)) if term]
     lines = []
     if project:
         lines += ["<project_name>", project, "</project_name>"]
     if summary:
         lines += ["<project_summary>", summary, "</project_summary>"]
+    if likely:
+        lines += ["<likely_terms>", ", ".join(likely), "</likely_terms>"]
     if terms:
         lines += ["<project_terms>", ", ".join(terms), "</project_terms>"]
     return "\n".join(lines)

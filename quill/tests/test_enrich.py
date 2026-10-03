@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 from quill import enrich as E
 from quill.ollama import OllamaError
+from quill.reply_terms import ReplyContext, ReplyOption
 
 DICTATION = ("Acrescenta a exportação do relatório de encomendas em CSV no painel de gestão, sem mexer na API "
              "pública, e os testes do painel passam.")
@@ -492,6 +493,100 @@ class OneParagraphTest(unittest.TestCase):
         self.assertNotIn("\n", shown)
         self.assertEqual(E.WORD.findall(shown), E.WORD.findall(text))
         self.assertEqual(E.one_paragraph(""), "")
+
+
+# The last Claude Code reply (invented): it asks, and offers words the dictation does not have.
+ASKS = ReplyContext(terms=("armazém", "fornecedores", "exportação"), options=(ReplyOption("1"), ReplyOption("2")),
+                    asks=True, words=30)
+STATES = ReplyContext(terms=ASKS.terms, asks=False, words=30)
+ANSWER = "Sim, avança com a exportação do relatório de encomendas, mas sem mexer na API pública."
+
+
+class ReplyTest(unittest.TestCase):
+    """The reply only decides whether a short answer is enriched; its words never reach the prompt or the guard."""
+
+    def setUp(self) -> None:
+        self.clock = Clock()
+
+    def run_with(self, client: FakeClient, text: str, reply: object | None) -> E.Enrichment:
+        enricher = E.Enricher(client, "qwen3:8b", 12.0, clock=self.clock)
+        with self.assertLogs("quill.enrich", logging.INFO) as logs:
+            logging.getLogger("quill.enrich").info("start")
+            result = enricher.enrich(text, pack=PACK, project=PROJECT, reply=reply)
+        for line in logs.output:
+            for word in (*PRIVATE, "fornecedores", "avança", "pública"):
+                self.assertNotIn(word, line)
+        self.logs = logs.output
+        return result
+
+    def test_a_short_answer_to_a_question_is_not_enriched(self) -> None:
+        self.assertLessEqual(len(E.WORD.findall(ANSWER)), E.MAX_REPLY_WORDS)
+        self.assertEqual(E.MAX_REPLY_WORDS, 25)
+        client = FakeClient("Pedido: " + ANSWER)
+        result = self.run_with(client, ANSWER, ASKS)
+        self.assertEqual((result.reason, result.text, result.enriched, client.calls), (E.REPLY, ANSWER, False, []))
+        self.assertEqual(result.reason, "enrich_reply")
+        self.assertEqual(result.message, "Resposta ao Claude; foi o texto corrigido, sem enriquecer")
+        self.assertIn("enrich: enrich_reply", self.logs[-1])
+        enricher = E.Enricher(client, "m", 12.0)
+        self.assertFalse(enricher.wants(ANSWER, reply=ASKS))
+        self.assertTrue(enricher.wants(ANSWER))
+        # Offered options alone count as asking (derive sets asks for them).
+        self.assertTrue(E.answers(10, ReplyContext(options=(ReplyOption("1"), ReplyOption("2")), asks=True)))
+
+    def test_the_word_cap_and_the_question_decide(self) -> None:
+        self.assertTrue(E.answers(E.MAX_REPLY_WORDS, ASKS))
+        self.assertFalse(E.answers(E.MAX_REPLY_WORDS + 1, ASKS))
+        self.assertFalse(E.answers(3, STATES))
+        self.assertFalse(E.answers(3, None))
+        self.assertFalse(E.answers(3, SimpleNamespace(asks="yes")))  # only a real flag counts
+        self.assertFalse(E.answers(3, object()))
+        # A shorter dictation stays enrich_short, as today.
+        client = FakeClient()
+        self.assertEqual(self.run_with(client, "Sim, continua.", ASKS).reason, E.SHORT)
+        self.assertEqual(client.calls, [])
+
+    def test_a_longer_dictation_or_a_reply_that_does_not_ask_is_enriched_as_today(self) -> None:
+        for text, reply in ((DICTATION, STATES), (DICTATION + " " + DICTATION, ASKS)):
+            with self.subTest(words=len(E.WORD.findall(text)), asks=reply.asks):
+                client, today_client = FakeClient("Pedido: " + text), FakeClient("Pedido: " + text)
+                self.clock.now = 100.0
+                result = self.run_with(client, text, reply)
+                self.clock.now = 100.0
+                today = self.run_with(today_client, text, None)
+                self.assertEqual(result, today)
+                self.assertEqual([(c.system, c.user) for c in client.calls],
+                                 [(c.system, c.user) for c in today_client.calls])
+                self.assertEqual((client.calls[0].system, client.calls[0].user),
+                                 E.build_prompt(text, E.PT, PACK, PROJECT))
+                for word in ("fornecedores", "reply"):
+                    self.assertNotIn(word, client.calls[0].user)
+
+    def test_reply_words_stay_invented_for_the_guard(self) -> None:
+        copied = REPLY + "\n- Inclui os fornecedores do armazém."
+        result = self.run_with(FakeClient(copied), DICTATION, STATES)
+        self.assertEqual((result.reason, result.detail, result.text), (E.REFUSED, E.INVENTED, DICTATION))
+        self.assertNotIn("fornecedores", E.pack_words(PACK, PROJECT))
+        self.assertEqual(E.guard(DICTATION, copied, pack=PACK, project=PROJECT).reason, E.INVENTED)
+
+    def test_without_a_reply_outcomes_are_todays(self) -> None:
+        cases = ((DICTATION, REPLY), (DICTATION, REPLY + "\n- Garante cobertura total dos testes."),
+                 ("Sim, continua.", REPLY), (ANSWER, "Pedido: " + ANSWER))
+        for text, reply in cases:
+            for given in (None, ReplyContext()):
+                with self.subTest(text=text[:15], given=repr(given)):
+                    self.clock.now = 100.0
+                    client = FakeClient(reply)
+                    result = self.run_with(client, text, given)
+                    self.clock.now = 100.0
+                    today_client = FakeClient(reply)
+                    enricher = E.Enricher(today_client, "qwen3:8b", 12.0, clock=self.clock)
+                    today = enricher.enrich(text, pack=PACK, project=PROJECT)
+                    self.assertEqual(result, today)
+                    self.assertEqual([(c.system, c.user) for c in client.calls],
+                                     [(c.system, c.user) for c in today_client.calls])
+                    self.assertEqual(E.Enricher(client, "m", 12.0).wants(text, reply=given),
+                                     E.Enricher(client, "m", 12.0).wants(text))
 
 
 if __name__ == "__main__":

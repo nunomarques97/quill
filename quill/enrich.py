@@ -45,6 +45,14 @@ The reply goes through a deterministic guard (``guard``), which refuses it when
 - its letters leave ``LENGTH_BOUNDS`` of the input's, or the Contexto part
   has more than ``MAX_CONTEXT_WORDS`` words.
 
+When the last reply of the target's Claude Code session asks a question or
+offers options (``reply``: a ``quill.reply_terms.ReplyContext`` with ``asks``)
+and the corrected dictation has at most ``MAX_REPLY_WORDS`` words, it is an
+answer, not a new request: the model is not asked and the corrected text is
+typed (``REPLY``). Only that flag is used: the reply's words never enter the
+prompt or ``pack_words``, so a reply word the dictation does not have is still
+``INVENTED``.
+
 Content words are every word except function words and hesitations; words of
 negation, condition, alternative and contrast are content words
 (``quill.autorewrite`` uses the same split). A refusal, an Ollama failure or
@@ -70,8 +78,8 @@ from quill.corrections import FUNCTION_WORDS
 
 log = logging.getLogger("quill.enrich")
 
-__all__ = ["Enricher", "Enrichment", "LABELS", "brief", "build_prompt", "guard", "language", "one_paragraph",
-           "pack_data", "tidy"]
+__all__ = ["Enricher", "Enrichment", "LABELS", "answers", "brief", "build_prompt", "guard", "language",
+           "one_paragraph", "pack_data", "tidy"]
 
 PT, EN = "pt", "en"
 OBJECTIVE, CONTEXT, REQUEST, CONSTRAINTS, ACCEPTANCE = "objective", "context", "request", "constraints", "acceptance"
@@ -101,6 +109,9 @@ MAX_BRIEF_CHARS = 200  # the summary's first sentence the enrichment sees
 MAX_TERMS_CHARS = 1500
 MAX_PROJECT_CHARS = 60
 MIN_WORDS = 6  # a shorter dictation (a quick reply such as "sim, continua") is not enriched
+# A dictation of at most this many words that follows a Claude Code reply asking a question or offering options
+# is an answer ("sim, avança com a segunda opção mas sem mexer nos testes"): it is typed without enrichment.
+MAX_REPLY_WORDS = 25
 MIN_TOKENS = 256
 TOKENS_PER_WORD = 6
 MAX_CONTEXT_WORDS = 60
@@ -109,6 +120,7 @@ LENGTH_BOUNDS = (0.8, 1.6)  # letters outside the context part over the input's,
 # Outcomes (reason codes; logged).
 ENRICHED = "enrich_enriched"
 SHORT = "enrich_short"
+REPLY = "enrich_reply"  # an answer to the last Claude Code reply: not enriched
 REFUSED = "enrich_refused"
 FAILED = "enrich_ollama_failed"
 TIMEOUT = "enrich_timeout"
@@ -132,6 +144,7 @@ MESSAGES = {
     REFUSED: "Enriquecimento recusado; foi o texto corrigido",
     FAILED: "Ollama indisponível; foi o texto corrigido",
     TIMEOUT: "O enriquecimento demorou demais; foi o texto corrigido",
+    REPLY: "Resposta ao Claude; foi o texto corrigido, sem enriquecer",
 }
 
 # ---------------------------------------------------------------- words
@@ -660,6 +673,11 @@ class Enrichment:
         return MESSAGES.get(self.reason)
 
 
+def answers(words: int, reply: object | None) -> bool:
+    """Whether a dictation of ``words`` words answers ``reply``: it asks or offers options, at most MAX_REPLY_WORDS."""
+    return reply is not None and getattr(reply, "asks", False) is True and words <= MAX_REPLY_WORDS
+
+
 class Enricher:
     """One chat turn with the local model for a corrected Claude Code dictation, then ``guard``."""
 
@@ -670,11 +688,14 @@ class Enricher:
         self.timeout_s = timeout_s
         self.clock = clock
 
-    def wants(self, text: str) -> bool:
-        """Whether ``enrich`` would ask the model (long enough, not too long)."""
-        return len(WORD.findall(text)) >= MIN_WORDS and len(text) <= MAX_TEXT_CHARS
+    def wants(self, text: str, *, reply: object | None = None) -> bool:
+        """Whether ``enrich`` would ask the model (long enough, not too long, not an answer to ``reply``)."""
+        words = len(WORD.findall(text))
+        return words >= MIN_WORDS and len(text) <= MAX_TEXT_CHARS and not answers(words, reply)
 
-    def enrich(self, text: str, *, pack: object | None = None, project: str = "") -> Enrichment:
+    def enrich(self, text: str, *, pack: object | None = None, project: str = "",
+               reply: object | None = None) -> Enrichment:
+        """``reply`` (the last Claude Code reply's ``ReplyContext``; None: none) only decides ``REPLY``."""
         lang = language(text)
         words = len(WORD.findall(text))
 
@@ -689,6 +710,8 @@ class Enricher:
             return done(SHORT)
         if len(text) > MAX_TEXT_CHARS:
             return done(REFUSED, detail=TOO_LONG)
+        if answers(words, reply):
+            return done(REPLY)
         system, user = build_prompt(text, lang, pack, project)
         started = self.clock()
         try:

@@ -552,6 +552,41 @@ class ClaudeCodeTest(ConfigCase):
             self.rejected(f"[claude_code]\nfocus_check = {bad}\n", "claude_code.focus_check")
         self.rejected("[claude_code]\nsend = \"enter\"\n", "claude_code.send")
 
+    def test_the_example_turns_the_last_reply_context_on_with_caps(self) -> None:
+        settings = load_config(None).claude_code
+        self.assertEqual((settings.last_reply_context, settings.last_reply_max_chars, settings.last_reply_max_terms,
+                          settings.last_reply_max_age_h), (True, 4000, 40, 12))
+        # A Config built without the section has the same defaults.
+        default = config.ClaudeCode()
+        self.assertEqual((default.last_reply_context, default.last_reply_max_chars, default.last_reply_max_terms,
+                          default.last_reply_max_age_h), (True, 4000, 40, 12))
+
+    def test_local_last_reply_settings_are_read(self) -> None:
+        settings = self.load("[claude_code]\nlast_reply_context = false\nlast_reply_max_chars = 200\n"
+                             "last_reply_max_terms = 100\nlast_reply_max_age_h = 168\n").claude_code
+        self.assertEqual((settings.last_reply_context, settings.last_reply_max_chars, settings.last_reply_max_terms,
+                          settings.last_reply_max_age_h), (False, 200, 100, 168))
+        # One field alone keeps the others from the example.
+        settings = self.load("[claude_code]\nlast_reply_max_terms = 1\n").claude_code
+        self.assertEqual((settings.last_reply_context, settings.last_reply_max_chars, settings.last_reply_max_terms,
+                          settings.last_reply_max_age_h, settings.send_key), (True, 4000, 1, 12, "enter"))
+        settings = self.load("[claude_code]\nlast_reply_max_chars = 20000\nlast_reply_max_age_h = 1\n").claude_code
+        self.assertEqual((settings.last_reply_max_chars, settings.last_reply_max_age_h), (20000, 1))
+
+    def test_bad_last_reply_values_are_refused(self) -> None:
+        for bad in ("1", "\"true\"", "\"on\"", "[true]"):
+            self.rejected(f"[claude_code]\nlast_reply_context = {bad}\n", "claude_code.last_reply_context")
+        cases = {
+            "last_reply_max_chars": ("199", "20001", "0", "-1", "4000.0", "true", "\"4000\""),
+            "last_reply_max_terms": ("0", "101", "-5", "40.5", "false", "\"40\""),
+            "last_reply_max_age_h": ("0", "169", "-1", "12.0", "true", "\"12\""),
+        }
+        for name, values in cases.items():
+            for bad in values:
+                message = self.rejected(f"[claude_code]\n{name} = {bad}\n", f"claude_code.{name}")
+                self.assertIn("must be an integer from", message)
+        self.rejected("[claude_code]\nlast_reply = true\n", "claude_code.last_reply")
+
 
 class FinalPassTest(ConfigCase):
     """[final_pass]: the whole-audio decode of mouse 5 into Claude Code."""

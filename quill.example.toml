@@ -301,9 +301,29 @@ build_timeout_s = 5.0
 # claudeCode.useCtrlEnterToSend is on (then Enter only adds a line). Line
 # breaks are typed as Shift+Enter either way. A Claude Code terminal always
 # gets Enter.
+# last_reply_context: mouse 5 (send_polished) into Claude Code uses the last
+# reply of that project's Claude Code session as correction context. Quill
+# reads it locally and read-only from the Claude Code session files (only
+# attended sessions, through the pointer the Stop hook leaves in local/, else
+# the newest session file of the folder), keeps a short list of its words
+# (identifiers, file names, offered options, content words; never numbers)
+# and uses them as decoding hints that were heard, as sound-close
+# replacements in the correction (never added, never for names or numbers)
+# and to type a short answer to a question as it is, without enrichment.
+# Claude's words are never copied into the text, and no text, title or path
+# is logged. false turns it off: mouse 5 is then exactly as before, and the
+# Stop hook leaves no pointer.
+# last_reply_max_chars (200-20000): characters of the reply's visible text
+# read, from its end. last_reply_max_terms (1-100): terms kept from it.
+# last_reply_max_age_h (1-168): a session file or pointer older than this many
+# hours gives no context.
 [claude_code]
 send_key = "enter"
 focus_check = true
+last_reply_context = true
+last_reply_max_chars = 4000
+last_reply_max_terms = 40
+last_reply_max_age_h = 12
 
 # Final pass of mouse 5 (send_polished) into Claude Code. After the release,
 # the streaming final text is ready as today; then the whole recorded speech

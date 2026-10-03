@@ -65,6 +65,10 @@ UNDO_WINDOW_RANGE = (5, 600)
 # The key that submits a prompt in the Claude Code panel of VS Code: Enter, or Ctrl+Enter when the
 # extension's claudeCode.useCtrlEnterToSend setting is on.
 SEND_KEYS = ("enter", "ctrl+enter")
+# [claude_code] last reply context: characters of the reply text read, terms derived from it, and its age.
+REPLY_CHARS_RANGE = (200, 20000)
+REPLY_TERMS_RANGE = (1, 100)
+REPLY_AGE_RANGE = (1, 168)  # hours
 
 # Virtual-key codes of the inputs a trigger may use.
 BUTTONS = {"middle": 0x04, "xbutton1": 0x05, "xbutton2": 0x06}
@@ -113,7 +117,8 @@ SCHEMA: dict[str, object] = {
     "claude_alert": {"enabled": None, "sound": None, "filter": None, "speak_project": None, "speech_volume": None,
                      "speech_rate": None, "own_voice": None},
     "voice_commands": {"shortcut_dirs": None, "model": None},
-    "claude_code": {"send_key": None, "focus_check": None},
+    "claude_code": {"send_key": None, "focus_check": None, "last_reply_context": None, "last_reply_max_chars": None,
+                    "last_reply_max_terms": None, "last_reply_max_age_h": None},
     "final_pass": {"enabled": None, "model": None, "beam_size": None, "temperature_fallback": None, "hints": None,
                    "timeout_s": None},
     "project_context": {"folders": NAMES_TABLE, "cache": None, "max_age_h": None, "build_timeout_s": None},
@@ -218,10 +223,20 @@ class ClaudeCode:
     """``[claude_code]``: ``send_key`` is the key the send triggers press after the text in the
     Claude Code panel of VS Code (``SEND_KEYS``; a Claude Code terminal always gets Enter), and
     ``focus_check`` lets Quill ask UI Automation which element has the focus in a VS Code window
-    whose title does not say Claude Code (``quill.uia``), so the Claude Code editor tab is found."""
+    whose title does not say Claude Code (``quill.uia``), so the Claude Code editor tab is found.
+
+    ``last_reply_context`` lets mouse 5 into Claude Code use the last reply of that project's
+    Claude Code session as correction context (``quill.claude_reply``, ``quill.reply_terms``):
+    at most ``last_reply_max_chars`` characters of its visible text are read, at most
+    ``last_reply_max_terms`` terms are derived from them, and a session older than
+    ``last_reply_max_age_h`` hours gives none. Off, mouse 5 is today's."""
 
     send_key: str = "enter"
     focus_check: bool = True
+    last_reply_context: bool = True
+    last_reply_max_chars: int = 4000
+    last_reply_max_terms: int = 40
+    last_reply_max_age_h: int = 12
 
 
 @dataclass(frozen=True)
@@ -547,6 +562,13 @@ def _claude_code(data: dict[str, object]) -> ClaudeCode:
     return ClaudeCode(
         send_key=_choice(_get(data, "claude_code.send_key"), "claude_code.send_key", SEND_KEYS),
         focus_check=_bool(_get(data, "claude_code.focus_check"), "claude_code.focus_check"),
+        last_reply_context=_bool(_get(data, "claude_code.last_reply_context"), "claude_code.last_reply_context"),
+        last_reply_max_chars=_integer(_get(data, "claude_code.last_reply_max_chars"),
+                                      "claude_code.last_reply_max_chars", REPLY_CHARS_RANGE),
+        last_reply_max_terms=_integer(_get(data, "claude_code.last_reply_max_terms"),
+                                      "claude_code.last_reply_max_terms", REPLY_TERMS_RANGE),
+        last_reply_max_age_h=_integer(_get(data, "claude_code.last_reply_max_age_h"),
+                                      "claude_code.last_reply_max_age_h", REPLY_AGE_RANGE),
     )
 
 

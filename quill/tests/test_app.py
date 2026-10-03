@@ -1424,6 +1424,7 @@ class RewriteOffTest(RewriteCase):
     def test_disabled_rewrite_still_polishes_mouse_5_only(self):
         quill = self.rewriting_app(enabled=False)
         self.assertIsNotNone(quill.rewriter)  # send_polished is bound in the example
+        self.assertIs(quill.rewriter.likely_terms, False)  # the correction candidates are off in the app
         self.start(quill)
         self.hold(WORDS, quill=quill)  # mouse 4, long: [autorewrite] is off
         self.assertEqual(self.ollama.calls, [])

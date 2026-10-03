@@ -39,12 +39,14 @@ vocabulary term that fits the context and sounds close. The guard is the
 same, with one allowance: a replacement whose new words are exactly a pack or
 vocabulary term is also a fix when the rules above hold on sound keys
 (``sound_key``: k/c/q, ph/f, y/i, silent h, doubled letters and w/u/v
-folded) with the same bounds, and never otherwise. The prompt first lists, in
-their own data block, the terms that sound like words of the dictation
-(``likely_terms``: at most ``MAX_LIKELY_TERMS`` terms and
-``MAX_LIKELY_CHARS`` characters, matched by ``quill.heard.HeardMatcher``);
-the list only shows which terms to check first and changes nothing in the
-guard. ``AutoRewriter(likely_terms=False)`` leaves it out. Then, when asked, the
+folded) with the same bounds, and never otherwise. With
+``AutoRewriter(likely_terms=True)`` the prompt first lists, in their own data
+block, the terms that sound like words of the dictation (``likely_terms``: at
+most ``MAX_LIKELY_TERMS`` terms and ``MAX_LIKELY_CHARS`` characters, matched
+by ``quill.heard.HeardMatcher``); the list only shows which terms to check
+first and changes nothing in the guard. It is off by default
+(``LIKELY_TERMS``): measured on the recorded prompts, it fixed no more domain
+terms and more corrections were refused, so fewer prompts were enriched. Then, when asked, the
 corrected text is enriched into a structured prompt (``quill.enrich``, its
 own guard and ``enrich_timeout_s``); a refused, failed or timed-out
 enrichment keeps the corrected text, and a refused or failed correction
@@ -104,6 +106,8 @@ MAX_VOCABULARY_CHARS = 1500
 MAX_PROJECT_CHARS = 60
 MAX_LIKELY_TERMS = 10  # terms that sound like the dictation, listed first in context mode ...
 MAX_LIKELY_CHARS = 200  # ... joined by ", "
+# Whether context mode lists them by default: off, as it fixed no more domain terms on the recorded prompts.
+LIKELY_TERMS = False
 MIN_TOKENS = 128
 TOKENS_PER_WORD = 3
 
@@ -590,13 +594,14 @@ class AutoRewriter:
     most ``settings.load_wait_s`` for it, then gives the model ``timeout_s``,
     so it ends within their sum. After a timeout or a failure the warmer loads
     the model in the background for the next dictation. ``likely_terms``
-    False leaves the terms that sound like the dictation out of the context
-    mode prompt (a measurement ablation; the guard is the same either way).
+    True lists the terms that sound like the dictation first in the context
+    mode prompt (off by default, ``LIKELY_TERMS``; the guard is the same
+    either way).
     """
 
     def __init__(self, client: object, model: str, settings: Settings, *,
                  clock: Callable[[], float] = time.perf_counter, warmer: object | None = None,
-                 likely_terms: bool = True) -> None:
+                 likely_terms: bool = LIKELY_TERMS) -> None:
         self.client = client
         self.model = model
         self.settings = settings

@@ -7,6 +7,8 @@ engine and the local model is a scripted fake client. The text pipeline and
 the rewriter are the app's own. No GPU, microphone, sound or Ollama is used.
 """
 
+import contextlib
+import io
 import json
 import re
 import tempfile
@@ -92,7 +94,7 @@ class ScriptedModel:
         return SimpleNamespace(content=text)
 
 
-def make_product(root, model, packs=PACKS, projects=PROJECTS, likely_terms=True):
+def make_product(root, model, packs=PACKS, projects=PROJECTS, likely_terms=autorewrite.LIKELY_TERMS):
     """The app's text pipeline, project detection and rewriter with invented folders and packs."""
     config = load_config(None, EXAMPLE_CONFIG)
     folders = {}
@@ -618,8 +620,9 @@ class ProjectHintsTest(Case):
         ids, sources = streamer.calls[3]
         self.assertEqual(ids, ["pp-01", "pp-02", "pp-03"])
         self.assertTrue(all(callable(h) and not isinstance(h, SessionHints) for h in sources))
-        # The relevance pass is the source's hints with nothing heard: the Phase 7 hints.
-        self.assertEqual([source("") for source in sources], hints)
+        # The relevance pass is the source's hints with nothing heard: the Phase 7 hints (a used source
+        # remembers what its session heard, so its initial hints).
+        self.assertEqual([source.initial for source in sources], hints)
         self.assertEqual(streamer.asked["pp-01"][0], "")
         self.assertTrue(streamer.chosen["pp-01"].hotwords.startswith("Kwartz"))  # heard, so first
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -955,7 +958,7 @@ class LikelyModel(ScriptedModel):
 
 
 class CorrectionCandidatesTest(Case):
-    """--no-correction-candidates: the ablation of the terms the correction prompt lists as sounding like the text."""
+    """The terms the correction prompt lists as sounding like the text: off as in the app, on as an ablation."""
 
     def run_main(self, *args):
         model = LikelyModel()
@@ -963,7 +966,8 @@ class CorrectionCandidatesTest(Case):
 
         def factory(vocab, generic, **options):
             asked.append(options)
-            return make_product(self.root, model, likely_terms=options.get("correction_candidates", True))
+            return make_product(self.root, model,
+                                likely_terms=options.get("correction_candidates", autorewrite.LIKELY_TERMS))
 
         summary = self.results / "committed-summary.json"
         vocabulary = self.root / "vocabulary.toml"
@@ -976,10 +980,21 @@ class CorrectionCandidatesTest(Case):
         self.assertEqual(code, 0)
         return json.loads(summary.read_text(encoding="utf-8")), asked, model, lines
 
-    def test_on_by_default_the_listed_terms_are_fixed_and_counted(self):
+    def test_off_by_default_as_in_the_app(self):
         self.record()
         summary, asked, model, lines = self.run_main()
         self.assertEqual(asked, [{}])
+        self.assertIs(summary["rewrite"]["correction_candidates"], False)
+        block = summary["sets"]["prompts"]
+        self.assertEqual(block["term_errors"], {"pipeline": 3, "today": 3, "new": 3})
+        self.assertEqual(block["likely_terms"], {"takes": 0, "terms": 0})
+        self.assertFalse(any("<likely_terms>" in call.user for call in model.calls))
+        self.assertFalse(any(line.startswith("correction candidates:") for line in lines))
+
+    def test_on_the_listed_terms_are_fixed_and_counted(self):
+        self.record()
+        summary, asked, model, lines = self.run_main("--correction-candidates")
+        self.assertEqual(asked, [{"correction_candidates": True}])
         self.assertIs(summary["rewrite"]["correction_candidates"], True)
         block = summary["sets"]["prompts"]
         # Three misheard terms, one per take, each listed (written terms are not): all fixed.
@@ -993,26 +1008,35 @@ class CorrectionCandidatesTest(Case):
         today = [call for call in model.calls if not call.enrich and "<project_terms>" not in call.user]
         self.assertTrue(today and not any("<likely_terms>" in call.user for call in today))
         self.assertIn("  correction prompts listing terms that sound like the dictation: 3 (3 terms)", lines)
-        self.assertNotIn("correction candidates: off (ablation)", lines)
+        self.assertIn("correction candidates: on (ablation)", lines)
         serialized = json.dumps(summary)
         for secret in ("Kwartz", "ledgerly", "quartz", "nimbus", "orchard"):
             self.assertNotIn(secret.casefold(), serialized.casefold())
 
-    def test_off_the_prompt_lists_nothing_and_the_summary_says_so(self):
+    def test_off_explicitly_is_the_default_and_no_ablation(self):
         self.record()
         summary, asked, model, lines = self.run_main("--no-correction-candidates")
         self.assertEqual(asked, [{"correction_candidates": False}])
         self.assertIs(summary["rewrite"]["correction_candidates"], False)
-        block = summary["sets"]["prompts"]
-        self.assertEqual(block["term_errors"], {"pipeline": 3, "today": 3, "new": 3})
-        self.assertEqual(block["likely_terms"], {"takes": 0, "terms": 0})
         self.assertFalse(any("<likely_terms>" in call.user for call in model.calls))
-        self.assertIn("correction candidates: off (ablation)", lines)
+        self.assertFalse(any(line.startswith("correction candidates:") for line in lines))
+
+    def test_both_switches_are_refused(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+            P.main(["--correction-candidates", "--no-correction-candidates"], out=lambda line: None)
+        self.assertEqual(raised.exception.code, 2)
 
     def test_the_ablation_combines_with_product_timeouts(self):
         self.record()
-        _, asked, _, _ = self.run_main("--no-correction-candidates", "--timeouts", "product")
-        self.assertEqual(asked, [{"product_timeouts": True, "correction_candidates": False}])
+        _, asked, _, _ = self.run_main("--correction-candidates", "--timeouts", "product")
+        self.assertEqual(asked, [{"product_timeouts": True, "correction_candidates": True}])
+
+    def test_the_report_names_only_a_switch_away_from_the_app(self):
+        for value, expected in ((True, ["correction candidates: on (ablation)"]), (False, []), (None, [])):
+            with self.subTest(value=value):
+                summary = {"sets": {}, "rewrite": {"correction_candidates": value}}
+                self.assertEqual([line for line in P.report_lines(summary)
+                                  if line.startswith("correction candidates:")], expected)
 
 
 class ProductTimeoutsTest(Case):

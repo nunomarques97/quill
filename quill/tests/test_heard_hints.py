@@ -155,12 +155,43 @@ class SelectionTest(unittest.TestCase):
         hints = source(heard)
         self.assertLessEqual(len(hints.prompt), len(HINTS_PREFIX) + V.HINT_MAX_CHARS + 1)
 
-    def test_the_same_heard_text_gives_the_same_hints(self):
+    def test_the_same_heard_texts_give_the_same_hints(self):
         source = self.source()
         first = source("o kelvan e a zeppa")
         self.assertEqual(source("o kelvan e a zeppa"), first)
         self.assertEqual(self.source()("o kelvan e a zeppa"), first)
-        self.assertNotEqual(first, source(""))
+        self.assertNotEqual(first, self.source()(""))
+        texts = ("o kelvan", "o kelvar e", "o pelvar e a zeppa", "")
+        once, again = self.source(), self.source()
+        self.assertEqual([once(text) for text in texts], [again(text) for text in texts])
+
+    def test_a_heard_term_stays_when_a_later_partial_words_it_otherwise(self):
+        source = self.source()
+        heard = source.words("o kelvan")
+        self.assertEqual(heard[2], "Kelvar")
+        # The tentative words changed: the term is no longer heard, the hints stay (no switch back and forth).
+        self.assertEqual(source.words("o pelvan"), heard)
+        self.assertEqual(source.words(""), heard)
+        self.assertEqual(source(""), session_hints(heard))
+        # A new term joins the heard ones; a closer match moves a term up; nothing heard is ever dropped.
+        self.assertEqual(source.words("o pelvan e a zepi")[2:4], ["Kelvar", "Zeppa"])
+        self.assertEqual(source.words("a zeppa")[2:4], ["Zeppa", "Kelvar"])
+        self.assertEqual(source.words("o kelvan")[2:4], ["Zeppa", "Kelvar"])
+        # A fresh source (the next session) starts from today's project hints.
+        self.assertEqual(self.source().words(""), V.whisper_hints(self.vocabulary, project_terms(
+            "orchard", PACK, self.today), self.GENERIC))
+        self.assertEqual(source.initial, self.source().initial)
+
+    def test_the_hints_change_only_when_a_term_is_new_or_closer(self):
+        source = self.source()
+        partials = ["o", "o kelvan", "o kelvan e", "o pelvan e a", "o kelvan e a zepi", "o kelvan e a zepi x",
+                    "o pelvan e a zeppa", "o kelvan e a zeppa", "o kelvar e a zeppa"]
+        hints = [source(text) for text in partials]
+        changes = sum(a != b for a, b in zip([source.initial, *hints], hints))
+        # New Kelvar (1 edit), new Zeppa (1 edit), Zeppa exact, Kelvar exact: 4, not one per changed partial.
+        self.assertEqual(changes, 4)
+        stateless = [self.source()(text) for text in partials]
+        self.assertGreater(sum(a != b for a, b in zip([source.initial, *stateless], stateless)), changes)
 
 
 if __name__ == "__main__":

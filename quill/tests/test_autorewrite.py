@@ -946,7 +946,9 @@ class LikelyTermsTest(unittest.TestCase):
     TERMS = ("nimbus-deck", *LIKELY_PACK.terms, *KEEP)
 
     def rewrite(self, client: FakeClient, **kwargs: object) -> tuple[A.AutoRewrite, list[str]]:
-        options = {"likely_terms": kwargs.pop("likely_terms")} if "likely_terms" in kwargs else {}
+        """One context-mode rewrite with the list on, unless ``likely_terms`` says otherwise (None: the default)."""
+        likely = kwargs.pop("likely_terms", True)
+        options = {} if likely is None else {"likely_terms": likely}
         rewriter = A.AutoRewriter(client, "m", CONTEXT_ON, clock=Clock(), **options)
         with self.assertLogs("quill", logging.INFO) as logs:
             logging.getLogger("quill").info("start")
@@ -1015,20 +1017,24 @@ class LikelyTermsTest(unittest.TestCase):
                                  A.build_prompt(LIKELY_HEARD, profile, KEEP, "nimbus-deck"))
                 self.assertEqual((result.reason, result.likely), (A.UNCHANGED, 0))
 
-    def test_on_by_default_and_off_by_the_constructor(self) -> None:
+    def test_off_by_default_and_on_by_the_constructor(self) -> None:
+        # Off by default, so for the app's rewriter too (it passes no option): the Phase 7 context prompt.
+        self.assertIs(A.LIKELY_TERMS, False)
+        for likely in (None, False):
+            with self.subTest(likely_terms=likely):
+                client = LikelyModel()
+                result, logs = self.rewrite(client, likely_terms=likely)
+                self.assertEqual((result.reason, result.text, result.likely), (A.UNCHANGED, LIKELY_HEARD, 0))
+                self.assertEqual((client.calls[0].system, client.calls[0].user),
+                                 A.build_prompt(LIKELY_HEARD, "claude-code", KEEP, "nimbus-deck", context=True,
+                                                pack=LIKELY_PACK))
+                self.assertNotIn("likely terms", logs[-1])
+        # On: the list goes first, so the scripted model fixes the listed terms.
         client = LikelyModel()
-        result, logs = self.rewrite(client)
+        result, logs = self.rewrite(client, likely_terms=True)
         self.assertEqual((result.reason, result.text, result.likely), (A.REWRITTEN, LIKELY_FIXED, 3))
         self.assertIn("<likely_terms>\nwallet, deploy, nimbus-deck\n</likely_terms>", client.calls[0].user)
         self.assertIn("3 likely terms", logs[-1])
-        # Off: the Phase 7 context prompt, so the scripted model fixes nothing.
-        client = LikelyModel()
-        result, logs = self.rewrite(client, likely_terms=False)
-        self.assertEqual((result.reason, result.text, result.likely), (A.UNCHANGED, LIKELY_HEARD, 0))
-        self.assertEqual((client.calls[0].system, client.calls[0].user),
-                         A.build_prompt(LIKELY_HEARD, "claude-code", KEEP, "nimbus-deck", context=True,
-                                        pack=LIKELY_PACK))
-        self.assertNotIn("likely terms", logs[-1])
 
     def test_a_failing_match_keeps_the_correction_without_the_list(self) -> None:
         client = LikelyModel()

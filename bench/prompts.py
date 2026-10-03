@@ -3,7 +3,7 @@
 Usage:
     py -3.12 -m bench.prompts --dry-run [--set all|prompts|dictation] [--require]
     .venv\\Scripts\\python -m bench.prompts [--set all|prompts|dictation] [--summary PATH] [--require]
-        [--timeouts bench|product] [--no-correction-candidates]
+        [--timeouts bench|product] [--correction-candidates | --no-correction-candidates]
     py -3.12 -m bench.prompts --check SUMMARY
 
 Two sets are measured. ``prompts`` (``bench/dictation/guiao-prompts-pt.md``,
@@ -58,8 +58,10 @@ of the quill config), exactly as the session asks it:
 - new: the detected project, its pack, context mode and the enrichment.
   Its correction prompt lists the terms that sound like the dictation
   first (``quill.autorewrite.likely_terms``; counted per set as
-  ``likely_terms``); ``--no-correction-candidates`` leaves them out, an
-  ablation reported as ``rewrite.correction_candidates``.
+  ``likely_terms``) only when the app does (``quill.autorewrite.LIKELY_TERMS``,
+  off); ``--correction-candidates`` and ``--no-correction-candidates`` turn
+  the list on or off, an ablation reported as
+  ``rewrite.correction_candidates``.
 
 Measured, against targets that are never lowered here:
 
@@ -976,7 +978,7 @@ def default_streamer(hints: Sequence[str]) -> tuple[Streamer, dict]:
 
 
 def default_product(vocabulary: object, generic_terms: Sequence[str], product_timeouts: bool = False,
-                    correction_candidates: bool = True) -> Product:
+                    correction_candidates: bool = autorewrite.LIKELY_TERMS) -> Product:
     """The app's text pipeline, project folders, context packs and rewriter from its config, warmed up.
 
     The rewriter gets ``BENCH_TIMEOUT_S`` for both calls; the local model is
@@ -984,9 +986,10 @@ def default_product(vocabulary: object, generic_terms: Sequence[str], product_ti
     on purpose or unloaded. With ``product_timeouts`` the rewriter is the
     app's own, with the config's timeouts, and the model is left as it is
     (no warm-up turn here), so a first call may meet a model that is not
-    loaded. ``correction_candidates`` False leaves the terms that sound like
-    the dictation out of the correction prompt (``AutoRewriter(likely_terms=
-    False)``). Raises SettingsError when Ollama cannot answer.
+    loaded. ``correction_candidates`` lists the terms that sound like the
+    dictation first in the correction prompt (``AutoRewriter(likely_terms=
+    ...)``; the app's default when not given). Raises SettingsError when
+    Ollama cannot answer.
     """
     from dataclasses import replace
 
@@ -1267,8 +1270,9 @@ def report_lines(summary: dict) -> list[str]:
         if over.get("correction") is not None:
             lines.append(f"  over the product timeout: correction {over['correction']} of "
                          f"{over.get('correction_calls', '?')} calls, enrichment {over.get('enrichment')}")
-    if (summary.get("rewrite") or {}).get("correction_candidates") is False:
-        lines.append("correction candidates: off (ablation)")
+    candidates = (summary.get("rewrite") or {}).get("correction_candidates")
+    if isinstance(candidates, bool) and candidates is not autorewrite.LIKELY_TERMS:
+        lines.append(f"correction candidates: {'on' if candidates else 'off'} (ablation)")
     first = (summary.get("rewrite") or {}).get("first_call")
     if first:
         lines.append(f"first model call: {first['seconds']:g} s, {first['reason']} (model loaded before: "
@@ -1309,8 +1313,13 @@ def main(
     parser.add_argument("--timeouts", choices=("bench", "product"), default="bench",
                         help="bench: a long measurement timeout after one warm-up turn (default); product: the "
                              "app's timeouts and warm-up, with the model as it is")
-    parser.add_argument("--no-correction-candidates", action="store_true",
-                        help="ablation: leave the terms that sound like the dictation out of the correction prompt")
+    candidates = parser.add_mutually_exclusive_group()
+    candidates.add_argument("--correction-candidates", dest="correction_candidates", action="store_const",
+                            const=True, default=None,
+                            help="ablation: list the terms that sound like the dictation first in the correction "
+                                 "prompt (the app does not)")
+    candidates.add_argument("--no-correction-candidates", dest="correction_candidates", action="store_const",
+                            const=False, help="leave them out (the app's default)")
     args = parser.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -1366,8 +1375,8 @@ def main(
     options: dict[str, bool] = {}
     if args.timeouts == "product":
         options["product_timeouts"] = True
-    if args.no_correction_candidates:
-        options["correction_candidates"] = False
+    if args.correction_candidates is not None:
+        options["correction_candidates"] = args.correction_candidates
     try:
         product = product_factory(vocabulary, generic, **options)
     except SettingsError as exc:
@@ -1442,7 +1451,8 @@ def main(
     rewrite = {key: product.info[key] for key in ("model", "timeout_s", "enrich_timeout_s", "bench_timeout_s",
                                                   "timeouts", "keep_alive", "load_wait_s", "cleanup")
                if key in product.info}
-    rewrite["correction_candidates"] = not args.no_correction_candidates
+    rewrite["correction_candidates"] = (autorewrite.LIKELY_TERMS if args.correction_candidates is None
+                                        else args.correction_candidates)
     rewrite["first_call"] = first_call(earlier, loaded_before)
     summary = build_summary(ordered, engine, rewrite)
 

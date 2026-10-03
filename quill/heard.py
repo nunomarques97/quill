@@ -21,10 +21,17 @@ multi-part term (``Nimbus-Deck``, ``NimbusDeck``) thus matches "nimbos
 deck". The closest terms come first, ties in the pack's order. With nothing
 heard the hints are exactly today's.
 
+A source remembers what its session has heard: a term heard in one partial
+stays heard, with the fewest edits it has matched, even when a later partial
+words that span otherwise. The hints so change only when a new term is heard
+or a term is heard closer, never back and forth as the tentative words of the
+partials change: each change makes the session drop its speculative finals,
+so the final may decode again after the release.
+
 Matching is incremental: each distinct span is compared with the terms once
-(a bounded memo), so a partial only costs its new words. The result depends
-only on the heard text, so the same source gives the same hints for the same
-text. Nothing here logs; terms and text never leave the object.
+(a bounded memo), so a partial only costs its new words. The hints depend
+only on the texts the source was given, in order, so the same sequence gives
+the same hints. Nothing here logs; terms and text never leave the object.
 """
 
 from __future__ import annotations
@@ -107,6 +114,10 @@ class HeardMatcher:
 
     def matches(self, heard: str) -> list[str]:
         """The heard terms, closest first, ties in the pack's order."""
+        return self.ranked(self.closest(heard))
+
+    def closest(self, heard: str) -> dict[int, int]:
+        """The fewest edits with which each heard term (by index) matched a span of ``heard``."""
         best: dict[int, int] = {}
         for span in span_keys(heard):
             with self._lock:
@@ -120,6 +131,10 @@ class HeardMatcher:
             for index, edits in found:
                 if edits < best.get(index, edits + 1):
                     best[index] = edits
+        return best
+
+    def ranked(self, best: dict[int, int]) -> list[str]:
+        """The terms of ``best`` (index -> edits), closest first, ties in the pack's order."""
         ranked = sorted(best, key=lambda index: (best[index], self.terms[index][0]))
         return [self.terms[index][1] for index in ranked]
 
@@ -128,7 +143,8 @@ class HeardHints:
     """The hint source of one mouse 5 session: heard text -> ``SessionHints`` (None: the vocabulary hints).
 
     ``initial`` (also ``prompt``, ``hotwords`` and ``language``) are the hints
-    with nothing heard: today's project hints.
+    with nothing heard: today's project hints. Every term heard so far stays
+    heard (see the module docstring), so one source serves one session.
     """
 
     def __init__(self, project: str, terms: Sequence[str], vocabulary: object, generic_terms: Sequence[str] = (),
@@ -139,11 +155,18 @@ class HeardHints:
         self.generic_terms = tuple(generic_terms)
         self.today = whisper_hints(vocabulary, (), self.generic_terms)
         self.matcher = matcher if matcher is not None else HeardMatcher(self.terms)
+        self._heard: dict[int, int] = {}  # every term heard in this session (by index): the fewest edits
+        self._lock = threading.Lock()  # asked from the hint thread and the transcription worker
         self.initial = self("")
 
     def words(self, heard: str) -> list[str]:
-        """The hint words for ``heard``: the vocabulary hints with the project part placed after the names."""
-        first = self.matcher.matches(heard) if heard else []
+        """The hint words after ``heard``: the vocabulary hints with the project part placed after the names."""
+        found = self.matcher.closest(heard) if heard else {}
+        with self._lock:
+            for index, edits in found.items():
+                if edits < self._heard.get(index, edits + 1):
+                    self._heard[index] = edits
+            first = self.matcher.ranked(self._heard)
         part = project_terms(self.project, self.terms, self.today, first=first)
         return whisper_hints(self.vocabulary, part, self.generic_terms)
 

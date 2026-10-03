@@ -23,9 +23,9 @@
       "packs_found": 15,
       "term_occurrences": 16,
       "term_errors": {
-        "pipeline": 5,
+        "pipeline": 4,
         "today": 7,
-        "new": 4
+        "new": 3
       },
       "lost": {
         "today": 0,
@@ -36,11 +36,16 @@
         "new": 0
       },
       "pack_outside_context": 0,
-      "enriched": 13,
-      "enrichment_requests": 13,
+      "enriched": 10,
+      "enrichment_requests": 11,
+      "enrichment_refused": 1,
       "tidied": {
-        "replies": 4,
-        "enriched": 4
+        "replies": 7,
+        "enriched": 6
+      },
+      "likely_terms": {
+        "takes": 0,
+        "terms": 0
       },
       "reasons": {
         "today": {
@@ -48,36 +53,40 @@
           "autorewrite_rewritten": 2
         },
         "correction": {
-          "autorewrite_refused": 2,
+          "autorewrite_refused": 4,
           "autorewrite_rewritten": 3,
-          "autorewrite_unchanged": 10
+          "autorewrite_unchanged": 8
         },
         "correction_refusals": {
-          "changed": 1,
+          "changed": 2,
+          "dropped": 1,
           "name": 1
         },
         "enrichment": {
-          "enrich_enriched": 13,
-          "not_asked": 2
+          "enrich_enriched": 10,
+          "enrich_refused": 1,
+          "not_asked": 4
         },
-        "enrichment_refusals": {},
+        "enrichment_refusals": {
+          "lost": 1
+        },
         "packs": {
           "cached": 15
         }
       },
       "latency": {
-        "transcription_p50_s": 0.229,
-        "transcription_p95_s": 0.252,
-        "today_correction_p50_s": 1.867,
-        "today_correction_p95_s": 2.006,
-        "pack_p50_s": 0.034,
-        "pack_p95_s": 0.055,
-        "correction_p50_s": 0.579,
-        "correction_p95_s": 0.776,
-        "enrichment_p50_s": 1.083,
-        "enrichment_p95_s": 1.739,
-        "total_p50_s": 1.723,
-        "total_p95_s": 2.235
+        "transcription_p50_s": 0.323,
+        "transcription_p95_s": 0.587,
+        "today_correction_p50_s": 2.093,
+        "today_correction_p95_s": 3.257,
+        "pack_p50_s": 0.337,
+        "pack_p95_s": 3.435,
+        "correction_p50_s": 1.017,
+        "correction_p95_s": 2.143,
+        "enrichment_p50_s": 1.821,
+        "enrichment_p95_s": 4.171,
+        "total_p50_s": 2.674,
+        "total_p95_s": 6.427
       },
       "over_product_timeout": {
         "correction_calls": 30,
@@ -87,7 +96,34 @@
       "hints": {
         "project_hints": 15
       },
-      "before_hints": {
+      "relevance_hints": {
+        "no_speech": 0,
+        "term_errors": {
+          "pipeline": 5,
+          "new": 4
+        },
+        "lost": 0,
+        "invented": 0,
+        "pack_outside_context": 0,
+        "enriched": 12,
+        "enrichment_requests": 13,
+        "enrichment_refused": 1,
+        "likely_terms": {
+          "takes": 0,
+          "terms": 0
+        },
+        "latency": {
+          "transcription_p50_s": 0.288,
+          "transcription_p95_s": 0.784,
+          "correction_p50_s": 1.091,
+          "correction_p95_s": 2.189,
+          "enrichment_p50_s": 1.764,
+          "enrichment_p95_s": 3.189,
+          "total_p50_s": 2.685,
+          "total_p95_s": 5.859
+        }
+      },
+      "today_hints": {
         "no_speech": 0,
         "term_errors": {
           "pipeline": 7,
@@ -96,17 +132,29 @@
         "lost": 1,
         "invented": 0,
         "pack_outside_context": 0,
-        "enriched": 13,
+        "enriched": 12,
+        "enrichment_requests": 14,
+        "enrichment_refused": 2,
+        "likely_terms": {
+          "takes": 0,
+          "terms": 0
+        },
         "latency": {
-          "transcription_p50_s": 0.229,
-          "transcription_p95_s": 0.293,
-          "correction_p50_s": 0.579,
-          "correction_p95_s": 0.789,
-          "enrichment_p50_s": 1.083,
-          "enrichment_p95_s": 1.94,
-          "total_p50_s": 1.779,
-          "total_p95_s": 2.588
+          "transcription_p50_s": 0.379,
+          "transcription_p95_s": 0.885,
+          "correction_p50_s": 0.793,
+          "correction_p95_s": 1.991,
+          "enrichment_p50_s": 1.603,
+          "enrichment_p95_s": 2.433,
+          "total_p50_s": 2.673,
+          "total_p95_s": 4.611
         }
+      },
+      "heard_hints": {
+        "sources": 15,
+        "takes_switched": 15,
+        "switches": 43,
+        "heard_changed": 9
       }
     },
     "dictation": {
@@ -128,21 +176,26 @@
         "new": 0
       },
       "invented": {
-        "today": 2,
+        "today": 3,
         "new": 0
       },
       "pack_outside_context": 0,
       "enriched": 7,
       "enrichment_requests": 7,
+      "enrichment_refused": 0,
       "tidied": {
         "replies": 2,
         "enriched": 2
       },
+      "likely_terms": {
+        "takes": 0,
+        "terms": 0
+      },
       "reasons": {
         "today": {
-          "autorewrite_refused": 4,
-          "autorewrite_rewritten": 2,
-          "autorewrite_unchanged": 3
+          "autorewrite_refused": 3,
+          "autorewrite_rewritten": 4,
+          "autorewrite_unchanged": 2
         },
         "correction": {
           "autorewrite_refused": 2,
@@ -163,18 +216,18 @@
         }
       },
       "latency": {
-        "transcription_p50_s": 0.225,
-        "transcription_p95_s": 0.309,
-        "today_correction_p50_s": 0.707,
-        "today_correction_p95_s": 1.893,
-        "pack_p50_s": 0.033,
-        "pack_p95_s": 0.039,
-        "correction_p50_s": 0.717,
-        "correction_p95_s": 0.928,
-        "enrichment_p50_s": 0.879,
-        "enrichment_p95_s": 1.661,
-        "total_p50_s": 1.297,
-        "total_p95_s": 2.468
+        "transcription_p50_s": 0.383,
+        "transcription_p95_s": 1.283,
+        "today_correction_p50_s": 1.196,
+        "today_correction_p95_s": 2.736,
+        "pack_p50_s": 0.242,
+        "pack_p95_s": 0.475,
+        "correction_p50_s": 1.084,
+        "correction_p95_s": 1.605,
+        "enrichment_p50_s": 1.267,
+        "enrichment_p95_s": 2.717,
+        "total_p50_s": 2.256,
+        "total_p95_s": 4.176
       },
       "over_product_timeout": {
         "correction_calls": 18,
@@ -185,23 +238,59 @@
         "no_project": 5,
         "project_hints": 4
       },
-      "before_hints": {
+      "relevance_hints": {
+        "no_speech": 0,
+        "term_errors": null,
+        "lost": 0,
+        "invented": 0,
+        "pack_outside_context": 0,
+        "enriched": 7,
+        "enrichment_requests": 7,
+        "enrichment_refused": 0,
+        "likely_terms": {
+          "takes": 0,
+          "terms": 0
+        },
+        "latency": {
+          "transcription_p50_s": 0.383,
+          "transcription_p95_s": 1.283,
+          "correction_p50_s": 1.084,
+          "correction_p95_s": 1.605,
+          "enrichment_p50_s": 1.213,
+          "enrichment_p95_s": 2.297,
+          "total_p50_s": 2.184,
+          "total_p95_s": 3.623
+        }
+      },
+      "today_hints": {
         "no_speech": 0,
         "term_errors": null,
         "lost": 0,
         "invented": 0,
         "pack_outside_context": 0,
         "enriched": 8,
+        "enrichment_requests": 8,
+        "enrichment_refused": 0,
+        "likely_terms": {
+          "takes": 0,
+          "terms": 0
+        },
         "latency": {
-          "transcription_p50_s": 0.225,
-          "transcription_p95_s": 0.309,
-          "correction_p50_s": 0.717,
-          "correction_p95_s": 0.899,
-          "enrichment_p50_s": 0.879,
-          "enrichment_p95_s": 1.661,
-          "total_p50_s": 1.522,
-          "total_p95_s": 2.468
+          "transcription_p50_s": 0.291,
+          "transcription_p95_s": 1.283,
+          "correction_p50_s": 1.084,
+          "correction_p95_s": 2.113,
+          "enrichment_p50_s": 1.267,
+          "enrichment_p95_s": 2.297,
+          "total_p50_s": 2.576,
+          "total_p95_s": 4.556
         }
+      },
+      "heard_hints": {
+        "sources": 4,
+        "takes_switched": 3,
+        "switches": 10,
+        "heard_changed": 1
       }
     }
   },
@@ -241,18 +330,19 @@
     "bench_timeout_s": 120.0,
     "timeouts": "bench",
     "cleanup": "rules",
+    "correction_candidates": false,
     "first_call": {
       "model_loaded_before": true,
-      "seconds": 0.62,
+      "seconds": 1.136,
       "reason": "autorewrite_refused"
     }
   },
   "meets_targets": {
     "complete": true,
-    "term_errors": false,
+    "term_errors": true,
     "lost": true,
     "invented": true,
     "pack_outside_context": true,
-    "all": false
+    "all": true
   }
 }

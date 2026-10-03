@@ -1,10 +1,53 @@
-# Quill: botão 5 no Claude Code com o contexto do projeto (Fases 6 e 7)
+# Quill: botão 5 no Claude Code com o contexto do projeto (Fases 6, 7 e 8)
+
+## Fase 8: as dicas do Whisper pelo que já foi ouvido
+
+**Estado: medido, 2026-10-03.** Com o botão 5 no Claude Code, os termos do pacote do projeto que soam parecido com o que o Whisper já ouviu neste ditado passam para a frente das dicas do projeto. Os erros nos termos do domínio no texto final desceram de 4 (dicas da Fase 7) para **3 de 16**: a meta (no máximo metade dos 7 de hoje, ou seja 3) **foi cumprida**. Continuam 0 palavras perdidas, 0 inventadas e 0 palavras do projeto fora do «Contexto». O relatório da fase, com as decisões para o Sponsor, está em [FASE8.md](FASE8.md).
+
+O resumo com só números ([prompts-summary.json](prompts-summary.json)) é agora o desta medição. O texto de cada gravação fica em `bench/results/prompts/20261003-131743/` (ignorado pelo Git): `takes.json` (dicas pelo que foi ouvido), `takes-before.json` (dicas da Fase 7), `takes-today.json` (dicas de hoje) e `exemplos.md`.
+
+### O que mudou
+
+- **Que termos vão à frente:** depois de cada transcrição provisória, o Quill compara os termos do pacote com grupos de 1 a 3 palavras ouvidas, pelas mesmas chaves de som da correção, com poucas letras de diferença (termos com menos de 4 letras só se forem iguais). Os mais parecidos vão primeiro na parte do projeto, depois a ordem da Fase 7. O espaço é o mesmo (110 caracteres para o projeto, 330 no total). Sem nada ouvido, as dicas são as da Fase 7.
+- **Sem trocas para trás e para a frente:** um termo ouvido fica nas dicas até ao fim do ditado, e as dicas só mudam quando se ouve um termo novo ou mais parecido. Cada troca faz o Whisper transcrever outra vez o fim do ditado; assim, as trocas desceram de 59 para 43 nos prompts e de 35 para 10 nos ditados.
+- **A lista de termos na correção ficou desligada:** medida com e sem ela, não corrigiu nenhum termo a mais e fez a verificação recusar mais correções (detalhes em [FASE8.md](FASE8.md)).
+- **O que fica igual:** o botão 4, o botão do meio, os comandos de voz e as outras janelas usam as dicas de sempre; a verificação da correção e do enriquecimento não mudou. O registo só guarda o motivo e o número de trocas.
+
+### Resultados
+
+Comando: `.venv\Scripts\python -m bench.prompts` (os dois conjuntos), com o qwen3:8b no Ollama partilhado (nada descarregado, nada instalado, 0 €). Cada gravação passou três vezes pela transcrição em streaming da aplicação, na mesma medição.
+
+| Medição | Hoje (correção de antes) | Dicas de hoje | Dicas da Fase 7 | Dicas da Fase 8 | Meta | Cumprida |
+|---|---|---|---|---|---|---|
+| Erros em termos do domínio depois da transcrição e do pipeline (prompts) | 7 de 16 | 7 de 16 | 5 de 16 | 4 de 16 | — | — |
+| Erros em termos do domínio no texto final (prompts) | 7 de 16 | 5 de 16 | 4 de 16 | 3 de 16 | no máximo 3 | **sim** |
+| Palavras de conteúdo perdidas (24 gravações) | 1 | 1 | 0 | 0 | 0 | sim |
+| Palavras de conteúdo inventadas (24 gravações) | 5 | 0 | 0 | 0 | 0 | sim |
+| Palavras do pacote fora da parte «Contexto» | — | 0 | 0 | 0 | 0 | sim |
+| Enriquecimento: pedidos / aceites (24 gravações) | — | 22 / 20 | 20 / 19 | 18 / 17 | — | — |
+
+Latência, em segundos (p50 / p95):
+
+| Etapa | Prompts, Fase 7 | Prompts, Fase 8 | Ditados, Fase 7 | Ditados, Fase 8 |
+|---|---|---|---|---|
+| Transcrição (do fim da fala ao texto) | 0,29 / 0,78 | 0,32 / 0,59 | 0,38 / 1,28 | 0,38 / 1,28 |
+| Enriquecimento | 1,76 / 3,19 | 1,82 / 4,17 | 1,21 / 2,30 | 1,27 / 2,72 |
+| Botão 5 depois da transcrição (pacote, correção e enriquecimento) | 2,69 / 5,86 | 2,67 / 6,43 | 2,18 / 3,62 | 2,26 / 4,18 |
+
+Nenhuma chamada passou os limites da aplicação. O PC tinha outros programas a usar a placa gráfica e o processador, por isso todas as latências estão acima das da Fase 7; compare só colunas da mesma medição. A transcrição dos prompts com as dicas novas ficou dentro da regra desta fase (no máximo +0,15 s no p95 contra as dicas da Fase 7): +0,06 s e −0,20 s em duas medições.
+
+### Decisões para o Sponsor (Fase 8)
+
+1. **Enriquecer também quando a correção é recusada.** Com as dicas novas, 2 prompts a menos foram enriquecidos (18 pedidos contra 20), porque a verificação recusou a correção e, nesse caso, o Quill escreve o que ouviu sem enriquecer. Recomendação: enriquecer o texto ouvido, com a mesma verificação do enriquecimento. Custo 0 €. Detalhes em [FASE8.md](FASE8.md).
+2. **Meta cumprida à justa (3 de 3).** O próximo passo gratuito, se quiser margem, está em [FASE8.md](FASE8.md).
+
+---
 
 ## Fase 7: mais prompts enriquecidos, com a mesma verificação
 
 **Estado: medido, 2026-10-03.** O botão 5 no Claude Code passou a enriquecer **20 de 20** prompts pedidos (13 de 13 nos prompts gravados e 7 de 7 nos ditados), contra 8 de 19 logo antes desta mudança e 8 de 21 na Fase 6. Continuam 0 palavras perdidas, 0 inventadas e 0 palavras do projeto fora do «Contexto». A verificação do enriquecimento (palavras perdidas, inventadas, números e palavras do projeto fora do «Contexto») e os seus testes não mudaram.
 
-O resumo com só números ([prompts-summary.json](prompts-summary.json)) é agora o desta medição. O texto de cada gravação e os prompts enriquecidos ficam em `bench/results/prompts/20261003-012518/` (ignorado pelo Git): `takes.json`, `takes-before.json` e `exemplos.md`.
+O resumo com só números desta medição foi substituído pelo da Fase 8 (acima). O texto de cada gravação e os prompts enriquecidos ficam em `bench/results/prompts/20261003-012518/` (ignorado pelo Git): `takes.json`, `takes-before.json` e `exemplos.md`.
 
 ### Porque eram recusados
 

@@ -71,9 +71,10 @@ text is what is corrected, and what is typed when the reply is refused,
 fails or times out. The prompt says a capitalised word may be a misheard
 name (``NAME_RULE``), and the guard lets a protected capitalised word be
 replaced when the new words are exactly a vocabulary name or term, a pack
-term or the project name, the replaced word is no listed name, term or
-number, and the bounds above hold on ``pt_sound_key``; any other change to a
-name is still refused with ``name``.
+term or the project name, the replaced word is no number and either no
+listed name or term (the bounds above then hold on ``pt_sound_key``) or that
+same name or term in another case, accents, spaces or hyphens; any other
+change to a name is still refused with ``name``.
 
 With ``[autorewrite] common_sense_fixes`` (``AutoRewriter(common_sense_fixes=
 ...)``; off by default), context mode also keeps a fix that brings ordinary
@@ -500,17 +501,22 @@ def _named(lost: Sequence[_Word], new: Sequence[_Word], allowed: set[str] | None
     """Whether a fix may replace the protected ``lost`` words (``name_fixes``): only names, by a listed term.
 
     The new words together are exactly a term of ``allowed`` (case, accents
-    and spaces ignored), no replaced word is a number or itself a listed term,
-    and the fix keeps its bounds compared on ``pt_sound_key``.
+    and spaces ignored) and no replaced word is a number. Either the replaced
+    words are that same term spelled otherwise (case, accents, spaces or
+    hyphens: the listed spelling of a name), or no replaced word is itself a
+    listed term and the fix keeps its bounds compared on ``pt_sound_key``.
     """
     if not allowed or not new or any(word.protected == NUMBER for word in lost):
         return False
-    if _bare(" ".join(word.text for word in new)) not in allowed:
+    written = _bare(" ".join(word.text for word in new))
+    if written not in allowed or len(lost) > MAX_BLOCK_WORDS or len(new) > MAX_BLOCK_WORDS:
         return False
+    if _bare(" ".join(word.text for word in lost)) == written:
+        return True  # the same listed name, now in its listed spelling
     said = [_bare(word.text) for word in lost]
     if _bare(" ".join(word.text for word in lost)) in allowed or any(word in allowed for word in said):
         return False
-    return len(lost) <= MAX_BLOCK_WORDS and len(new) <= MAX_BLOCK_WORDS and _unfit(lost, new, pt_sound_key) is None
+    return _unfit(lost, new, pt_sound_key) is None
 
 
 def _polarity(words: Sequence[_Word]) -> Counter:

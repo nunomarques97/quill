@@ -172,7 +172,8 @@ edit_window_s = 30
 # example "museu local" as "modelo local"). The guard keeps such a fix only
 # when it sounds close in European Portuguese, changes no name, number,
 # vocabulary term or negation, and adds no other word; any other such fix is
-# typed as dictated.
+# typed as dictated. Off by default: measured on the recordings, it brought
+# words that were not said (docs/research/FASE9.md).
 [autorewrite]
 enabled = true
 min_audio_s = 15

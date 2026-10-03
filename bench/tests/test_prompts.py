@@ -1127,7 +1127,7 @@ VARIANT_SCRIPT = """# Invented prompts script with a vocabulary name and a mishe
 
 | id | caso | frase | intenção | projeto | termos | estilo |
 |----|------|-------|----------|---------|--------|--------|
-| pp-01 | termo | Abre no <projeto-1> o repositório do verja e corre os testes do <termo-1> antes de publicar. | pedir | <projeto-1> | <termo-1> | claude-code |
+| pp-01 | termo | Abre no <projeto-1> o repositório do verja e corre os testes no <termo-1> antes de publicar. | pedir | <projeto-1> | <termo-1> | claude-code |
 | pp-02 | termo | Olha, tu decides no <projeto-2> qual é a melhor opção para o <termo-2> de testes. | perguntar | <projeto-2> | <termo-2> | claude-code |
 | pp-03 | restrição | Revê a documentação do <termo-1> no <projeto-1> sem tocares nos ficheiros de configuração. | perguntar | <projeto-1> | <termo-1> | claude-code |
 """
@@ -1437,8 +1437,8 @@ class ReferenceCountsTest(unittest.TestCase):
                                                                 "cedo tudo, olha."), 0)
 
     def test_invented_against_the_input_with_names_and_beyond_the_fixes(self):
-        heard = "Abre o repositório do Verza e corre os testes do museu local."
-        fixed = "Abre o repositório do verja e corre os testes do modelo local."
+        heard = "Abre o repositório do Verza e corre os testes no museu local."
+        fixed = "Abre o repositório do verja e corre os testes no modelo local."
         # A vocabulary name written as listed is known, as a pack term; an ordinary word is invented by this rule.
         self.assertEqual(P.invented_words(heard, fixed)[0], 2)
         self.assertEqual(P.invented_words(heard, fixed, names=("verja",))[0], 1)

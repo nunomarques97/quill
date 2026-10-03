@@ -1075,7 +1075,7 @@ NAME = "verja"
 PROJECT = "gelmora"
 NAME_PACK = SimpleNamespace(summary="Um serviço que emite faturas mensais.", terms=("faturas", "ledger", "Lomira"))
 NAME_KEEP = (NAME, "deploy", "commit")
-NAME_HEARD = ("Abre o repositório do Verza e corre os testes do módulo de faturas antes de publicar a versão nova "
+NAME_HEARD = ("Abre o repositório do Verza e corre os testes no módulo de faturas antes de publicar a versão nova "
               "no servidor.")
 NAME_FIXED = NAME_HEARD.replace("Verza", NAME)
 NAME_REPLACEMENTS = (*NAME_KEEP, *NAME_PACK.terms, PROJECT)
@@ -1147,6 +1147,22 @@ class NameGuardTest(unittest.TestCase):
         self.assertEqual(A.guard(NAME_HEARD, NAME_FIXED, profile="claude-code", keep=NAME_KEEP,
                                  terms=NAME_KEEP).reason, A.NAME)
 
+    def test_a_name_may_take_its_listed_spelling(self) -> None:
+        # The dictated word is the listed name or term itself, in another case, accents, spaces or hyphens.
+        for heard, listed in (("Gel-Mora", PROJECT), ("Gel Mora", PROJECT), ("Gélmora", PROJECT),
+                              ("LoMíra", "Lomira"), ("Vérja", NAME)):
+            with self.subTest(heard=heard):
+                source, reply = NAME_HEARD.replace("Verza", heard), NAME_HEARD.replace("Verza", listed)
+                verdict = self.guard(reply, source=source, keep=())
+                self.assertEqual((verdict.reason, verdict.text, verdict.changes), ("ok", reply, 1))
+                self.assertEqual(self.guard(reply, source=source, keep=(), name_fixes=False).reason, A.NAME)
+                self.assertEqual(A.guard(source, reply).reason, A.NAME)
+        # Another listed term, or the same letters with an extra word, is still refused.
+        source = NAME_HEARD.replace("Verza", "Gel-Mora")
+        for reply in (NAME_HEARD.replace("Verza", "Lomira"), NAME_HEARD.replace("Verza", f"{PROJECT} novo")):
+            with self.subTest(reply=reply):
+                self.assertEqual(self.guard(reply, source=source, keep=()).reason, A.NAME)
+
     def test_an_ordinary_word_never_replaces_a_name(self) -> None:
         for word in ("verde", "versa", "verja nova", "o verja"):
             with self.subTest(word=word):
@@ -1179,11 +1195,11 @@ class NameGuardTest(unittest.TestCase):
         source = NAME_HEARD.replace("do Verza", "do V3rza")
         self.assertEqual(self.guard(NAME_FIXED, source=source).reason, A.NUMBER)
         # A lost or an added content word beside the fixed name.
-        self.assertEqual(self.guard(NAME_FIXED.replace(" do módulo de faturas", "")).reason, A.DROPPED)
+        self.assertEqual(self.guard(NAME_FIXED.replace(" no módulo de faturas", "")).reason, A.DROPPED)
         self.assertEqual(self.guard(NAME_FIXED.replace("servidor.", "servidor de testes.")).reason,
                          A.EXPLANATION)
         self.assertEqual(self.guard("Por favor, " + NAME_FIXED[0].lower() + NAME_FIXED[1:]).reason, A.PREAMBLE)
-        self.assertEqual(self.guard(NAME_FIXED.replace("testes do", "testes unitários do")).reason, A.ADDED)
+        self.assertEqual(self.guard(NAME_FIXED.replace("testes no", "testes unitários no")).reason, A.ADDED)
         # A listed name with an extra word in place of the misheard one.
         self.assertEqual(self.guard(NAME_FIXED.replace(NAME, f"{NAME} principal")).reason, A.NAME)
 
@@ -1448,7 +1464,7 @@ class CommonSenseTest(unittest.TestCase):
     def test_a_negating_prefix_in_a_group_is_never_added_or_dropped_when_on(self) -> None:
         cases = (("Liga o servidor de testes antes de correr a suite.",
                   "Desliga os servidores de testes antes de correr a suite."),
-                 ("Liga isto antes de correr a suite de testes.", "Desliga isso antes de correr a suite de testes."),
+                 ("Liga isto antes de correr os testes todos.", "Desliga isso antes de correr os testes todos."),
                  ("Liga o servidor de testes antes de correr a suite.",
                   "Deixa ligar o servidor de testes antes de correr a suite."),
                  ("Abre a porta do relatório antes de enviar o texto.",

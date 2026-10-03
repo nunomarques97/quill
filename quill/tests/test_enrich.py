@@ -352,7 +352,7 @@ class NumberTest(unittest.TestCase):
         self.assertEqual(reason(spoken, f"Pedido: {spoken}"), "ok")
         self.assertEqual(reason(spoken, "Pedido: " + spoken.replace("dois", "2")), E.NUMBER)
         self.assertEqual(reason(spoken, "Pedido: " + spoken.replace("um erro", "1 erro")), E.NUMBER)
-        digits = "Corre os 3 testes do painel de gestão e mostra-me o erro de cada."
+        digits = "Corre os 3 testes do painel de gestão e diz-me o erro de cada."
         self.assertEqual(reason(digits, "Pedido: " + digits.replace("3", "três")), E.NUMBER)
         # A lost or changed dictated number is refused.
         self.assertEqual(reason(digits, "Pedido: " + digits.replace("os 3 ", "os ")), E.NUMBER)

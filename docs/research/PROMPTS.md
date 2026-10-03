@@ -1,10 +1,46 @@
-# Quill: botão 5 no Claude Code com o contexto do projeto (Fases 6, 7 e 8)
+# Quill: botão 5 no Claude Code com o contexto do projeto (Fases 6, 7, 8 e 9)
+
+## Fase 9: nomes mal ouvidos e correções de bom senso
+
+**Estado: medido, 2026-10-03.** Com o botão 5 no Claude Code, uma palavra com maiúscula que soa como um nome do vocabulário, um termo da lista ou o nome do projeto já pode ser trocada por ele, e um passo fixo escreve o nome quando o som é exatamente o mesmo. Nos 15 prompts gravados, os erros nos termos do domínio desceram de 3 para **2 de 16** (meta: no máximo 3, **cumprida**), as correções recusadas por causa de um nome de 1 para 0 e os prompts enriquecidos de 14 para 16 (em 17 e 18 pedidos). Continuam 0 palavras perdidas, 0 inventadas e 0 palavras do projeto fora do «Contexto». As correções de bom senso foram medidas e **ficam desligadas**: baixaram 1 erro de palavra em 193, mas trouxeram palavras que não disse e perderam 1 no conjunto de segurança. O relatório da fase, com as gravações que faltam e as decisões para o Sponsor, está em [FASE9.md](FASE9.md).
+
+O resumo com só números ([prompts-summary.json](prompts-summary.json)) é agora o desta medição. O texto de cada gravação fica em `bench/results/prompts/20261003-190047/` (ignorado pelo Git): `takes.json` (a aplicação), `takes-phase8.json`, `takes-names.json`, `takes-common_sense.json`, os `takes-safety-*.json` do conjunto de segurança e `exemplos.md`.
+
+### O que mudou
+
+- **Nomes mal ouvidos:** as chaves de som juntam, para o português europeu, j, z e g antes de e/i num só som e c antes de e/i e ç com s. Antes do modelo, um passo fixo escreve um grupo de 1 a 3 palavras como um nome do vocabulário ou o nome do projeto quando as chaves são iguais. A verificação deixa trocar uma palavra com maiúscula só por um nome ou termo da lista que soe parecido, ou pela mesma palavra na forma da lista (maiúsculas, acentos, espaços ou hífenes); uma palavra comum nunca substitui um nome e os números nunca mudam.
+- **Enriquecimento recusado com `number`:** o resumo e os termos do projeto que o enriquecimento vê deixam de ter palavras com algarismos, para o modelo não os copiar para o «Contexto». A regra dos números não mudou.
+- **Bom senso (`[autorewrite] common_sense_fixes`, desligado):** ligado, o modelo pode trocar um grupo curto que não faz sentido na frase por palavras comuns que soam parecido, com a verificação descrita em [FASE9.md](FASE9.md).
+- **O que fica igual:** o botão 4, o botão do meio, os comandos de voz e as outras janelas; as dicas do Whisper da Fase 8.
+
+### Resultados
+
+Comando: `.venv\Scripts\python -m bench.prompts --variants --safety`, com o qwen3:8b no Ollama partilhado (nada descarregado, nada instalado, 0 €). As três colunas correm sobre as mesmas transcrições, na mesma medição. «Segurança» são os 36 ditados válidos, como se fossem ditos para o Claude Code sem projeto.
+
+| Medição | Fase 8 | Fase 9 (nomes) | Fase 9 com bom senso | Meta | Cumprida |
+|---|---|---|---|---|---|
+| Erros em termos do domínio no texto final (prompts) | 3 de 16 | 2 de 16 | 2 de 16 | no máximo 3 | sim |
+| Nomes em falta depois da correção (prompts / ditados / segurança) | 5 / 0 / 0 | 5 / 0 / 0 | 5 / 0 / 0 | — | — |
+| Erros de palavras contra o texto certo (prompts / ditados / segurança; depois da transcrição 71 / 25 / 102) | 70 / 25 / 102 | 68 / 25 / 100 | 68 / 24 / 100 | — | — |
+| Palavras perdidas (prompts / ditados / segurança) | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 1 | 0 | só sem bom senso |
+| Palavras inventadas contra o texto certo (prompts / ditados / segurança) | 1 / 0 / 0 | 1 / 0 / 0 | 4 / 0 / 3 | 0 | só sem bom senso |
+| Enriquecimento: pedidos / aceites (prompts + ditados) | 17 / 14 | 18 / 16 | 18 / 16 | — | — |
+| Botão 5 depois da transcrição, p50 / p95 em segundos (prompts) | 1,93 / 3,13 | 2,13 / 2,83 | 2,09 / 4,87 | — | — |
+
+Os 5 nomes em falta nos prompts não são nomes mal ouvidos que soem parecido (3 são o nome do projeto escrito com acento, como o projeto o escreve; 1 em duas palavras; 1 outra palavra que não soa parecido). Nenhuma gravação que já existe tem o erro de hoje, por isso [FASE9.md](FASE9.md) tem os passos para gravar frases novas.
+
+### Decisões para o Sponsor (Fase 9)
+
+1. **Correções de bom senso:** ficam desligadas pela regra da fase. Recomendação: manter desligadas. Detalhes em [FASE9.md](FASE9.md).
+2. **Gravar frases com um nome do vocabulário que o Whisper ouve mal**, para medir os nomes com a sua voz (passos em [FASE9.md](FASE9.md)).
+
+---
 
 ## Fase 8: as dicas do Whisper pelo que já foi ouvido
 
 **Estado: medido, 2026-10-03.** Com o botão 5 no Claude Code, os termos do pacote do projeto que soam parecido com o que o Whisper já ouviu neste ditado passam para a frente das dicas do projeto. Os erros nos termos do domínio no texto final desceram de 4 (dicas da Fase 7) para **3 de 16**: a meta (no máximo metade dos 7 de hoje, ou seja 3) **foi cumprida**. Continuam 0 palavras perdidas, 0 inventadas e 0 palavras do projeto fora do «Contexto». O relatório da fase, com as decisões para o Sponsor, está em [FASE8.md](FASE8.md).
 
-O resumo com só números ([prompts-summary.json](prompts-summary.json)) é agora o desta medição. O texto de cada gravação fica em `bench/results/prompts/20261003-131743/` (ignorado pelo Git): `takes.json` (dicas pelo que foi ouvido), `takes-before.json` (dicas da Fase 7), `takes-today.json` (dicas de hoje) e `exemplos.md`.
+O resumo com só números desta medição foi substituído pelo da Fase 9 (acima). O texto de cada gravação fica em `bench/results/prompts/20261003-131743/` (ignorado pelo Git): `takes.json` (dicas pelo que foi ouvido), `takes-before.json` (dicas da Fase 7), `takes-today.json` (dicas de hoje) e `exemplos.md`.
 
 ### O que mudou
 

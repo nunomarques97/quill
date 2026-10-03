@@ -25,7 +25,7 @@
       "term_errors": {
         "pipeline": 4,
         "today": 7,
-        "new": 3
+        "new": 2
       },
       "lost": {
         "today": 0,
@@ -40,12 +40,33 @@
       "enrichment_requests": 11,
       "enrichment_refused": 1,
       "tidied": {
-        "replies": 7,
-        "enriched": 6
+        "replies": 6,
+        "enriched": 5
       },
       "likely_terms": {
         "takes": 0,
         "terms": 0
+      },
+      "against_reference": {
+        "name_occurrences": 15,
+        "name_errors": {
+          "source": 5,
+          "corrected": 5
+        },
+        "names_fixed": 0,
+        "names_prestep": 0,
+        "common_sense_fixes": 0,
+        "kept_as_dictated": 3,
+        "reference_words": 304,
+        "word_errors": {
+          "source": 71,
+          "corrected": 68
+        },
+        "wer": {
+          "source": 0.2336,
+          "corrected": 0.2237
+        },
+        "invented_reference": 1
       },
       "reasons": {
         "today": {
@@ -60,7 +81,7 @@
         "correction_refusals": {
           "changed": 2,
           "dropped": 1,
-          "name": 1
+          "explanation": 1
         },
         "enrichment": {
           "enrich_enriched": 10,
@@ -68,29 +89,29 @@
           "not_asked": 4
         },
         "enrichment_refusals": {
-          "lost": 1
+          "invented": 1
         },
         "packs": {
           "cached": 15
         }
       },
       "latency": {
-        "transcription_p50_s": 0.323,
-        "transcription_p95_s": 0.587,
-        "today_correction_p50_s": 2.093,
-        "today_correction_p95_s": 3.257,
-        "pack_p50_s": 0.337,
-        "pack_p95_s": 3.435,
-        "correction_p50_s": 1.017,
-        "correction_p95_s": 2.143,
-        "enrichment_p50_s": 1.821,
-        "enrichment_p95_s": 4.171,
-        "total_p50_s": 2.674,
-        "total_p95_s": 6.427
+        "transcription_p50_s": 0.263,
+        "transcription_p95_s": 0.346,
+        "today_correction_p50_s": 2.057,
+        "today_correction_p95_s": 8.579,
+        "pack_p50_s": 0.048,
+        "pack_p95_s": 0.092,
+        "correction_p50_s": 0.626,
+        "correction_p95_s": 0.912,
+        "enrichment_p50_s": 1.43,
+        "enrichment_p95_s": 2.175,
+        "total_p50_s": 2.131,
+        "total_p95_s": 2.825
       },
       "over_product_timeout": {
         "correction_calls": 30,
-        "correction": 0,
+        "correction": 1,
         "enrichment": 0
       },
       "hints": {
@@ -100,27 +121,27 @@
         "no_speech": 0,
         "term_errors": {
           "pipeline": 5,
-          "new": 4
+          "new": 3
         },
         "lost": 0,
         "invented": 0,
         "pack_outside_context": 0,
-        "enriched": 12,
+        "enriched": 13,
         "enrichment_requests": 13,
-        "enrichment_refused": 1,
+        "enrichment_refused": 0,
         "likely_terms": {
           "takes": 0,
           "terms": 0
         },
         "latency": {
-          "transcription_p50_s": 0.288,
-          "transcription_p95_s": 0.784,
-          "correction_p50_s": 1.091,
-          "correction_p95_s": 2.189,
-          "enrichment_p50_s": 1.764,
-          "enrichment_p95_s": 3.189,
-          "total_p50_s": 2.685,
-          "total_p95_s": 5.859
+          "transcription_p50_s": 0.278,
+          "transcription_p95_s": 0.346,
+          "correction_p50_s": 0.674,
+          "correction_p95_s": 1.008,
+          "enrichment_p50_s": 1.255,
+          "enrichment_p95_s": 2.175,
+          "total_p50_s": 1.955,
+          "total_p95_s": 5.793
         }
       },
       "today_hints": {
@@ -129,33 +150,196 @@
           "pipeline": 7,
           "new": 5
         },
-        "lost": 1,
+        "lost": 0,
         "invented": 0,
         "pack_outside_context": 0,
-        "enriched": 12,
-        "enrichment_requests": 14,
-        "enrichment_refused": 2,
+        "enriched": 11,
+        "enrichment_requests": 12,
+        "enrichment_refused": 1,
         "likely_terms": {
           "takes": 0,
           "terms": 0
         },
         "latency": {
-          "transcription_p50_s": 0.379,
-          "transcription_p95_s": 0.885,
-          "correction_p50_s": 0.793,
-          "correction_p95_s": 1.991,
-          "enrichment_p50_s": 1.603,
-          "enrichment_p95_s": 2.433,
-          "total_p50_s": 2.673,
-          "total_p95_s": 4.611
+          "transcription_p50_s": 0.236,
+          "transcription_p95_s": 0.352,
+          "correction_p50_s": 0.667,
+          "correction_p95_s": 0.988,
+          "enrichment_p50_s": 1.255,
+          "enrichment_p95_s": 2.252,
+          "total_p50_s": 2.06,
+          "total_p95_s": 5.793
         }
       },
       "heard_hints": {
         "sources": 15,
         "takes_switched": 15,
-        "switches": 43,
-        "heard_changed": 9
-      }
+        "switches": 45,
+        "heard_changed": 10
+      },
+      "variants": {
+        "phase8": {
+          "takes": 15,
+          "no_speech": 0,
+          "term_errors": {
+            "pipeline": 4,
+            "new": 3
+          },
+          "name_occurrences": 15,
+          "name_errors": {
+            "source": 5,
+            "corrected": 5
+          },
+          "names_fixed": 0,
+          "names_prestep": 0,
+          "common_sense_fixes": 0,
+          "kept_as_dictated": 3,
+          "reference_words": 304,
+          "word_errors": {
+            "source": 71,
+            "corrected": 70
+          },
+          "wer": {
+            "source": 0.2336,
+            "corrected": 0.2303
+          },
+          "invented_reference": 1,
+          "lost": 0,
+          "invented": 0,
+          "invented_fixes": 0,
+          "invented_beyond_fixes": 0,
+          "pack_outside_context": 0,
+          "enrichment_requests": 10,
+          "enriched": 8,
+          "enrichment_refused": 2,
+          "reasons": {
+            "correction": {
+              "autorewrite_refused": 5,
+              "autorewrite_rewritten": 2,
+              "autorewrite_unchanged": 8
+            },
+            "correction_refusals": {
+              "changed": 2,
+              "dropped": 1,
+              "explanation": 1,
+              "name": 1
+            }
+          },
+          "latency": {
+            "correction_p50_s": 0.638,
+            "correction_p95_s": 0.852,
+            "total_p50_s": 1.931,
+            "total_p95_s": 3.127
+          }
+        },
+        "names": {
+          "takes": 15,
+          "no_speech": 0,
+          "term_errors": {
+            "pipeline": 4,
+            "new": 2
+          },
+          "name_occurrences": 15,
+          "name_errors": {
+            "source": 5,
+            "corrected": 5
+          },
+          "names_fixed": 0,
+          "names_prestep": 0,
+          "common_sense_fixes": 0,
+          "kept_as_dictated": 3,
+          "reference_words": 304,
+          "word_errors": {
+            "source": 71,
+            "corrected": 68
+          },
+          "wer": {
+            "source": 0.2336,
+            "corrected": 0.2237
+          },
+          "invented_reference": 1,
+          "lost": 0,
+          "invented": 0,
+          "invented_fixes": 0,
+          "invented_beyond_fixes": 0,
+          "pack_outside_context": 0,
+          "enrichment_requests": 11,
+          "enriched": 10,
+          "enrichment_refused": 1,
+          "reasons": {
+            "correction": {
+              "autorewrite_refused": 4,
+              "autorewrite_rewritten": 3,
+              "autorewrite_unchanged": 8
+            },
+            "correction_refusals": {
+              "changed": 2,
+              "dropped": 1,
+              "explanation": 1
+            }
+          },
+          "latency": {
+            "correction_p50_s": 0.626,
+            "correction_p95_s": 0.912,
+            "total_p50_s": 2.131,
+            "total_p95_s": 2.825
+          }
+        },
+        "common_sense": {
+          "takes": 15,
+          "no_speech": 0,
+          "term_errors": {
+            "pipeline": 4,
+            "new": 2
+          },
+          "name_occurrences": 15,
+          "name_errors": {
+            "source": 5,
+            "corrected": 5
+          },
+          "names_fixed": 0,
+          "names_prestep": 0,
+          "common_sense_fixes": 3,
+          "kept_as_dictated": 1,
+          "reference_words": 304,
+          "word_errors": {
+            "source": 71,
+            "corrected": 68
+          },
+          "wer": {
+            "source": 0.2336,
+            "corrected": 0.2237
+          },
+          "invented_reference": 4,
+          "lost": 0,
+          "invented": 3,
+          "invented_fixes": 3,
+          "invented_beyond_fixes": 0,
+          "pack_outside_context": 0,
+          "enrichment_requests": 11,
+          "enriched": 10,
+          "enrichment_refused": 1,
+          "reasons": {
+            "correction": {
+              "autorewrite_refused": 4,
+              "autorewrite_rewritten": 7,
+              "autorewrite_unchanged": 4
+            },
+            "correction_refusals": {
+              "changed": 2,
+              "dropped": 1,
+              "explanation": 1
+            }
+          },
+          "latency": {
+            "correction_p50_s": 0.68,
+            "correction_p95_s": 2.866,
+            "total_p50_s": 2.086,
+            "total_p95_s": 4.866
+          }
+        }
+      },
+      "variant_app": "names"
     },
     "dictation": {
       "status": "measured",
@@ -176,26 +360,47 @@
         "new": 0
       },
       "invented": {
-        "today": 3,
+        "today": 2,
         "new": 0
       },
       "pack_outside_context": 0,
-      "enriched": 7,
+      "enriched": 6,
       "enrichment_requests": 7,
-      "enrichment_refused": 0,
+      "enrichment_refused": 1,
       "tidied": {
         "replies": 2,
-        "enriched": 2
+        "enriched": 1
       },
       "likely_terms": {
         "takes": 0,
         "terms": 0
       },
+      "against_reference": {
+        "name_occurrences": 4,
+        "name_errors": {
+          "source": 0,
+          "corrected": 0
+        },
+        "names_fixed": 0,
+        "names_prestep": 0,
+        "common_sense_fixes": 0,
+        "kept_as_dictated": 2,
+        "reference_words": 253,
+        "word_errors": {
+          "source": 25,
+          "corrected": 25
+        },
+        "wer": {
+          "source": 0.0988,
+          "corrected": 0.0988
+        },
+        "invented_reference": 0
+      },
       "reasons": {
         "today": {
           "autorewrite_refused": 3,
-          "autorewrite_rewritten": 4,
-          "autorewrite_unchanged": 2
+          "autorewrite_rewritten": 3,
+          "autorewrite_unchanged": 3
         },
         "correction": {
           "autorewrite_refused": 2,
@@ -206,28 +411,31 @@
           "changed": 2
         },
         "enrichment": {
-          "enrich_enriched": 7,
+          "enrich_enriched": 6,
+          "enrich_refused": 1,
           "not_asked": 2
         },
-        "enrichment_refusals": {},
+        "enrichment_refusals": {
+          "invented": 1
+        },
         "packs": {
           "cached": 4,
           "no_folder": 5
         }
       },
       "latency": {
-        "transcription_p50_s": 0.383,
-        "transcription_p95_s": 1.283,
-        "today_correction_p50_s": 1.196,
-        "today_correction_p95_s": 2.736,
-        "pack_p50_s": 0.242,
-        "pack_p95_s": 0.475,
-        "correction_p50_s": 1.084,
-        "correction_p95_s": 1.605,
-        "enrichment_p50_s": 1.267,
-        "enrichment_p95_s": 2.717,
-        "total_p50_s": 2.256,
-        "total_p95_s": 4.176
+        "transcription_p50_s": 0.228,
+        "transcription_p95_s": 0.329,
+        "today_correction_p50_s": 0.899,
+        "today_correction_p95_s": 2.299,
+        "pack_p50_s": 0.068,
+        "pack_p95_s": 0.087,
+        "correction_p50_s": 0.94,
+        "correction_p95_s": 1.406,
+        "enrichment_p50_s": 1.01,
+        "enrichment_p95_s": 2.071,
+        "total_p50_s": 1.73,
+        "total_p95_s": 3.05
       },
       "over_product_timeout": {
         "correction_calls": 18,
@@ -244,22 +452,22 @@
         "lost": 0,
         "invented": 0,
         "pack_outside_context": 0,
-        "enriched": 7,
+        "enriched": 6,
         "enrichment_requests": 7,
-        "enrichment_refused": 0,
+        "enrichment_refused": 1,
         "likely_terms": {
           "takes": 0,
           "terms": 0
         },
         "latency": {
-          "transcription_p50_s": 0.383,
-          "transcription_p95_s": 1.283,
-          "correction_p50_s": 1.084,
-          "correction_p95_s": 1.605,
-          "enrichment_p50_s": 1.213,
-          "enrichment_p95_s": 2.297,
-          "total_p50_s": 2.184,
-          "total_p95_s": 3.623
+          "transcription_p50_s": 0.228,
+          "transcription_p95_s": 0.329,
+          "correction_p50_s": 0.888,
+          "correction_p95_s": 1.406,
+          "enrichment_p50_s": 1.01,
+          "enrichment_p95_s": 2.071,
+          "total_p50_s": 1.759,
+          "total_p95_s": 3.562
         }
       },
       "today_hints": {
@@ -268,30 +476,177 @@
         "lost": 0,
         "invented": 0,
         "pack_outside_context": 0,
-        "enriched": 8,
+        "enriched": 7,
         "enrichment_requests": 8,
-        "enrichment_refused": 0,
+        "enrichment_refused": 1,
         "likely_terms": {
           "takes": 0,
           "terms": 0
         },
         "latency": {
-          "transcription_p50_s": 0.291,
-          "transcription_p95_s": 1.283,
-          "correction_p50_s": 1.084,
-          "correction_p95_s": 2.113,
-          "enrichment_p50_s": 1.267,
-          "enrichment_p95_s": 2.297,
-          "total_p50_s": 2.576,
-          "total_p95_s": 4.556
+          "transcription_p50_s": 0.228,
+          "transcription_p95_s": 0.329,
+          "correction_p50_s": 0.888,
+          "correction_p95_s": 1.256,
+          "enrichment_p50_s": 1.01,
+          "enrichment_p95_s": 2.071,
+          "total_p50_s": 1.897,
+          "total_p95_s": 3.562
         }
       },
       "heard_hints": {
         "sources": 4,
         "takes_switched": 3,
         "switches": 10,
-        "heard_changed": 1
-      }
+        "heard_changed": 2
+      },
+      "variants": {
+        "phase8": {
+          "takes": 9,
+          "no_speech": 0,
+          "term_errors": null,
+          "name_occurrences": 4,
+          "name_errors": {
+            "source": 0,
+            "corrected": 0
+          },
+          "names_fixed": 0,
+          "names_prestep": 0,
+          "common_sense_fixes": 0,
+          "kept_as_dictated": 3,
+          "reference_words": 253,
+          "word_errors": {
+            "source": 25,
+            "corrected": 25
+          },
+          "wer": {
+            "source": 0.0988,
+            "corrected": 0.0988
+          },
+          "invented_reference": 0,
+          "lost": 0,
+          "invented": 0,
+          "invented_fixes": 0,
+          "invented_beyond_fixes": 0,
+          "pack_outside_context": 0,
+          "enrichment_requests": 7,
+          "enriched": 6,
+          "enrichment_refused": 1,
+          "reasons": {
+            "correction": {
+              "autorewrite_refused": 2,
+              "autorewrite_rewritten": 2,
+              "autorewrite_unchanged": 5
+            },
+            "correction_refusals": {
+              "changed": 2
+            }
+          },
+          "latency": {
+            "correction_p50_s": 1.054,
+            "correction_p95_s": 1.4,
+            "total_p50_s": 1.668,
+            "total_p95_s": 3.21
+          }
+        },
+        "names": {
+          "takes": 9,
+          "no_speech": 0,
+          "term_errors": null,
+          "name_occurrences": 4,
+          "name_errors": {
+            "source": 0,
+            "corrected": 0
+          },
+          "names_fixed": 0,
+          "names_prestep": 0,
+          "common_sense_fixes": 0,
+          "kept_as_dictated": 2,
+          "reference_words": 253,
+          "word_errors": {
+            "source": 25,
+            "corrected": 25
+          },
+          "wer": {
+            "source": 0.0988,
+            "corrected": 0.0988
+          },
+          "invented_reference": 0,
+          "lost": 0,
+          "invented": 0,
+          "invented_fixes": 0,
+          "invented_beyond_fixes": 0,
+          "pack_outside_context": 0,
+          "enrichment_requests": 7,
+          "enriched": 6,
+          "enrichment_refused": 1,
+          "reasons": {
+            "correction": {
+              "autorewrite_refused": 2,
+              "autorewrite_rewritten": 2,
+              "autorewrite_unchanged": 5
+            },
+            "correction_refusals": {
+              "changed": 2
+            }
+          },
+          "latency": {
+            "correction_p50_s": 0.94,
+            "correction_p95_s": 1.406,
+            "total_p50_s": 1.73,
+            "total_p95_s": 3.05
+          }
+        },
+        "common_sense": {
+          "takes": 9,
+          "no_speech": 0,
+          "term_errors": null,
+          "name_occurrences": 4,
+          "name_errors": {
+            "source": 0,
+            "corrected": 0
+          },
+          "names_fixed": 0,
+          "names_prestep": 0,
+          "common_sense_fixes": 1,
+          "kept_as_dictated": 1,
+          "reference_words": 253,
+          "word_errors": {
+            "source": 25,
+            "corrected": 24
+          },
+          "wer": {
+            "source": 0.0988,
+            "corrected": 0.0949
+          },
+          "invented_reference": 0,
+          "lost": 0,
+          "invented": 1,
+          "invented_fixes": 1,
+          "invented_beyond_fixes": 0,
+          "pack_outside_context": 0,
+          "enrichment_requests": 7,
+          "enriched": 6,
+          "enrichment_refused": 1,
+          "reasons": {
+            "correction": {
+              "autorewrite_refused": 2,
+              "autorewrite_rewritten": 2,
+              "autorewrite_unchanged": 5
+            },
+            "correction_refusals": {
+              "changed": 2
+            }
+          },
+          "latency": {
+            "correction_p50_s": 1.0,
+            "correction_p95_s": 1.599,
+            "total_p50_s": 1.82,
+            "total_p95_s": 3.603
+          }
+        }
+      },
+      "variant_app": "names"
     }
   },
   "engine": {
@@ -320,7 +675,7 @@
     },
     "project_hints": {
       "takes": 19,
-      "hotword_chars_max": 294
+      "hotword_chars_max": 290
     }
   },
   "rewrite": {
@@ -331,11 +686,211 @@
     "timeouts": "bench",
     "cleanup": "rules",
     "correction_candidates": false,
+    "name_fixes": true,
+    "common_sense_fixes": false,
     "first_call": {
-      "model_loaded_before": true,
-      "seconds": 1.136,
+      "model_loaded_before": false,
+      "seconds": 8.579,
       "reason": "autorewrite_refused"
     }
+  },
+  "safety": {
+    "status": "measured",
+    "dataset": {
+      "script_rows": 36,
+      "recorded": 36,
+      "pending": 0,
+      "invalid": 0
+    },
+    "takes": 36,
+    "enrichment": false,
+    "variants": {
+      "phase8": {
+        "takes": 36,
+        "no_speech": 0,
+        "term_errors": null,
+        "name_occurrences": 9,
+        "name_errors": {
+          "source": 0,
+          "corrected": 0
+        },
+        "names_fixed": 0,
+        "names_prestep": 0,
+        "common_sense_fixes": 0,
+        "kept_as_dictated": 5,
+        "reference_words": 960,
+        "word_errors": {
+          "source": 102,
+          "corrected": 102
+        },
+        "wer": {
+          "source": 0.1062,
+          "corrected": 0.1062
+        },
+        "invented_reference": 0,
+        "lost": 0,
+        "invented": 0,
+        "invented_fixes": 0,
+        "invented_beyond_fixes": 0,
+        "pack_outside_context": 0,
+        "enrichment_requests": 0,
+        "enriched": 0,
+        "enrichment_refused": 0,
+        "reasons": {
+          "correction": {
+            "autorewrite_refused": 6,
+            "autorewrite_rewritten": 6,
+            "autorewrite_unchanged": 24
+          },
+          "correction_refusals": {
+            "changed": 5,
+            "dropped": 1
+          }
+        },
+        "latency": {
+          "correction_p50_s": 0.692,
+          "correction_p95_s": 1.376,
+          "total_p50_s": 0.692,
+          "total_p95_s": 1.376
+        }
+      },
+      "names": {
+        "takes": 36,
+        "no_speech": 0,
+        "term_errors": null,
+        "name_occurrences": 9,
+        "name_errors": {
+          "source": 0,
+          "corrected": 0
+        },
+        "names_fixed": 0,
+        "names_prestep": 0,
+        "common_sense_fixes": 0,
+        "kept_as_dictated": 5,
+        "reference_words": 960,
+        "word_errors": {
+          "source": 102,
+          "corrected": 100
+        },
+        "wer": {
+          "source": 0.1062,
+          "corrected": 0.1042
+        },
+        "invented_reference": 0,
+        "lost": 0,
+        "invented": 0,
+        "invented_fixes": 0,
+        "invented_beyond_fixes": 0,
+        "pack_outside_context": 0,
+        "enrichment_requests": 0,
+        "enriched": 0,
+        "enrichment_refused": 0,
+        "reasons": {
+          "correction": {
+            "autorewrite_refused": 6,
+            "autorewrite_rewritten": 6,
+            "autorewrite_unchanged": 24
+          },
+          "correction_refusals": {
+            "changed": 5,
+            "dropped": 1
+          }
+        },
+        "latency": {
+          "correction_p50_s": 0.648,
+          "correction_p95_s": 1.159,
+          "total_p50_s": 0.648,
+          "total_p95_s": 1.159
+        }
+      },
+      "common_sense": {
+        "takes": 36,
+        "no_speech": 0,
+        "term_errors": null,
+        "name_occurrences": 9,
+        "name_errors": {
+          "source": 0,
+          "corrected": 0
+        },
+        "names_fixed": 0,
+        "names_prestep": 0,
+        "common_sense_fixes": 4,
+        "kept_as_dictated": 2,
+        "reference_words": 960,
+        "word_errors": {
+          "source": 102,
+          "corrected": 100
+        },
+        "wer": {
+          "source": 0.1062,
+          "corrected": 0.1042
+        },
+        "invented_reference": 3,
+        "lost": 1,
+        "invented": 4,
+        "invented_fixes": 4,
+        "invented_beyond_fixes": 0,
+        "pack_outside_context": 0,
+        "enrichment_requests": 0,
+        "enriched": 0,
+        "enrichment_refused": 0,
+        "reasons": {
+          "correction": {
+            "autorewrite_refused": 6,
+            "autorewrite_rewritten": 8,
+            "autorewrite_unchanged": 22
+          },
+          "correction_refusals": {
+            "changed": 5,
+            "dropped": 1
+          }
+        },
+        "latency": {
+          "correction_p50_s": 0.689,
+          "correction_p95_s": 1.107,
+          "total_p50_s": 0.689,
+          "total_p95_s": 1.107
+        }
+      }
+    },
+    "variant_app": "names"
+  },
+  "common_sense_rule": {
+    "compared": [
+      "names",
+      "common_sense"
+    ],
+    "word_errors": {
+      "off": 193,
+      "on": 192
+    },
+    "sets": {
+      "prompts": {
+        "word_errors_off": 68,
+        "word_errors_on": 68,
+        "lost": 0,
+        "invented_beyond_fixes": 0,
+        "invented_fixes": 3,
+        "invented_reference": 4
+      },
+      "dictation": {
+        "word_errors_off": 25,
+        "word_errors_on": 24,
+        "lost": 0,
+        "invented_beyond_fixes": 0,
+        "invented_fixes": 1,
+        "invented_reference": 0
+      },
+      "safety": {
+        "word_errors_off": 100,
+        "word_errors_on": 100,
+        "lost": 1,
+        "invented_beyond_fixes": 0,
+        "invented_fixes": 4,
+        "invented_reference": 3
+      }
+    },
+    "met": false
   },
   "meets_targets": {
     "complete": true,

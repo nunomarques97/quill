@@ -1,10 +1,68 @@
 # Quill: botão 5 no Claude Code com o contexto do projeto (Fases 6 e 7)
 
+## Fase 7: mais prompts enriquecidos, com a mesma verificação
+
+**Estado: medido, 2026-10-03.** O botão 5 no Claude Code passou a enriquecer **20 de 20** prompts pedidos (13 de 13 nos prompts gravados e 7 de 7 nos ditados), contra 8 de 19 logo antes desta mudança e 8 de 21 na Fase 6. Continuam 0 palavras perdidas, 0 inventadas e 0 palavras do projeto fora do «Contexto». A verificação do enriquecimento (palavras perdidas, inventadas, números e palavras do projeto fora do «Contexto») e os seus testes não mudaram.
+
+O resumo com só números ([prompts-summary.json](prompts-summary.json)) é agora o desta medição. O texto de cada gravação e os prompts enriquecidos ficam em `bench/results/prompts/20261003-012518/` (ignorado pelo Git): `takes.json`, `takes-before.json` e `exemplos.md`.
+
+### Porque eram recusados
+
+Logo antes desta mudança (medição dos termos do projeto, abaixo), 11 dos 19 pedidos foram recusados pela verificação:
+
+| Motivo da recusa | Prompts | Ditados |
+|---|---|---|
+| Comprimento (resposta muito maior do que o ditado) | 5 | 1 |
+| Parte vazia | 2 | 0 |
+| Palavras do projeto fora do «Contexto» | 1 | 1 |
+| Palavra ditada perdida | 1 | 0 |
+
+Lidas as respostas recusadas (nos ficheiros ignorados), as causas repetiam-se: o modelo copiava o mesmo ditado para duas partes (por exemplo, «Objetivo» igual ao «Pedido»), copiava para o «Contexto» o resumo inteiro do projeto (às vezes mais de 60 palavras), terminava com «Restrições:» ou «Critérios de aceitação:» vazios ou a dizer «nada», repetia a resposta inteira duas vezes, ou copiava palavras do exemplo inventado das instruções. Em 2 dos 4 projetos, o resumo do projeto eram instruções para agentes (o início do `CLAUDE.md`) e não uma descrição do projeto.
+
+### O que mudou
+
+1. **Resumo do projeto:** os parágrafos do `CLAUDE.md` que dão instruções a um agente («Read AGENTS.md…», «Sponsor: … · Developer: …», «Estado: …») deixam de entrar no resumo. Quando o `CLAUDE.md` só tem isso no início, o resumo vem do `README.md`. Os pacotes guardados são refeitos uma vez com esta regra.
+2. **Só a primeira frase do resumo vai para o enriquecimento** (sem parênteses com números). O resto do pacote, os termos e a correção ficam iguais.
+3. **Arrumação antes da verificação:** um passo fixo, sem modelo, tira só o que as instruções já proíbem: uma segunda cópia da resposta inteira, uma parte que não seja «Pedido» nem «Contexto» vazia ou a dizer só «nada» / «none», e uma frase ditada copiada para duas partes (fica a do «Pedido»). Nunca acrescenta nada. Depois, a verificação confere o resultado inteiro, como antes: se faltar uma palavra ditada, é recusado.
+4. **Instruções mais claras:** nunca copiar palavras dos exemplos; nunca escrever um título sem texto; o exemplo do contexto passou a usar um resumo em inglês (como os resumos reais), para o modelo não copiar o exemplo.
+
+As mudanças foram feitas a partir dos motivos de recusa somados, não gravação a gravação. A arrumação atuou em 6 das 20 respostas (4 prompts e 2 ditados); as 6 foram depois aceites pela verificação.
+
+### Resultados
+
+Comando: `.venv\Scripts\python -m bench.prompts` (os dois conjuntos), com o qwen3:8b no Ollama partilhado (nada descarregado, nada instalado, 0 €).
+
+| Medição | Fase 6 | Antes desta mudança | Depois | Meta | Cumprida |
+|---|---|---|---|---|---|
+| Prompts enriquecidos (pedidos) | 8 de 21 | 8 de 19 | 20 de 20 | — | — |
+| Palavras de conteúdo perdidas (24 gravações) | 0 | 0 | 0 | 0 | sim |
+| Palavras de conteúdo inventadas (24 gravações) | 0 | 0 | 0 | 0 | sim |
+| Palavras do projeto fora do «Contexto» | 0 | 0 | 0 | 0 | sim |
+| Erros em termos do domínio no texto final (prompts) | 5 de 16 | 4 de 16 | 4 de 16 | no máximo 3 | **não** |
+
+O número de pedidos muda entre medições porque um ditado com menos de 6 palavras depois da correção não é enriquecido.
+
+Latência, em segundos (p50 / p95):
+
+| Etapa | Prompts antes | Prompts depois | Ditados antes | Ditados depois |
+|---|---|---|---|---|
+| Enriquecimento | 1,67 / 4,01 | 1,08 / 1,74 | 0,91 / 3,97 | 0,88 / 1,66 |
+| Botão 5 depois da transcrição (pacote, correção e enriquecimento) | 2,16 / 4,55 | 1,72 / 2,24 | 1,02 / 4,80 | 1,30 / 2,47 |
+
+Os pedidos mais lentos de antes eram as respostas compridas que depois eram recusadas. Nos ditados, o p50 do total subiu porque mais ditados passaram a ser enriquecidos. As medições correram em alturas diferentes na placa gráfica partilhada; nenhuma chamada passou os limites da aplicação (4 s na correção, 15 s no enriquecimento).
+
+### Decisões para o Sponsor (enriquecimento)
+
+1. **Leia os prompts enriquecidos.** Abra `bench/results/prompts/20261003-012518/exemplos.md` e escreva `sim` ou `não` por baixo de cada um. Em cerca de 4 dos 20, as palavras estão todas lá mas numa parte que não parece a certa (por exemplo, o pedido dentro de «Restrições», ou só «Objetivo» sem «Pedido»); a verificação aceita-os porque não perdem nem inventam nada. Recomendação: manter o enriquecimento ligado. Se não o convencerem, a alternativa é desligá-lo e ficar só com a correção com contexto.
+2. **Um acento na correção:** na passagem com as dicas antigas do Whisper (não é o que a aplicação faz agora), a correção tirou o acento de uma palavra ditada num prompt, o que conta como 1 palavra perdida nessa coluna. No caminho da aplicação foram 0. Fica registado para a próxima medição; nada foi mudado na correção.
+
+---
+
 ## Fase 7: os termos do projeto como dicas do Whisper
 
 **Estado: medido, 2026-10-03.** Com o botão 5 no Claude Code, o Whisper passa a receber como dicas o nome do projeto e os termos mais relevantes do pacote do projeto. Os erros nos termos do domínio desceram de 7 para 5 na transcrição e de 5 para 4 no texto final do botão 5. A meta (no máximo metade dos 7 de hoje, ou seja 3) **não foi cumprida**. Fica para decisão sua (em baixo); a meta não foi baixada. Continuam a não se perder palavras nem a aparecer palavras inventadas.
 
-O resumo com só números ([prompts-summary.json](prompts-summary.json)) é agora o desta medição. O texto de cada gravação, com e sem as dicas do projeto, fica em `bench/results/prompts/20261003-005208/` (ignorado pelo Git): `takes.json` (com as dicas do projeto), `takes-before.json` (com as dicas de hoje) e `exemplos.md`.
+O resumo com só números desta medição foi substituído pelo da medição do enriquecimento (acima), que repete as duas passagens. O texto de cada gravação, com e sem as dicas do projeto, fica em `bench/results/prompts/20261003-005208/` (ignorado pelo Git): `takes.json` (com as dicas do projeto), `takes-before.json` (com as dicas de hoje) e `exemplos.md`.
 
 ### O que mudou
 

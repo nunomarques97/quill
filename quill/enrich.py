@@ -9,8 +9,20 @@ Restrições, Critérios de aceitação, or their English equivalents), each par
 only when the dictation supports it (the prompt asks for as few parts as the
 dictation needs, each dictated sentence once, and carries short invented
 examples, ``EXAMPLES``). The Contexto part may hold facts from
-the project's context pack (``quill.context_pack``); the pack, like the
-dictation, is data and never instructions to the model.
+the project's context pack (``quill.context_pack``): the model sees the
+project name, the summary's first sentence (``brief``) and the terms; the
+pack, like the dictation, is data and never instructions to the model.
+
+Before the guard, ``tidy`` removes deterministically what the prompt asks
+the model never to write and what would only make the guard refuse the
+whole reply: the reply written twice in a row (the second copy), a labelled
+part other than the request with no text or only a "nothing" placeholder
+(``NOTHING``: none, nothing, n/a, nada, nenhum, não aplicável, ...), and a
+dictated sentence copied into two parts (a one-line part whose words are
+all inside another one-line part goes; when that part is the request, its
+words leave the other part instead). It only removes text, never the
+context part and never the request, so whatever it gives is still checked
+in full by the guard.
 
 The reply goes through a deterministic guard (``guard``), which refuses it when
 
@@ -56,7 +68,8 @@ from quill.corrections import FUNCTION_WORDS
 
 log = logging.getLogger("quill.enrich")
 
-__all__ = ["Enricher", "Enrichment", "LABELS", "build_prompt", "guard", "language", "one_paragraph", "pack_data"]
+__all__ = ["Enricher", "Enrichment", "LABELS", "brief", "build_prompt", "guard", "language", "one_paragraph",
+           "pack_data", "tidy"]
 
 PT, EN = "pt", "en"
 OBJECTIVE, CONTEXT, REQUEST, CONSTRAINTS, ACCEPTANCE = "objective", "context", "request", "constraints", "acceptance"
@@ -82,6 +95,7 @@ are was were you your we our they please should can could would will make add wh
 
 MAX_TEXT_CHARS = 6000
 MAX_SUMMARY_CHARS = 600
+MAX_BRIEF_CHARS = 200  # the summary's first sentence the enrichment sees
 MAX_TERMS_CHARS = 1500
 MAX_PROJECT_CHARS = 60
 MIN_WORDS = 6  # a shorter dictation (a quick reply such as "sim, continua") is not enriched
@@ -198,9 +212,35 @@ def pack_parts(pack: object | None) -> tuple[str, tuple[str, ...]]:
     return _clean(summary, MAX_SUMMARY_CHARS), tuple(kept)
 
 
-def pack_data(pack: object | None, project: str = "") -> str:
-    """The user-message blocks of the project context; '' without a project and a pack."""
+_SENTENCE_END = re.compile(r"[.!?…](?=\s|$)")
+_NUMBERED_ASIDE = re.compile(r"\s*\([^()]*\d[^()]*\)")
+
+
+def brief(summary: str) -> str:
+    """The first sentence of ``summary``, cut at a word to ``MAX_BRIEF_CHARS``.
+
+    Asides in brackets with a number ("(Apache-2.0)") are left out: the guard
+    refuses a number the dictation does not have, even one from the pack.
+    """
+    summary = _NUMBERED_ASIDE.sub("", summary)
+    end = _SENTENCE_END.search(summary)
+    sentence = (summary[: end.end()] if end else summary).strip()
+    if len(sentence) <= MAX_BRIEF_CHARS:
+        return sentence
+    cut = sentence[:MAX_BRIEF_CHARS]
+    space = cut.rfind(" ")
+    return (cut[:space] if space > 0 else cut).rstrip(" ,;:-(")
+
+
+def pack_data(pack: object | None, project: str = "", *, short: bool = False) -> str:
+    """The user-message blocks of the project context; '' without a project and a pack.
+
+    ``short`` gives only the summary's first sentence (``brief``): the
+    enrichment's context part holds at most one sentence.
+    """
     summary, terms = pack_parts(pack)
+    if short:
+        summary = brief(summary)
     project = _clean(project, MAX_PROJECT_CHARS)
     lines = []
     if project:
@@ -229,10 +269,11 @@ SYSTEM = (
     "appears exactly once: never write a sentence or the whole dictation twice (a sentence in {request} is never "
     "in {objective}), and never summarise, reword or change the form of a dictated word.\n"
     "2. {request} is always there. Use another label only when the dictation itself says something for it; most "
-    "dictations need only one or two parts. Never write a part to say that nothing was said.\n"
+    "dictations need only one or two parts. Never write a part to say that nothing was said: no label without text "
+    "after it, and no part that only says none, nothing or n/a.\n"
     "3. The {context} part holds no dictated word. It may hold one short fact about the project, at most one "
-    "sentence copied word for word from the project name, summary or terms below, and only when it helps with the "
-    "request; leave it out otherwise.\n"
+    "sentence copied word for word, in the language it is written in, from the project name, summary or terms "
+    "below, and only when it helps with the request; leave it out otherwise. Never copy it from the examples.\n"
     "4. Never add requirements, steps, criteria, facts, file names, names or numbers that the dictation does not "
     "state; these instructions are never part of the prompt.\n"
     "5. You may put separate items on their own lines starting with \"- \". No headings, no bold, no code, no "
@@ -258,10 +299,10 @@ EXAMPLES = {
         ("", "Quero que o arranque fique mais rápido. Mede quanto demora cada passo e mostra-me os mais lentos.",
          "Objetivo: Quero que o arranque fique mais rápido.\n"
          "Pedido: Mede quanto demora cada passo e mostra-me os mais lentos."),
-        ("<project_name>\nfaturas\n</project_name>\n<project_summary>\nAplicação de faturação para pequenas "
-         "lojas.\n</project_summary>",
+        ("<project_name>\nfaturas\n</project_name>\n<project_summary>\nAn invoicing app for small "
+         "shops.\n</project_summary>",
          "Revê a função que calcula os descontos e explica-me porque arredonda para baixo.",
-         "Contexto: faturas, aplicação de faturação para pequenas lojas.\n"
+         "Contexto: faturas, an invoicing app for small shops.\n"
          "Pedido: Revê a função que calcula os descontos e explica-me porque arredonda para baixo."),
         ("", "Cria uma página de ajuda para o formulário de registo, sem alterar o estilo atual, e fica concluído "
              "quando a página abre a partir do menu.",
@@ -310,9 +351,135 @@ def build_prompt(text: str, lang: str, pack: object | None = None, project: str 
                            guide=GUIDES[lang], context=labels[CONTEXT], request=labels[REQUEST],
                            objective=labels[OBJECTIVE],
                            examples=examples(lang))
-    data = pack_data(pack, project)
+    data = pack_data(pack, project, short=True)
     user = USER_TEMPLATE.format(text=text.strip())
     return system, f"{data}\n{user}" if data else user
+
+
+# ---------------------------------------------------------------- tidy
+
+# Folded words of a part that says nothing was said ("Restrições: nenhuma", "Constraints: none", "n/a").
+NOTHING = frozenset("""
+none nothing n a na nada nenhum nenhuma nenhuns nenhumas nao no not aplicavel aplica se applicable specified
+indicado indicada indicados indicadas mencionado mencionada mencionados mencionadas sem especificado
+especificada especificados especificadas criterio restricao objetivo criterion constraint objective
+""".split())
+_EDGE = " ,;:-–—"
+
+
+def _says_nothing(body: list[str], lang: str) -> bool:
+    words = [key(word) for word in WORD.findall(" ".join(body))]
+    return all(word in NOTHING or word in structure_words(lang) for word in words)
+
+
+def _tokens(text: str) -> list[str]:
+    return [word.casefold() for word in WORD.findall(text)]
+
+
+def _inside(small: list[str], large: list[str]) -> bool:
+    return bool(small) and any(large[i:i + len(small)] == small for i in range(len(large) - len(small) + 1))
+
+
+def _without(text: str, words: list[str]) -> str:
+    """``text`` without the first run of ``words`` (case folded) and the punctuation right after it."""
+    pattern = r"(?<!\w)" + r"\W+".join(re.escape(word) for word in words) + r"(?!\w)[.!?;,…]*"
+    match = re.search(pattern, text, re.IGNORECASE)
+    if match is None:
+        return text
+    rest = " ".join(f"{text[:match.start()]} {text[match.end():]}".split())
+    return re.sub(r"\s+([.,;:!?…])", r"\1", rest).strip(_EDGE)
+
+
+@dataclass
+class _Draft:
+    name: str | None
+    label: str
+    lines: list[str]  # the label line's text after the colon (when any) and the part's next lines
+
+    @property
+    def single(self) -> str | None:
+        """The part's text when it is one line that is not an item."""
+        return self.lines[0] if len(self.lines) == 1 and not ITEM.match(self.lines[0]) else None
+
+
+def _draft_lines(drafts: list[_Draft]) -> list[str]:
+    out: list[str] = []
+    for draft in drafts:
+        if draft.name is None:
+            out += draft.lines
+        elif draft.lines and not ITEM.match(draft.lines[0]):
+            out += [f"{draft.label}: {draft.lines[0]}", *draft.lines[1:]]
+        else:
+            out += [f"{draft.label}:", *draft.lines]
+    return out
+
+
+def _duplicate(drafts: list[_Draft]) -> bool:
+    """Remove one dictated sentence copied into two one-line parts; whether one was found."""
+    for small in drafts:
+        for large in drafts:
+            if small is large or CONTEXT in (small.name, large.name) or None in (small.name, large.name):
+                continue
+            if small.single is None or large.single is None or REQUEST == small.name == large.name:
+                continue
+            words = _tokens(small.single)
+            if not _inside(words, _tokens(large.single)):
+                continue
+            if small.name != REQUEST:
+                same = large.name != REQUEST and words == _tokens(large.single)
+                # The same sentence in two parts other than the request: the first part keeps it.
+                drafts.remove(large if same and drafts.index(small) < drafts.index(large) else small)
+                return True
+            if large.name == REQUEST:
+                continue
+            rest = _without(large.single, words)
+            if content_words(rest):
+                large.lines = [rest]
+            else:
+                drafts.remove(large)
+            return True
+    return False
+
+
+def tidy(reply: str, lang: str) -> tuple[str, int]:
+    """(``reply`` with removable parts removed, how many removals); see the module docstring.
+
+    Only text goes: nothing is added, the context part and the request
+    stay, and a reply it cannot read (another language's label, a label
+    used twice apart from a whole repeated reply) is given back as it is.
+    """
+    lines = [" ".join(line.split()) for line in reply.replace("\r\n", "\n").strip().split("\n")]
+    lines = [line for line in lines if line]
+    changed = 0
+    half = len(lines) // 2
+    if half and len(lines) % 2 == 0 and lines[:half] == lines[half:]:
+        lines, changed = lines[:half], 1
+    other = {name for other_lang, names in _LABEL_KEYS.items() if other_lang != lang for name in names}
+    drafts: list[_Draft] = []
+    for line in lines:
+        label = LABEL_LINE.match(line) if not ITEM.match(line) else None
+        name = key(label.group(1)) if label else ""
+        if label and name in _LABEL_KEYS[lang]:
+            part = _LABEL_KEYS[lang][name]
+            if any(draft.name == part for draft in drafts):
+                return reply, 0
+            drafts.append(_Draft(part, label.group(1), [label.group(2)] if label.group(2).strip() else []))
+            continue
+        if label and name in other:
+            return reply, 0
+        if not drafts:
+            drafts.append(_Draft(None, "", []))
+        drafts[-1].lines.append(line)
+    kept = [draft for draft in drafts
+            if draft.name in (None, CONTEXT, REQUEST) or not _says_nothing(draft.lines, lang)]
+    changed += len(drafts) - len(kept)
+    for _ in range(len(kept)):
+        if not _duplicate(kept):
+            break
+        changed += 1
+    if not changed:
+        return reply, 0
+    return "\n".join(_draft_lines(kept)), changed
 
 
 # ---------------------------------------------------------------- guard
@@ -457,6 +624,7 @@ class Enrichment:
     seconds: float = 0.0
     language: str = PT
     parts: int = 0
+    tidied: int = 0  # removals ``tidy`` made before the guard
 
     @property
     def enriched(self) -> bool:
@@ -486,11 +654,11 @@ class Enricher:
         words = len(WORD.findall(text))
 
         def done(reason: str, result: str | None = None, detail: str = "", seconds: float = 0.0,
-                 parts: int = 0) -> Enrichment:
+                 parts: int = 0, tidied: int = 0) -> Enrichment:
             if reason != SHORT:
-                log.info("enrich: %s%s (%s, %d words, %d parts, %.2f s)", reason, f" ({detail})" if detail else "",
-                         lang, words, parts, seconds)
-            return Enrichment(text if result is None else result, reason, detail, seconds, lang, parts)
+                log.info("enrich: %s%s (%s, %d words, %d parts, %d tidied, %.2f s)", reason,
+                         f" ({detail})" if detail else "", lang, words, parts, tidied, seconds)
+            return Enrichment(text if result is None else result, reason, detail, seconds, lang, parts, tidied)
 
         if words < MIN_WORDS:
             return done(SHORT)
@@ -511,7 +679,8 @@ class Enricher:
         content = getattr(reply, "content", None)
         if not isinstance(content, str):
             return done(FAILED, detail="no_text", seconds=seconds)
+        content, tidied = tidy(content, lang)
         verdict = guard(text, content, lang=lang, pack=pack, project=project)
         if not verdict.ok:
-            return done(REFUSED, detail=verdict.reason, seconds=seconds)
-        return done(ENRICHED, verdict.text, seconds=seconds, parts=verdict.parts)
+            return done(REFUSED, detail=verdict.reason, seconds=seconds, tidied=tidied)
+        return done(ENRICHED, verdict.text, seconds=seconds, parts=verdict.parts, tidied=tidied)

@@ -261,6 +261,135 @@ class EnricherTest(unittest.TestCase):
         self.assertFalse(enricher.wants("palavra " * 800))
 
 
+class BriefTest(unittest.TestCase):
+    """The enrichment sees the pack summary's first sentence only; the correction keeps the whole summary."""
+
+    def test_first_sentence_bounded_without_numbered_asides(self) -> None:
+        self.assertEqual(E.brief("Loja online de encomendas. Tem um painel."), "Loja online de encomendas.")
+        self.assertEqual(E.brief("Open-source (MIT-2.0), local-first ledger for shops. It keeps trades."),
+                         "Open-source, local-first ledger for shops.")
+        self.assertEqual(E.brief("A desk HUD (heads-up display) for shops."), "A desk HUD (heads-up display) for shops.")
+        self.assertEqual(E.brief("Sem ponto final"), "Sem ponto final")
+        self.assertEqual(E.brief(""), "")
+        long = E.brief("palavra " * 60 + ".")
+        self.assertLessEqual(len(long), E.MAX_BRIEF_CHARS)
+        self.assertTrue(long.endswith("palavra"))
+
+    def test_only_the_enrichment_gets_the_short_summary(self) -> None:
+        pack = SimpleNamespace(summary=PACK.summary + " Corre em 3 servidores.", terms=PACK.terms)
+        self.assertIn("relatórios diários. Corre em 3 servidores.", E.pack_data(pack, PROJECT))
+        short = E.pack_data(pack, PROJECT, short=True)
+        self.assertIn("<project_summary>\n" + PACK.summary + "\n</project_summary>", short)
+        self.assertNotIn("servidores", short)
+        self.assertIn("<project_terms>", short)
+        self.assertNotIn("servidores", E.build_prompt(DICTATION, E.PT, pack, PROJECT)[1])
+
+    def test_the_rules_forbid_empty_parts_and_copying_the_examples(self) -> None:
+        for lang in (E.PT, E.EN):
+            system = E.build_prompt(DICTATION, lang)[0]
+            self.assertIn("no label without text after it", system)
+            self.assertIn("Never copy it from the examples", system)
+
+
+class TidyTest(unittest.TestCase):
+    """Deterministic removals before the guard: only text goes, the guard still checks the result in full."""
+
+    def tidy(self, reply: str, lang: str = E.PT) -> tuple[str, int]:
+        return E.tidy(reply, lang)
+
+    def test_an_accepted_reply_is_unchanged(self) -> None:
+        self.assertEqual(self.tidy(REPLY), (REPLY, 0))
+        self.assertEqual(self.tidy(ENGLISH_REPLY, E.EN), (ENGLISH_REPLY, 0))
+        self.assertEqual(self.tidy(""), ("", 0))
+
+    def test_empty_and_nothing_parts_go(self) -> None:
+        base = ("Pedido: Acrescenta a exportação do relatório de encomendas em CSV no painel de gestão.\n"
+                "Restrições: sem mexer na API pública.")
+        for tail in ("\nCritérios de aceitação:", "\nCritérios de aceitação: nenhum", "\nCritérios de aceitação: N/A",
+                     "\nCritérios de aceitação: nada.", "\nCritérios de aceitação: none",
+                     "\nCritérios de aceitação: não aplicável", "\nCritérios de aceitação: nenhum critério indicado",
+                     "\nObjetivo:\nCritérios de aceitação: -"):
+            with self.subTest(tail=tail):
+                text, removed = self.tidy(base + tail)
+                self.assertEqual(text, base)
+                self.assertGreaterEqual(removed, 1)
+        english = "Request: Add a CSV export.\nConstraints: none\nAcceptance criteria: not applicable"
+        self.assertEqual(self.tidy(english, E.EN), ("Request: Add a CSV export.", 2))
+
+    def test_the_request_and_the_context_part_are_never_removed(self) -> None:
+        for reply in ("Pedido:\nRestrições: sem mexer na API pública.", "Pedido: nada\nObjetivo: exportar o CSV.",
+                      "Contexto:\nPedido: exportar o CSV."):
+            with self.subTest(reply=reply):
+                self.assertEqual(self.tidy(reply), (reply, 0))
+
+    def test_a_sentence_in_two_parts_stays_in_one(self) -> None:
+        sentence = "Acrescenta a exportação do relatório de encomendas em CSV no painel de gestão."
+        twice = f"Objetivo: {sentence}\nContexto: projeto nimbus.\nPedido: {sentence}"
+        self.assertEqual(self.tidy(twice), (f"Contexto: projeto nimbus.\nPedido: {sentence}", 1))
+        # A part inside another (case and punctuation aside) goes.
+        inside = f"Objetivo: acrescenta a exportação do relatório\nPedido: {sentence}"
+        self.assertEqual(self.tidy(inside), (f"Pedido: {sentence}", 1))
+        # The request inside another part: its words leave that part.
+        whole = f"Objetivo: Quero o CSV mensal. {sentence}\nPedido: {sentence}"
+        self.assertEqual(self.tidy(whole), (f"Objetivo: Quero o CSV mensal.\nPedido: {sentence}", 1))
+        tail = f"Objetivo: Quero o CSV mensal, sem mexer na API.\nPedido: sem mexer na API."
+        self.assertEqual(self.tidy(tail), ("Objetivo: Quero o CSV mensal\nPedido: sem mexer na API.", 1))
+        # Only the request left of a part: the part goes.
+        self.assertEqual(self.tidy(f"Objetivo: {sentence}\nPedido: {sentence.lower()}"),
+                         (f"Pedido: {sentence.lower()}", 1))
+        # The same sentence in two parts other than the request: the first keeps it.
+        same = f"Objetivo: Quero o CSV mensal.\nPedido: {sentence}\nCritérios de aceitação: quero o CSV mensal"
+        self.assertEqual(self.tidy(same), (f"Objetivo: Quero o CSV mensal.\nPedido: {sentence}", 1))
+        # Words of a part that are not one run inside the other stay, and items are never compared.
+        apart = "Objetivo: exportar CSV\nPedido: exportar o relatório em CSV"
+        self.assertEqual(self.tidy(apart), (apart, 0))
+        items = "Objetivo:\n- exportar CSV\nPedido: exportar CSV no painel"
+        self.assertEqual(self.tidy(items), (items, 0))
+
+    def test_a_reply_written_twice_keeps_one_copy(self) -> None:
+        self.assertEqual(self.tidy(REPLY + "\n" + REPLY), (REPLY, 1))
+        self.assertEqual(self.tidy(REPLY + "\n\n" + REPLY + "\n"), (REPLY, 1))
+
+    def test_an_unreadable_reply_is_given_back(self) -> None:
+        for reply in (REPLY + "\nPedido: outra vez.\nRestrições:", REPLY.replace("Restrições:", "Constraints:") +
+                      "\nObjetivo:"):
+            with self.subTest(reply=reply[-20:]):
+                self.assertEqual(self.tidy(reply), (reply, 0))
+
+    def test_tidy_never_lets_a_refusal_through(self) -> None:
+        # Removing a "nothing" part that held a dictated word loses it: the guard refuses.
+        source = "Acrescenta a exportação do relatório em CSV e não mexas em nada."
+        reply = "Pedido: Acrescenta a exportação do relatório em CSV e não mexas em\nRestrições: nada"
+        text, removed = self.tidy(reply)
+        self.assertEqual(removed, 1)
+        self.assertEqual(E.guard(source, text).reason, E.LOST)
+        # Invented and pack words outside the context part stay refused.
+        invented = REPLY + "\n- Garante cobertura total dos testes.\nObjetivo:"
+        self.assertEqual(E.guard(DICTATION, self.tidy(invented)[0], pack=PACK, project=PROJECT).reason, E.INVENTED)
+        outside = REPLY.replace("pública.", "pública no armazém.") + "\nObjetivo: nenhum"
+        self.assertEqual(E.guard(DICTATION, self.tidy(outside)[0], pack=PACK, project=PROJECT).reason,
+                         E.PACK_OUTSIDE)
+
+
+class TidyEnricherTest(unittest.TestCase):
+    def test_a_tidied_reply_is_typed_and_counted(self) -> None:
+        client = FakeClient(REPLY + "\nObjetivo:\n" + "")
+        result = E.Enricher(client, "m", 12.0).enrich(DICTATION, pack=PACK, project=PROJECT)
+        self.assertEqual((result.reason, result.text, result.tidied, result.parts), (E.ENRICHED, REPLY, 1, 4))
+        twice = E.Enricher(FakeClient(REPLY + "\n" + REPLY), "m", 12.0).enrich(DICTATION, pack=PACK, project=PROJECT)
+        self.assertEqual((twice.reason, twice.text, twice.tidied), (E.ENRICHED, REPLY, 1))
+
+    def test_a_refusal_after_tidy_keeps_the_input_and_logs_counts_only(self) -> None:
+        client = FakeClient(REPLY + "\n- Garante cobertura total dos testes.\nObjetivo: nada")
+        with self.assertLogs("quill.enrich", logging.INFO) as logs:
+            result = E.Enricher(client, "m", 12.0).enrich(DICTATION, pack=PACK, project=PROJECT)
+        self.assertEqual((result.reason, result.detail, result.text, result.tidied),
+                         (E.REFUSED, E.INVENTED, DICTATION, 1))
+        self.assertIn("1 tidied", logs.output[-1])
+        for word in (*PRIVATE, "nada", "Garante"):
+            self.assertNotIn(word, "\n".join(logs.output))
+
+
 class OneParagraphTest(unittest.TestCase):
     """Claude Code in a terminal: the accepted prompt on one line, labels kept, words unchanged."""
 

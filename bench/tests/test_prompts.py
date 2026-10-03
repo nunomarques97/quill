@@ -487,8 +487,25 @@ class MeasureTest(Case):
         # The product guard refuses it: the corrected text is sent, nothing invented reaches the output.
         self.assertEqual(block["reasons"]["enrichment"], {enrich.REFUSED: 3})
         self.assertEqual(block["enriched"], 0)
+        self.assertEqual(block["tidied"], {"replies": 0, "enriched": 0})
         self.assertEqual(block["invented"]["new"], 0)
         self.assertEqual(block["term_errors"]["new"], 0)
+
+    def test_a_reply_tidied_before_the_guard_is_counted(self):
+        self.record()
+        model = ScriptedModel(enrich_reply=lambda text, user: f"Pedido: {text}\nRestrições: nenhuma\nCritérios de "
+                                                               "aceitação:")
+        code, lines, _, summary_path, _ = self.run_main(self.heard(), model=model)
+        self.assertEqual(code, 0)
+        block = json.loads(summary_path.read_text(encoding="utf-8"))["sets"]["prompts"]
+        self.assertEqual((block["enriched"], block["enrichment_requests"]), (3, 3))
+        self.assertEqual(block["tidied"], {"replies": 3, "enriched": 3})
+        self.assertEqual((block["lost"]["new"], block["invented"]["new"], block["pack_outside_context"]), (0, 0, 0))
+        self.assertTrue(any("enriched 3 of 3" in line for line in lines))
+        run = next((self.results / "prompts").iterdir())
+        takes = json.loads((run / "takes.json").read_text(encoding="utf-8"))
+        self.assertEqual([t["enrich_tidied"] for t in takes], [2, 2, 2])
+        self.assertTrue(all("Restrições" not in t["final"] for t in takes))
 
     def test_missing_takes_fail_the_requirement(self):
         self.record(["pp-01", "pp-02"])

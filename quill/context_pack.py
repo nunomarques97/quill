@@ -6,7 +6,10 @@ None (today's behaviour: the dictation goes on without it):
 - ``summary``: what the project is, at most ``MAX_SUMMARY_CHARS`` characters
   of the prose paragraphs of its ``CLAUDE.md``, else of its ``README.md``
   (headings, lists such as rule lists, tables, quotes, HTML and code blocks
-  are skipped; links keep their text, URLs are dropped);
+  are skipped; links keep their text, URLs are dropped). Paragraphs that
+  instruct an agent or hold metadata (``instructions``) say nothing of what
+  the project is and are skipped too, so a ``CLAUDE.md`` that opens with
+  agent instructions gives the ``README.md`` summary;
 - ``terms``: at most ``MAX_TERMS`` deduplicated terms (case and accents
   folded) in a deterministic order (score, then spelling): the words of the
   Markdown headings and the identifiers in inline code of README, CLAUDE.md
@@ -79,7 +82,7 @@ from quill.corrections import FUNCTION_WORDS
 
 log = logging.getLogger("quill.context_pack")
 
-VERSION = 1
+VERSION = 2  # 2: instruction and metadata paragraphs left out of the summary
 MAX_SUMMARY_CHARS = 600
 MAX_TERMS = 150
 MIN_TERM_CHARS = 3
@@ -475,14 +478,49 @@ def parse_markdown(text: str) -> Markdown:
     return result
 
 
+# Openings of a paragraph that tells an agent what to do (folded first word).
+INSTRUCTION_VERBS = frozenset(fold(word) for word in """
+read follow use always never do don't dont before after when if keep work run check ask make write see avoid
+ensure prefer please start stop note
+lê leia segue siga usa use nunca sempre antes depois quando se faz faça não mantém mantenha corre verifica
+pergunta escreve vê evita confirma
+""".split())
+# Agent instruction files and the word agent: a paragraph naming them is about how to work, not the project.
+AGENT_WORDS = frozenset({"agents.md", "claude.md", "gemini.md", "copilot-instructions.md", ".cursorrules", "agent",
+                         "agents", "agente", "agentes"})
+# Labels of a metadata paragraph ("Status: ...", "Sponsor: X · Developer: Y").
+METADATA_LABELS = frozenset({"sponsor", "developer", "developers", "owner", "owners", "maintainer", "maintainers",
+                             "author", "authors", "status", "version", "license", "licence", "contact", "team",
+                             "read first", "commands", "estado", "autor", "autores", "versao", "licenca",
+                             "contacto", "equipa", "comandos"})
+_METADATA = re.compile(r"^([^\W\d_][^\W\d_ ]*(?: [^\W\d_]+)?)\s*:(?:\s|$)")
+_PAIRS = re.compile(r"(?:^|[·|])\s*[^\W\d_][\w ]{0,24}:\s")
+
+
+def instructions(paragraph: str) -> bool:
+    """Whether a prose paragraph instructs an agent or holds metadata rather than saying what the project is."""
+    words = paragraph.split()
+    if not words:
+        return False
+    if fold(words[0].strip(".,;:!?\"'()")) in INSTRUCTION_VERBS:
+        return True
+    if any(fold(word.strip(".,;:!?\"'()")) in AGENT_WORDS for word in words):
+        return True
+    label = _METADATA.match(paragraph)
+    return bool(label and fold(label.group(1)) in METADATA_LABELS) or len(_PAIRS.findall(paragraph)) >= 2
+
+
 def summary_of(markdown: Markdown) -> str:
     """The prose paragraphs of the first section that has any (what the project is), cut at a
-    sentence or a word to ``MAX_SUMMARY_CHARS``."""
+    sentence or a word to ``MAX_SUMMARY_CHARS``; instruction and metadata paragraphs are left out
+    (a first section of only those gives '')."""
     text = ""
     first = markdown.paragraphs[0][0] if markdown.paragraphs else 0
     for section, paragraph in markdown.paragraphs:
         if section != first:
             break
+        if instructions(paragraph):
+            continue
         text = f"{text} {paragraph}".strip()
         if len(text) >= MAX_SUMMARY_CHARS:
             break

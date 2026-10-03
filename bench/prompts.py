@@ -372,18 +372,20 @@ def term_errors(reference: str, text: str, terms: Sequence[str]) -> tuple[int, i
 
 
 class _CapturingEnricher:
-    """The rewriter's enricher, keeping the corrected text it was asked to enrich."""
+    """The rewriter's enricher, keeping the corrected text it was asked to enrich and its outcome."""
 
     def __init__(self, enricher: object) -> None:
         self.enricher = enricher
         self.text: str | None = None
+        self.result: object | None = None
 
     def wants(self, text: str) -> bool:
         return self.enricher.wants(text)
 
     def enrich(self, text: str, **kwargs: object) -> object:
         self.text = text
-        return self.enricher.enrich(text, **kwargs)
+        self.result = self.enricher.enrich(text, **kwargs)
+        return self.result
 
 
 @dataclass
@@ -459,6 +461,7 @@ class TakeResult:
     pack_s: float = 0.0
     correction_s: float = 0.0
     enrich_s: float = 0.0
+    enrich_tidied: int = 0  # removals quill.enrich.tidy made before the guard
     hints: str = ""  # the reason code of the take's decoding hints ("" before the project hints)
 
     @property
@@ -539,6 +542,7 @@ def run_take(take: Take, set_name: str, case: str, heard: str, asr_s: float, pro
         lost_new=lost_words(take.clean, source, new.text),
         invented_new=invented_new, pack_outside_context=from_pack,
         pack_s=pack_s, correction_s=new.seconds, enrich_s=new.enrich_seconds,
+        enrich_tidied=getattr(capture.result, "tidied", 0) or 0,
     )
 
 
@@ -632,6 +636,9 @@ def set_block(results: Sequence[TakeResult], dataset: dict, product_timeouts: di
         "invented": {"today": sum(r.invented_today for r in spoken), "new": sum(r.invented_new for r in spoken)},
         "pack_outside_context": sum(r.pack_outside_context for r in spoken),
         "enriched": sum(r.enrichment == enrich.ENRICHED for r in spoken),
+        "enrichment_requests": len(called),
+        "tidied": {"replies": sum(r.enrich_tidied > 0 for r in called),
+                   "enriched": sum(r.enrich_tidied > 0 and r.enrichment == enrich.ENRICHED for r in called)},
         "reasons": {
             "today": dict(sorted(Counter(r.today_reason for r in spoken).items())),
             "correction": dict(sorted(Counter(r.reason for r in spoken).items())),
@@ -775,6 +782,7 @@ def _rows(results: Sequence[TakeResult]) -> list[dict]:
              "source": r.source, "today": r.today, "corrected": r.corrected, "final": r.final, "hints": r.hints,
              "project_found": r.project_found, "pack": r.pack, "today_reason": r.today_reason, "reason": r.reason,
              "detail": r.detail, "enrichment": r.enrichment, "enrich_detail": r.enrich_detail,
+             "enrich_tidied": r.enrich_tidied,
              "term_occurrences": r.term_occurrences, "term_errors_pipeline": r.term_errors_pipeline,
              "term_errors_today": r.term_errors_today, "term_errors_new": r.term_errors_new,
              "lost_today": r.lost_today, "lost_new": r.lost_new, "invented_today": r.invented_today,
@@ -1107,8 +1115,8 @@ def report_lines(summary: dict) -> list[str]:
         errors = block["term_errors"]
         lines.append(
             f"{name}: takes {block['takes']} (no speech {block['no_speech']}); projects {block['projects_detected']}, "
-            f"packs {block['packs_found']}; enriched {block['enriched']}; lost today {block['lost']['today']} / new "
-            f"{block['lost']['new']}; invented today {block['invented']['today']} / new {block['invented']['new']}; "
+            f"packs {block['packs_found']}; enriched {block['enriched']} of {block.get('enrichment_requests', '?')}; "
+            f"lost today {block['lost']['today']} / new {block['lost']['new']}; invented today {block['invented']['today']} / new {block['invented']['new']}; "
             f"pack words outside context {block['pack_outside_context']}"
             + (f"; domain-term errors pipeline {errors['pipeline']}, today {errors['today']}, new {errors['new']} of "
                f"{block['term_occurrences']}" if errors else ""))

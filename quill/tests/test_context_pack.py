@@ -22,7 +22,7 @@ from unittest import mock
 from quill import config, context_pack
 from quill.context_pack import (BUILT, CACHED, FAILED, MAX_SUMMARY_CHARS, MAX_TERMS, NO_FOLDER, NO_GIT,
                                 NOT_WORK_TREE, TIMEOUT, ContextPacks, Git, GitError, PackTimeout, cache_name,
-                                denied, parse_markdown, read_text, summary_of)
+                                denied, instructions, parse_markdown, read_text, summary_of)
 
 GIT = shutil.which("git")
 FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -307,6 +307,28 @@ class SummaryTest(unittest.TestCase):
         self.assertEqual(markdown.headings, ["Title"])
         self.assertEqual(summary_of(markdown), "First part.")
 
+    def test_instruction_and_metadata_paragraphs(self) -> None:
+        for text in ("Read AGENTS.md and its map before any work.", "Always run the tests first.",
+                     "Nunca faças commit sem testes.", "Lê o guia antes de mexer no código.",
+                     "New tasks use the queue. The conversation agent prepares the goal.",
+                     "See CLAUDE.md for the rules.", "Sponsor: Someone · Developer: Another one",
+                     "Owner: A Person | Team: B Group", "Status: pre-release, private repository.",
+                     "Read first: docs/brief.md (what and why).", "Commands:"):
+            self.assertTrue(instructions(text), text)
+        for text in ("Invented Wallet Desk tracks an invented crypto wallet.", "A local tool for invented files.",
+                     "Wallet Desk: a ledger for one trader.", "Aplicação de faturação para pequenas lojas.",
+                     "Open-source (MIT), local-first ledger. It keeps every trade.", ""):
+            self.assertFalse(instructions(text), text)
+
+    def test_instructions_are_left_out_of_the_summary(self) -> None:
+        text = ("# Invented\n\nOwner: Someone · Developer: Another one\n\nInvented Desk keeps an invented ledger."
+                "\n\nStatus: draft.\n\nRead first: docs/brief.md.\n\n## Later\n\nNot the summary.\n")
+        self.assertEqual(summary_of(parse_markdown(text)), "Invented Desk keeps an invented ledger.")
+        # A first section of instructions only gives no summary (never a later section's paragraph).
+        opening = ("# Rules\n\nRead AGENTS.md before work. Follow DESIGN.md.\n\n## Desk\n\n"
+                   "Invented Desk keeps a ledger.\n")
+        self.assertEqual(summary_of(parse_markdown(opening)), "")
+
 
 class TermsTest(RepoCase):
     def test_sources_of_terms_and_function_words(self) -> None:
@@ -327,6 +349,16 @@ class TermsTest(RepoCase):
         pack, _ = self.packs().lookup(self.repo)
         self.assertTrue(pack.summary.startswith("A made-up readme."))
         self.assertNotIn("http", pack.summary)
+
+    def test_a_claude_md_opening_with_agent_instructions_gives_the_readme_summary(self) -> None:
+        self.write("CLAUDE.md", "# Invented\n\nRead AGENTS.md and its map before work. All work follows "
+                                "DESIGN.md.\n\n## Process\n\nNew tasks use the queue. The conversation agent "
+                                "prepares the goal.\n")
+        self.write("README.md", README_MD)
+        self.git("add", ".")
+        pack, _ = self.packs().lookup(self.repo)
+        self.assertTrue(pack.summary.startswith("A made-up readme."))
+        self.assertNotIn("AGENTS", pack.summary)
 
     def test_case_and_accents_fold_and_the_order_is_deterministic(self) -> None:
         self.write("README.md", "# Configuração\n\nconfiguracao Configuração carteira Carteira carteira também "

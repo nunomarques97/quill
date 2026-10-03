@@ -94,6 +94,32 @@ class ReplayTest(unittest.TestCase):
         self.assertGreaterEqual(sum(sleeps), len(pcm) / BYTES_PER_SECOND - 0.3)
 
 
+    def test_deterministic_replay_follows_a_hint_source_reproducibly(self):
+        before = whisper.SessionHints(prompt="Vocabulário: orchard.", hotwords="orchard")
+        heard = whisper.SessionHints(prompt="Vocabulário: w2x, orchard.", hotwords="w2x orchard")
+        asked = []
+
+        def source(text_heard):
+            asked.append(text_heard)
+            return heard if "w2" in text_heard.split() else before
+
+        pcm = speech([1, 2, 3, 4])
+        first = streaming.replay_deterministic(self.transcriber, pcm, hints=source)
+        first_asked, first_prompts = list(asked), [c.options.initial_prompt or "" for c in self.model.calls]
+        self.assertEqual(first.text, text([1, 2, 3, 4]))
+        self.assertEqual(first.hint_switches, 1)
+        self.assertEqual(first_asked[0], "")  # asked at once, then with the replay's own partials
+        self.assertGreater(len(first_asked), 2)
+        self.assertTrue(first_prompts[0].startswith(before.prompt))
+        self.assertTrue(first_prompts[-1].startswith(heard.prompt))  # the final decodes with the heard hints
+        asked.clear()
+        calls = len(self.model.calls)
+        second = streaming.replay_deterministic(self.transcriber, pcm, hints=source)
+        self.assertEqual((second.text, second.hint_switches), (first.text, first.hint_switches))
+        self.assertEqual(asked, first_asked)
+        self.assertEqual([c.options.initial_prompt or "" for c in self.model.calls[calls:]], first_prompts)
+
+
 class StreamTakesTest(unittest.TestCase):
     def test_streams_every_take_and_keeps_the_model_loaded(self):
         model = FakeModel()

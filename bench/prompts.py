@@ -17,19 +17,31 @@ recordings.
 
 Each take goes through the product path. It is replayed through
 ``quill.streaming`` with the app's engine model (``engine_model`` of the
-quill config), on the deterministic audio-time schedule, twice:
+quill config), on the deterministic audio-time schedule
+(``bench.streaming.replay_deterministic``), three times:
 
-- before: with today's hints (``quill.vocabulary.whisper_hints`` of the
-  personal vocabulary and the generic terms);
-- after: with the hints the app now gives mouse 5 in that window
+- today: with today's hints (``quill.vocabulary.whisper_hints`` of the
+  personal vocabulary and the generic terms), the baseline of today's
+  mouse 5 and of the target;
+- before: with the Phase 7 project hints, chosen by relevance only (the
+  ``initial`` hints of the app's hint source: the project name and its
+  pack terms within the same budget, as with nothing heard);
+- after: with the hint source the app now gives mouse 5 in that window
   (``quill.app.project_hints``: in Claude Code with a detected project and
-  a pack, the project name and its pack terms within the same budget; any
-  other take keeps today's hints and its first transcription). The app
-  gives them once click-to-focus has named the window, a fraction of a
-  second into the hold; here the session decodes with them from its start.
+  a pack, a ``quill.heard.HeardHints`` that puts the pack terms sounding
+  like words already heard first). The session asks it again after each of
+  the replay's own partials, so its choices are as reproducible as the
+  text; the takes whose hints it switched are counted.
+
+Any other take keeps today's hints and its first transcription in all three.
+The app gives the project hints once click-to-focus has named the window, a
+fraction of a second into the hold; here the session decodes with them from
+its start.
 
 Each transcription then follows the same steps, and the summary reports
-the "after" run with the "before" aggregates beside it. The final text goes through the app's own text pipeline
+the "after" run with the "before" and today's-hints aggregates beside it; a
+take heard exactly as in an earlier pass keeps that pass's mouse 5 (no model
+call). The final text goes through the app's own text pipeline
 (``quill.app.TextPipeline``: cleanup, vocabulary, learned corrections,
 profile and project detection) for the Claude Code panel of VS Code, whose
 title is simulated in the project hub format ("<project> | Claude Code -
@@ -62,14 +74,15 @@ Measured, against targets that are never lowered here:
   counts. Pack words the enrichment used outside the context part (beyond
   the input and the corrected text: a requirement taken from the pack) are
   counted too, as ``pack_outside_context``. Target 0 for both;
-- latency p50/p95 before and after the project hints: transcription,
+- latency p50/p95 with each pass's hints: transcription,
   today's correction, and the new pack
   lookup, correction, enrichment and their total. The model calls get a
   measurement timeout of ``BENCH_TIMEOUT_S`` so the counts do not depend on
   the machine's load; calls slower than the product timeouts are counted.
 
 Spoken text goes only under ``bench/results/prompts/<run>/``: the per-take
-JSON and ``exemplos.md``, the before/after enrichment examples for the
+JSON (``takes.json`` after, ``takes-before.json`` before,
+``takes-today.json`` with today's hints) and ``exemplos.md``, the before/after enrichment examples for the
 Sponsor to judge. The summary holds aggregates only and is refused when a
 spoken phrase, a transcription, a name or a real domain term would leak into
 it. ``--dry-run`` reads the script, the manifests and the local
@@ -409,9 +422,9 @@ class Product:
     its model calls, as the app does when a mouse 5 hold starts (None:
     nothing); ``model_loaded()`` says whether the model is in memory now,
     read before the first model call (None: unknown). ``hints_for(info)``
-    returns the (decoding hints or None, reason code) the app gives mouse 5
-    in the window ``info`` (``quill.app.project_hints``; None: no take gets
-    project hints).
+    returns the (decoding hints or hint source, or None; reason code) the
+    app gives mouse 5 in the window ``info`` (``quill.app.project_hints``; None:
+    no take gets project hints).
     """
 
     pipeline: Callable[[str, object], object]
@@ -462,7 +475,8 @@ class TakeResult:
     correction_s: float = 0.0
     enrich_s: float = 0.0
     enrich_tidied: int = 0  # removals quill.enrich.tidy made before the guard
-    hints: str = ""  # the reason code of the take's decoding hints ("" before the project hints)
+    hints: str = ""  # the reason code of the take's decoding hints ("" with today's hints)
+    hint_switches: int = 0  # hint changes the heard-term source chose from the replay's partials
 
     @property
     def spoken(self) -> bool:
@@ -553,30 +567,62 @@ def measure(set_name: str, takes: Sequence[Take], cases: dict[str, str], transcr
 
 
 def take_hints(takes: Sequence[Take], product: Product) -> list[tuple[object | None, str]]:
-    """The (decoding hints or None, reason code) the app gives mouse 5 in each take's window."""
+    """The (decoding hints or hint source, or None; reason code) the app gives mouse 5 in each take's window."""
     if product.hints_for is None:
         return [(None, "") for _ in takes]
     return [product.hints_for(window(take_project(take))) for take in takes]
 
 
+def relevance_hints(hints: object | None) -> object | None:
+    """The Phase 7 hints of a take: a hint source's hints with nothing heard; plain hints (or None) as they are."""
+    from quill.streaming import is_hint_source
+
+    if not is_hint_source(hints):
+        return hints
+    return hints.initial if hasattr(hints, "initial") else hints("")
+
+
+def heard_source(hints: object | None) -> object | None:
+    """The take's heard-term hint source; None when the app gives it plain hints or none."""
+    from quill.streaming import is_hint_source
+
+    return hints if is_hint_source(hints) else None
+
+
+def hint_terms(hints: object | None) -> set[str]:
+    """Every word the take's hints can hold: the hotwords, and every pack term a hint source may put first."""
+    words = set((getattr(relevance_hints(hints), "hotwords", "") or "").split())
+    source = heard_source(hints)
+    if source is not None:
+        words.update(word for term in getattr(source, "terms", ()) if isinstance(term, str) for word in term.split())
+    return words
+
+
 def measure_after(set_name: str, takes: Sequence[Take], cases: dict[str, str],
                   transcripts: Sequence[tuple[str, float]], reasons: Sequence[str],
-                  before: Sequence[TakeResult], product: Product) -> list[TakeResult]:
-    """Each take's run with the project hints, against its run with today's hints (``before``).
+                  before: Sequence[TakeResult], product: Product, *, switches: Sequence[int] | None = None,
+                  reuse: Sequence[Sequence[TakeResult]] = ()) -> list[TakeResult]:
+    """Each take's run with project hints, against its run with today's hints (``before``).
 
-    Today's mouse 5 is the earlier run's. A take heard exactly as before
-    gets the same text, so its earlier mouse 5 is kept (with the new
-    transcription time) rather than asked of the model again.
+    Today's mouse 5 is the earlier run's. A take heard exactly as in an
+    earlier pass (each of ``reuse`` in order, then ``before``) gets the same
+    text, so that pass's mouse 5 is kept (with this pass's transcription
+    time, hint reason and ``switches``) rather than asked of the model again.
     """
     from dataclasses import replace
 
+    counts = list(switches) if switches is not None else [0] * len(takes)
+    earlier_passes = [list(results) for results in reuse]
     results = []
-    for take, (heard, asr_s), reason, earlier in zip(takes, transcripts, reasons, before, strict=True):
-        if heard == earlier.heard:
-            results.append(replace(earlier, asr_s=asr_s, hints=reason))
+    for index, (take, (heard, asr_s), reason, earlier, switched) in enumerate(
+            zip(takes, transcripts, reasons, before, counts, strict=True)):
+        same = next((runs[index] for runs in (*earlier_passes, before) if runs[index].heard == heard), None)
+        if same is not None:
+            results.append(replace(same, asr_s=asr_s, hints=reason, hint_switches=switched))
         else:
-            results.append(run_take(take, set_name, cases.get(take.id, take.case), heard, asr_s, product,
-                                    today_from=earlier, hints=reason))
+            result = run_take(take, set_name, cases.get(take.id, take.case), heard, asr_s, product,
+                              today_from=earlier, hints=reason)
+            results.append(replace(result, hint_switches=switched))
     return results
 
 
@@ -637,6 +683,7 @@ def set_block(results: Sequence[TakeResult], dataset: dict, product_timeouts: di
         "pack_outside_context": sum(r.pack_outside_context for r in spoken),
         "enriched": sum(r.enrichment == enrich.ENRICHED for r in spoken),
         "enrichment_requests": len(called),
+        "enrichment_refused": sum(r.enrichment == enrich.REFUSED for r in spoken),
         "tidied": {"replies": sum(r.enrich_tidied > 0 for r in called),
                    "enriched": sum(r.enrich_tidied > 0 and r.enrichment == enrich.ENRICHED for r in called)},
         "reasons": {
@@ -676,7 +723,7 @@ def set_block(results: Sequence[TakeResult], dataset: dict, product_timeouts: di
 
 
 def before_block(results: Sequence[TakeResult], terms: bool = False) -> dict:
-    """The new mouse 5 of a set with today's decoding hints: the "before" of the project hints (counts only)."""
+    """The new mouse 5 of a set with one pass's decoding hints (today's or the Phase 7 project hints; counts only)."""
     spoken = [r for r in results if r.spoken]
     called = [r for r in spoken if r.enrich_called]
     return {
@@ -687,6 +734,8 @@ def before_block(results: Sequence[TakeResult], terms: bool = False) -> dict:
         "invented": sum(r.invented_new for r in spoken),
         "pack_outside_context": sum(r.pack_outside_context for r in spoken),
         "enriched": sum(r.enrichment == enrich.ENRICHED for r in spoken),
+        "enrichment_requests": len(called),
+        "enrichment_refused": sum(r.enrichment == enrich.REFUSED for r in spoken),
         "latency": {
             "transcription_p50_s": _seconds([r.asr_s for r in results], 50),
             "transcription_p95_s": _seconds([r.asr_s for r in results], 95),
@@ -698,6 +747,18 @@ def before_block(results: Sequence[TakeResult], terms: bool = False) -> dict:
             "total_p95_s": _seconds([r.total_s for r in spoken], 95),
         },
     }
+
+
+def heard_block(results: Sequence[TakeResult], before: Sequence[TakeResult], sources: int) -> dict:
+    """How the heard-term hints changed the set against the Phase 7 hints (``before``); counts only.
+
+    ``sources``: takes the app gave a heard-term hint source; ``takes_switched``:
+    those whose source changed the hints at least once (``switches`` in all);
+    ``heard_changed``: takes heard otherwise than with the Phase 7 hints.
+    """
+    return {"sources": sources, "takes_switched": sum(r.hint_switches > 0 for r in results),
+            "switches": sum(r.hint_switches for r in results),
+            "heard_changed": sum(r.heard != b.heard for r, b in zip(results, before, strict=True))}
 
 
 def pending_block(dataset: dict) -> dict:
@@ -780,6 +841,7 @@ def _quoted(text: str) -> list[str]:
 def _rows(results: Sequence[TakeResult]) -> list[dict]:
     return [{"id": r.id, "set": r.set, "case": r.case, "reference": r.reference, "heard": r.heard,
              "source": r.source, "today": r.today, "corrected": r.corrected, "final": r.final, "hints": r.hints,
+             "hint_switches": r.hint_switches,
              "project_found": r.project_found, "pack": r.pack, "today_reason": r.today_reason, "reason": r.reason,
              "detail": r.detail, "enrichment": r.enrichment, "enrich_detail": r.enrich_detail,
              "enrich_tidied": r.enrich_tidied,
@@ -792,10 +854,12 @@ def _rows(results: Sequence[TakeResult]) -> list[dict]:
 
 
 def write_private(run_dir: Path, results: Sequence[TakeResult], results_dir: Path = RESULTS_DIR,
-                  before: Sequence[TakeResult] = ()) -> tuple[Path, Path]:
+                  before: Sequence[TakeResult] = (), today: Sequence[TakeResult] = ()) -> tuple[Path, Path]:
     """Per-take JSON and the before/after enrichment examples, only under bench/results/.
 
-    ``before`` (the runs with today's decoding hints) go to ``takes-before.json``.
+    ``before`` (the runs with the Phase 7 project hints) go to
+    ``takes-before.json`` and ``today`` (the runs with today's decoding hints)
+    to ``takes-today.json``.
     """
     run_dir = Path(run_dir)
     if not _inside(run_dir / "takes.json", results_dir):
@@ -803,9 +867,10 @@ def write_private(run_dir: Path, results: Sequence[TakeResult], results_dir: Pat
     run_dir.mkdir(parents=True, exist_ok=True)
     takes_path = run_dir / "takes.json"
     takes_path.write_text(json.dumps(_rows(results), ensure_ascii=False, indent=2), encoding="utf-8")
-    if before:
-        (run_dir / "takes-before.json").write_text(json.dumps(_rows(before), ensure_ascii=False, indent=2),
-                                                   encoding="utf-8")
+    for name, rows in (("takes-before.json", before), ("takes-today.json", today)):
+        if rows:
+            (run_dir / name).write_text(json.dumps(_rows(rows), ensure_ascii=False, indent=2), encoding="utf-8")
+    heard_today = {r.id: r.heard for r in today}
     heard_before = {r.id: r.heard for r in before}
     lines = [
         "# Rato 5: exemplos antes e depois do enriquecimento",
@@ -826,8 +891,11 @@ def write_private(run_dir: Path, results: Sequence[TakeResult], results_dir: Pat
                   f"{'sim' if r.pack_found else 'não'}; termos errados hoje {r.term_errors_today}, novo "
                   f"{r.term_errors_new}; perdidas {r.lost_new}; inventadas {r.invented_new}")
         lines += ["Dito:", *_quoted(r.reference), ""]
+        if r.id in heard_today and heard_today[r.id] != r.heard:
+            lines += ["Ouvido com as dicas de hoje (antes dos termos do projeto):", *_quoted(heard_today[r.id]), ""]
         if r.id in heard_before and heard_before[r.id] != r.heard:
-            lines += ["Ouvido com as dicas de hoje (antes dos termos do projeto):", *_quoted(heard_before[r.id]), ""]
+            lines += ["Ouvido com os termos do projeto da fase 7 (antes dos termos ouvidos):",
+                      *_quoted(heard_before[r.id]), ""]
         lines += ["Chegou ao rato 5:", *_quoted(r.source), "",
                   "Rato 5 hoje:", *_quoted(r.today), "", "Corrigido com contexto:", *_quoted(r.corrected), "",
                   "Enviado (novo):", *_quoted(r.final), "", f"`{status}`", "", "Sponsor:"]
@@ -843,9 +911,17 @@ def private_texts(results: Sequence[TakeResult]) -> list[str]:
 # ---------------------------------------------------------------- defaults (GPU, Ollama and the app's config)
 
 
-# stream(takes, hints=None): the final text and release-to-final seconds of each take; ``hints`` (one per
-# take, None: the vocabulary hints) open each take's session as the app gives mouse 5 its decoding hints.
-Streamer = Callable[..., list[tuple[str, float]]]
+# stream(takes, hints=None): the final text, release-to-final seconds and hint switches of each take (a pair
+# counts no switch); ``hints`` (one per take, None: the vocabulary hints; plain hints or a hint source) open
+# each take's session as the app gives mouse 5 its decoding hints.
+Streamer = Callable[..., list[tuple]]
+
+
+def split_streamed(items: Sequence[tuple]) -> tuple[list[tuple[str, float]], list[int]]:
+    """((text, seconds) of each take, its hint switches) from a streamer's output."""
+    pairs = [(item[0], item[1]) for item in items]
+    switches = [int(item[2]) if len(item) > 2 else 0 for item in items]
+    return pairs, switches
 
 
 def default_streamer(hints: Sequence[str]) -> tuple[Streamer, dict]:
@@ -864,7 +940,7 @@ def default_streamer(hints: Sequence[str]) -> tuple[Streamer, dict]:
     model = Whisper(name, compute_type=ENGINE_COMPUTE)
     vocabulary = list(hints)
 
-    def stream(takes: Sequence[Take], session_hints: Sequence[object | None] | None = None) -> list[tuple[str, float]]:
+    def stream(takes: Sequence[Take], session_hints: Sequence[object | None] | None = None) -> list[tuple]:
         per_take = list(session_hints) if session_hints is not None else [None] * len(takes)
         transcriber = StreamingTranscriber(model, options, vocabulary)
         transcriber.start()
@@ -877,7 +953,7 @@ def default_streamer(hints: Sequence[str]) -> tuple[Streamer, dict]:
                 result = replay_deterministic(transcriber, wav_pcm(take.path.read_bytes())[0], hints=take_hints)
                 if not result.ok:
                     raise EngineError(f"streamed final failed: {result.error}")
-                out.append((result.text, result.latency_s))
+                out.append((result.text, result.latency_s, result.hint_switches))
             return out
         finally:
             transcriber.stop(close_model=False)
@@ -1105,6 +1181,32 @@ def _pct(value: float | None) -> str:
     return "—" if value is None else f"{value:g}"
 
 
+def after_view(block: dict) -> dict:
+    """The new mouse 5 of a measured set block in the shape of ``before_block``."""
+    errors = block.get("term_errors")
+    return {"term_errors": {"pipeline": errors["pipeline"], "new": errors["new"]} if errors else None,
+            "lost": block["lost"]["new"], "invented": block["invented"]["new"],
+            "pack_outside_context": block["pack_outside_context"], "enriched": block["enriched"],
+            "enrichment_requests": block.get("enrichment_requests", "?"),
+            "enrichment_refused": block.get("enrichment_refused", "?"), "latency": block["latency"]}
+
+
+def pass_line(view: dict) -> str:
+    """One pass's counts and p50/p95 seconds (``before_block`` shape) on one line."""
+    errors = view.get("term_errors")
+    latency = view.get("latency") or {}
+
+    def pair(name: str) -> str:
+        return f"{_pct(latency.get(name + '_p50_s'))} / {_pct(latency.get(name + '_p95_s'))}"
+
+    return ((f"domain-term errors pipeline {errors['pipeline']}, final {errors['new']}; " if errors else "")
+            + f"lost {view['lost']}, invented {view['invented']}, pack words outside context "
+              f"{view['pack_outside_context']}; enrichment requested {view.get('enrichment_requests', '?')}, accepted "
+              f"{view['enriched']}, refused {view.get('enrichment_refused', '?')}; p50/p95 s: transcription "
+              f"{pair('transcription')}, correction {pair('correction')}, enrichment {pair('enrichment')}, mouse 5 "
+              f"{pair('total')}")
+
+
 def report_lines(summary: dict) -> list[str]:
     lines = []
     for name, block in summary["sets"].items():
@@ -1129,16 +1231,15 @@ def report_lines(summary: dict) -> list[str]:
             f"{_pct(latency['total_p95_s'])}")
         lines.append("  reasons: " + "; ".join(f"{k} " + ", ".join(f"{a} {b}" for a, b in v.items())
                                                for k, v in block["reasons"].items() if v))
-        before = block.get("before_hints")
-        if isinstance(before, dict):
-            was = before["latency"]
-            lines.append(
-                f"  before the project hints: lost {before['lost']}, invented {before['invented']}, pack words outside "
-                f"context {before['pack_outside_context']}, enriched {before['enriched']}"
-                + (f"; domain-term errors pipeline {before['term_errors']['pipeline']}, new "
-                   f"{before['term_errors']['new']}" if before.get("term_errors") else "")
-                + f"; transcription {_pct(was['transcription_p50_s'])} / {_pct(was['transcription_p95_s'])}, total "
-                  f"{_pct(was['total_p50_s'])} / {_pct(was['total_p95_s'])}")
+        heard = block.get("heard_hints")
+        passes = [("before (relevance hints)", block.get("relevance_hints"))]
+        if isinstance(heard, dict):
+            passes.append(("after (heard hints)", after_view(block)))
+        passes.append(("with today's hints", block.get("today_hints")))
+        lines += [f"  {label}: {pass_line(view)}" for label, view in passes if isinstance(view, dict)]
+        if isinstance(heard, dict):
+            lines.append(f"  heard-term hints: switched in {heard['takes_switched']} of {heard['sources']} takes "
+                         f"({heard['switches']} switches); heard otherwise than before {heard['heard_changed']}")
         if block.get("hints"):
             lines.append("  decoding hints: " + ", ".join(f"{k or 'today'} {v}" for k, v in block["hints"].items()))
         over = block.get("over_product_timeout") or {}
@@ -1244,26 +1345,39 @@ def main(
         out(f"error: {exc}")
         return 2
     streamer = None
-    transcripts: dict[str, list[tuple[str, float]]] = {}
-    hinted: dict[str, list[tuple[str, float]]] = {}
+    transcripts: dict[str, list[tuple[str, float]]] = {}  # today's hints
+    relevance: dict[str, list[tuple[str, float]]] = {}  # the Phase 7 project hints: before
+    heard: dict[str, list[tuple[str, float]]] = {}  # the heard-term hint source: after
+    switches: dict[str, list[int]] = {}
+    sources: dict[str, int] = {}
     reasons: dict[str, list[str]] = {}
     project_chars: list[int] = []
     project_words: set[str] = set()  # the project hints' words: the pack's terms are real project terms
+
+    def replay(takes: Sequence[Take], per_take: Sequence[object | None],
+               otherwise: Sequence[tuple[str, float]]) -> tuple[list[tuple[str, float]], list[int]]:
+        """Each take with its own hints; a take without any keeps ``otherwise`` (no replay)."""
+        chosen = [(take, h) for take, h in zip(takes, per_take, strict=True) if h is not None]
+        pairs, counts = split_streamed(streamer([t for t, _ in chosen], [h for _, h in chosen]) if chosen else [])
+        again, switched = iter(pairs), iter(counts)
+        return ([next(again) if h is not None else earlier for h, earlier in zip(per_take, otherwise, strict=True)],
+                [next(switched) if h is not None else 0 for h in per_take])
+
     try:
         streamer, stream_options = streamer_factory(hints)
         streamer(work[0][1][:1])  # warm-up: loads the model and fills the caches
         for name, takes, _ in work:
-            transcripts[name] = streamer(takes)
+            transcripts[name] = split_streamed(streamer(takes))[0]
         for name, takes, _ in work:
             per_take = take_hints(takes, product)
             reasons[name] = [reason for _, reason in per_take]
-            chosen_takes = [take for take, (h, _) in zip(takes, per_take) if h is not None]
-            chosen_hints = [h for h, _ in per_take if h is not None]
-            project_chars += [len(getattr(h, "hotwords", "") or "") for h in chosen_hints]
-            project_words.update(word for h in chosen_hints for word in (getattr(h, "hotwords", "") or "").split())
-            again = iter(streamer(chosen_takes, chosen_hints) if chosen_takes else [])
-            hinted[name] = [next(again) if h is not None else earlier
-                            for (h, _), earlier in zip(per_take, transcripts[name], strict=True)]
+            before_hints = [relevance_hints(h) for h, _ in per_take]
+            after_hints = [heard_source(h) for h, _ in per_take]
+            sources[name] = sum(h is not None for h in after_hints)
+            project_chars += [len(getattr(h, "hotwords", "") or "") for h in before_hints if h is not None]
+            project_words.update(word for h, _ in per_take for word in hint_terms(h))
+            relevance[name] = replay(takes, before_hints, transcripts[name])[0]
+            heard[name], switches[name] = replay(takes, after_hints, relevance[name])
     except (EngineUnavailable, EngineError) as exc:
         out(f"error: {' '.join(str(exc).split())[:200]}")
         return 2
@@ -1272,20 +1386,26 @@ def main(
         if close is not None:
             close()
 
-    results: list[TakeResult] = []
-    earlier: list[TakeResult] = []
+    results: list[TakeResult] = []  # after: the heard-term hints
+    previous: list[TakeResult] = []  # before: the Phase 7 project hints
+    earlier: list[TakeResult] = []  # today's hints
     loaded_before = model_state(product)
     for name, takes, cases in work:
-        before = measure(name, takes, cases, transcripts[name], product)
-        measured = measure_after(name, takes, cases, hinted[name], reasons[name], before, product)
-        earlier.extend(before)
-        results.extend(measured)
+        today = measure(name, takes, cases, transcripts[name], product)
+        before = measure_after(name, takes, cases, relevance[name], reasons[name], today, product)
+        after = measure_after(name, takes, cases, heard[name], reasons[name], today, product,
+                              switches=switches[name], reuse=(before,))
+        earlier.extend(today)
+        previous.extend(before)
+        results.extend(after)
         dataset = loaded.prompts if name == SET_NAME else loaded.dictation
         counts = dataset_counts(dataset) if name == SET_NAME else {
             "script_rows": loaded.dictation_rows, "recorded": len(takes),
             "pending": max(0, loaded.dictation_rows - len(takes)), "invalid": 0}
-        blocks[name] = set_block(measured, counts, product.info, terms=name == SET_NAME)
-        blocks[name]["before_hints"] = before_block(before, terms=name == SET_NAME)
+        blocks[name] = set_block(after, counts, product.info, terms=name == SET_NAME)
+        blocks[name]["relevance_hints"] = before_block(before, terms=name == SET_NAME)
+        blocks[name]["today_hints"] = before_block(today, terms=name == SET_NAME)
+        blocks[name]["heard_hints"] = heard_block(after, before, sources[name])
     ordered = {name: blocks[name] for name in SETS if name in blocks}
     engine = {**stream_options, "hints": {"count": len(hints), "chars": sum(len(h) for h in hints)},
               "project_hints": {"takes": len(project_chars),
@@ -1296,7 +1416,7 @@ def main(
     rewrite["first_call"] = first_call(earlier, loaded_before)
     summary = build_summary(ordered, engine, rewrite)
 
-    texts = private_texts([*results, *earlier])
+    texts = private_texts([*results, *previous, *earlier])
     names = [entry.text for entry in vocabulary.names]
     for dataset in (loaded.prompts, loaded.dictation):
         if dataset is not None:
@@ -1314,7 +1434,7 @@ def main(
     names += sorted(word for word in project_words if distinctive_term(word))
     run_dir = Path(results_dir) / "prompts" / time.strftime("%Y%m%d-%H%M%S")
     try:
-        write_private(run_dir, results, results_dir, before=earlier)
+        write_private(run_dir, results, results_dir, before=previous, today=earlier)
         write_summary(run_dir / "summary.json", summary, texts, names)
         write_summary(Path(args.summary), summary, texts, names)
     except ValueError as exc:

@@ -31,6 +31,7 @@ from quill.config import EXAMPLE_CONFIG, load_config
 from quill.context_pack import ContextPack
 from quill.profiles import CLAUDE_CODE, Profiles
 from quill.projects import ProjectDetector, ProjectFolders
+from quill.whisper import SessionHints
 
 REPO = Path(__file__).resolve().parents[2]
 EXAMPLE = REPO / "bench" / "bench.example.toml"
@@ -125,14 +126,22 @@ def _vocabulary():
 
 
 class FakeStreamer:
-    """The engine: ``texts`` with the vocabulary hints, ``hinted`` (when given) with a take's own session hints."""
+    """The engine: ``texts`` with the vocabulary hints, ``hinted`` (when given) with a take's own project hints and
+    ``heard`` (when given) with its heard-term hint source (otherwise as with its project hints).
 
-    def __init__(self, texts, hinted=None):
+    A hint source is asked as the product's session asks it: at once with nothing heard, then after each partial
+    (here each growing prefix of the words that pass hears); the switches it chooses are returned with the text.
+    """
+
+    def __init__(self, texts, hinted=None, heard=None):
         self.texts = texts
         self.hinted = hinted or {}
+        self.heard = heard or {}
         self.hints = None
         self.closed = False
         self.calls = []  # (take ids, session hints or None) of each stream call
+        self.asked = {}  # take id -> what its hint source was asked, in order
+        self.chosen = {}  # take id -> the hints its source chose last
 
     def factory(self, hints):
         self.hints = hints
@@ -141,8 +150,20 @@ class FakeStreamer:
             self.calls.append(([take.id for take in takes], session_hints))
             if session_hints is None:
                 return [(self.texts[take.id], 0.5) for take in takes]
-            return [(self.hinted.get(take.id, self.texts[take.id]) if own is not None else self.texts[take.id], 0.6)
-                    for take, own in zip(takes, session_hints, strict=True)]
+            out = []
+            for take, own in zip(takes, session_hints, strict=True):
+                if own is None:
+                    out.append((self.texts[take.id], 0.5))
+                elif isinstance(own, SessionHints):
+                    out.append((self.hinted.get(take.id, self.texts[take.id]), 0.6))
+                else:
+                    heard = self.heard.get(take.id, self.hinted.get(take.id, self.texts[take.id]))
+                    words = heard.split()
+                    self.asked[take.id] = [" ".join(words[:n]) for n in range(len(words) + 1)]
+                    chosen = [own(text) for text in self.asked[take.id]]
+                    self.chosen[take.id] = chosen[-1]
+                    out.append((heard, 0.7, sum(a != b for a, b in zip(chosen, chosen[1:]))))
+            return out
 
         stream.close = self.close
         return stream, {"model": "fake-engine"}
@@ -565,9 +586,9 @@ class ProjectHintsTest(Case):
     def heard(self):
         return {row.id: spoken(row, heard=True) for row in self.rows()}
 
-    def run_hinted(self, hinted, model=None, packs=PACKS):
+    def run_hinted(self, hinted, model=None, packs=PACKS, heard=None):
         model = model or ScriptedModel()
-        streamer = FakeStreamer(self.heard(), hinted)
+        streamer = FakeStreamer(self.heard(), hinted, heard)
         lines = []
         summary = self.results / "committed-summary.json"
         vocabulary = self.root / "vocabulary.toml"
@@ -583,53 +604,125 @@ class ProjectHintsTest(Case):
         right = {row.id: spoken(row) for row in self.rows()}  # with its project's hints the engine hears the terms
         code, lines, streamer, summary_path, model = self.run_hinted(right)
         self.assertEqual(code, 0)
-        # Warm-up and today's run with the vocabulary hints, then each take with its own project hints.
+        # Warm-up and today's run with the vocabulary hints, then each take with its Phase 7 project hints,
+        # then with the app's heard-term hint source.
+        self.assertEqual(len(streamer.calls), 4)
         self.assertEqual([hints for _, hints in streamer.calls[:2]], [None, None])
         ids, hints = streamer.calls[2]
         self.assertEqual(ids, ["pp-01", "pp-02", "pp-03"])
+        self.assertTrue(all(isinstance(h, SessionHints) for h in hints))
         self.assertIn("nimbus-deck", hints[0].prompt)
         self.assertIn("Kwartz", hints[0].hotwords)
         self.assertIn("ledgerly", hints[1].hotwords)
         self.assertNotIn("Kwartz", hints[1].hotwords)  # another project's term never helps this take
+        ids, sources = streamer.calls[3]
+        self.assertEqual(ids, ["pp-01", "pp-02", "pp-03"])
+        self.assertTrue(all(callable(h) and not isinstance(h, SessionHints) for h in sources))
+        # The relevance pass is the source's hints with nothing heard: the Phase 7 hints.
+        self.assertEqual([source("") for source in sources], hints)
+        self.assertEqual(streamer.asked["pp-01"][0], "")
+        self.assertTrue(streamer.chosen["pp-01"].hotwords.startswith("Kwartz"))  # heard, so first
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
         block = summary["sets"]["prompts"]
         self.assertEqual(block["hints"], {"project_hints": 3})
+        # The target still compares the new mouse 5 with today's.
         self.assertEqual(block["term_errors"], {"pipeline": 0, "today": 3, "new": 0})
-        self.assertEqual(block["before_hints"]["term_errors"], {"pipeline": 3, "new": 0})
-        self.assertEqual((block["before_hints"]["lost"], block["before_hints"]["invented"]), (0, 0))
-        self.assertEqual(block["latency"]["transcription_p50_s"], 0.6)
-        self.assertEqual(block["before_hints"]["latency"]["transcription_p50_s"], 0.5)
+        self.assertEqual(block["relevance_hints"]["term_errors"], {"pipeline": 0, "new": 0})
+        self.assertEqual(block["today_hints"]["term_errors"], {"pipeline": 3, "new": 0})
+        for name in ("relevance_hints", "today_hints"):
+            self.assertEqual((block[name]["lost"], block[name]["invented"], block[name]["pack_outside_context"]),
+                             (0, 0, 0))
+            self.assertEqual((block[name]["enrichment_requests"], block[name]["enriched"],
+                              block[name]["enrichment_refused"]), (3, 3, 0))
+        self.assertEqual((block["enrichment_requests"], block["enriched"], block["enrichment_refused"]), (3, 3, 0))
+        # Kwartz in both nimbus-deck takes; ledgerly, then florin in the orchard take.
+        self.assertEqual(block["heard_hints"], {"sources": 3, "takes_switched": 3, "switches": 4, "heard_changed": 0})
+        self.assertEqual(block["latency"]["transcription_p50_s"], 0.7)
+        self.assertEqual(block["relevance_hints"]["latency"]["transcription_p50_s"], 0.6)
+        self.assertEqual(block["today_hints"]["latency"]["transcription_p50_s"], 0.5)
+        self.assertIsNotNone(block["relevance_hints"]["latency"]["total_p95_s"])
         self.assertEqual(summary["engine"]["project_hints"]["takes"], 3)
         self.assertTrue(summary["meets_targets"]["term_errors"])
-        # Today's mouse 5 is asked once per take, with today's text; the new one again for each changed take.
+        # Today's mouse 5 is asked once per take, with today's text; the new one again for each changed take,
+        # and not again for the heard pass, which hears each take as the relevance pass did.
         corrections = [call for call in model.calls if not call.enrich]
         self.assertEqual(sum("<project_terms>" not in call.user for call in corrections), 3)
         self.assertEqual(sum("<project_terms>" in call.user for call in corrections), 6)
-        self.assertTrue(any(line.startswith("  before the project hints:") for line in lines))
+        report = "\n".join(lines)
+        self.assertIn("  before (relevance hints): domain-term errors pipeline 0, final 0; lost 0, invented 0, pack "
+                      "words outside context 0; enrichment requested 3, accepted 3, refused 0; p50/p95 s: "
+                      "transcription 0.6 / 0.6, correction ", report)
+        self.assertIn("  after (heard hints): domain-term errors pipeline 0, final 0;", report)
+        self.assertIn("  with today's hints: domain-term errors pipeline 3, final 0;", report)
+        self.assertIn("  heard-term hints: switched in 3 of 3 takes (4 switches); heard otherwise than before 0",
+                      lines)
         self.assertIn("  decoding hints: project_hints 3", lines)
         serialized = summary_path.read_text(encoding="utf-8")
         for secret in ("Kwartz", "ledgerly", "florin", "quartz", "nimbus", "orchard", "scheduler", "invoice"):
             self.assertNotIn(secret.casefold(), serialized.casefold())
+            self.assertNotIn(secret.casefold(), report.casefold())
         run = next((self.results / "prompts").iterdir())
+        today = json.loads((run / "takes-today.json").read_text(encoding="utf-8"))
         before = json.loads((run / "takes-before.json").read_text(encoding="utf-8"))
         after = json.loads((run / "takes.json").read_text(encoding="utf-8"))
-        self.assertIn("quartz", before[0]["heard"])
+        self.assertIn("quartz", today[0]["heard"])
+        self.assertIn("Kwartz", before[0]["heard"])
         self.assertIn("Kwartz", after[0]["heard"])
-        self.assertEqual(after[0]["hints"], "project_hints")
+        self.assertEqual((before[0]["hints"], before[0]["hint_switches"]), ("project_hints", 0))
+        self.assertEqual([t["hint_switches"] for t in after], [1, 2, 1])
         self.assertIn("quartz", after[0]["today"])  # today's mouse 5 kept today's transcription
-        self.assertIn("Ouvido com as dicas de hoje", (run / "exemplos.md").read_text(encoding="utf-8"))
+        examples = (run / "exemplos.md").read_text(encoding="utf-8")
+        self.assertIn("Ouvido com as dicas de hoje", examples)
+        self.assertNotIn("Ouvido com os termos do projeto da fase 7", examples)  # heard the same
+
+    def test_the_heard_pass_is_measured_against_the_relevance_pass(self):
+        self.record()
+        right = {row.id: spoken(row) for row in self.rows()}
+        # The Phase 7 hints hear as today; only the heard-term hints hear the terms.
+        code, lines, streamer, summary_path, model = self.run_hinted({}, heard=right)
+        self.assertEqual(code, 0)
+        block = json.loads(summary_path.read_text(encoding="utf-8"))["sets"]["prompts"]
+        self.assertEqual(block["term_errors"], {"pipeline": 0, "today": 3, "new": 0})
+        self.assertEqual(block["relevance_hints"]["term_errors"], {"pipeline": 3, "new": 0})
+        self.assertEqual(block["heard_hints"]["heard_changed"], 3)
+        # The relevance pass reuses today's run (heard the same); the heard pass asks the new mouse 5 again.
+        corrections = [call for call in model.calls if not call.enrich]
+        self.assertEqual(sum("<project_terms>" not in call.user for call in corrections), 3)
+        self.assertEqual(sum("<project_terms>" in call.user for call in corrections), 6)
+        self.assertEqual(sum(call.enrich for call in model.calls), 6)
+        self.assertIn("  heard-term hints: switched in 3 of 3 takes (4 switches); heard otherwise than before 3",
+                      lines)
+        run = next((self.results / "prompts").iterdir())
+        self.assertIn("Ouvido com os termos do projeto da fase 7", (run / "exemplos.md").read_text(encoding="utf-8"))
+
+    def test_a_heard_pass_heard_as_today_reuses_todays_run(self):
+        self.record()
+        right = {row.id: spoken(row) for row in self.rows()}
+        code, _, _, summary_path, model = self.run_hinted(right, heard=self.heard())
+        self.assertEqual(code, 0)
+        corrections = [call for call in model.calls if not call.enrich]
+        self.assertEqual(len(corrections), 9)  # today's, then the new one for today's and the relevance pass only
+        block = json.loads(summary_path.read_text(encoding="utf-8"))["sets"]["prompts"]
+        self.assertEqual(block["term_errors"], {"pipeline": 3, "today": 3, "new": 0})
+        self.assertEqual(block["relevance_hints"]["term_errors"], {"pipeline": 0, "new": 0})
+        self.assertEqual(block["heard_hints"]["heard_changed"], 3)
+        run = next((self.results / "prompts").iterdir())
+        after = json.loads((run / "takes.json").read_text(encoding="utf-8"))
+        self.assertEqual([t["asr_s"] for t in after], [0.7, 0.7, 0.7])  # this pass's time, the earlier mouse 5
 
     def test_a_take_heard_the_same_is_not_asked_again(self):
         self.record()
         code, _, streamer, summary_path, model = self.run_hinted({})
         self.assertEqual(code, 0)
-        self.assertEqual(len(streamer.calls), 3)
+        self.assertEqual(len(streamer.calls), 4)
         corrections = [call for call in model.calls if not call.enrich]
         self.assertEqual(len(corrections), 6)  # today's and the new mouse 5 once per take
         self.assertEqual(sum(call.enrich for call in model.calls), 3)
         block = json.loads(summary_path.read_text(encoding="utf-8"))["sets"]["prompts"]
         self.assertEqual(block["term_errors"], {"pipeline": 3, "today": 3, "new": 0})
-        self.assertEqual(block["before_hints"]["term_errors"], {"pipeline": 3, "new": 0})
+        self.assertEqual(block["relevance_hints"]["term_errors"], {"pipeline": 3, "new": 0})
+        self.assertEqual(block["today_hints"]["term_errors"], {"pipeline": 3, "new": 0})
+        self.assertEqual(block["heard_hints"]["heard_changed"], 0)
 
     def test_without_a_pack_every_take_keeps_todays_hints_and_transcription(self):
         self.record()
@@ -638,6 +731,7 @@ class ProjectHintsTest(Case):
         self.assertEqual([hints for _, hints in streamer.calls], [None, None])  # no replay with other hints
         block = json.loads(summary_path.read_text(encoding="utf-8"))["sets"]["prompts"]
         self.assertEqual(block["hints"], {"no_pack": 3})
+        self.assertEqual(block["heard_hints"], {"sources": 0, "takes_switched": 0, "switches": 0, "heard_changed": 0})
         self.assertEqual(block["takes"], 3)
         run = next((self.results / "prompts").iterdir())
         self.assertNotIn("never heard", (run / "takes.json").read_text(encoding="utf-8"))
@@ -674,6 +768,51 @@ class ProjectHintsTest(Case):
         self.assertEqual(code, 1)
         self.assertFalse(summary.exists())
         self.assertIn("not written", lines[-1])
+
+
+    def test_a_summary_leaking_a_term_only_the_heard_hints_can_hold_is_refused(self):
+        self.record()
+        # Distinctive terms enough to fill the project part: the last one is never in the Phase 7 hints.
+        filler = tuple(f"QuasarSync{chr(65 + n)}" for n in range(12))
+        packs = {**PACKS, "nimbus-deck": ContextPack("A board.", ("Kwartz", *filler, "ZephyrLink"))}
+        right = {row.id: spoken(row) for row in self.rows()}
+        built = []
+
+        def factory(vocab, generic):
+            built.append(make_product(self.root, ScriptedModel(), packs=packs))
+            built[-1].info["model"] = "ZephyrLink"  # a pack term only a heard-term source may put in the hints
+            return built[-1]
+
+        summary = self.results / "committed-summary.json"
+        vocabulary = self.root / "vocabulary.toml"
+        vocabulary.write_text("", encoding="utf-8")
+        lines = []
+        code = P.main(["--config", str(self.config), "--summary", str(summary), "--vocabulary", str(vocabulary),
+                       "--set", "prompts"], product_factory=factory,
+                      streamer_factory=FakeStreamer(self.heard(), right).factory, results_dir=self.results,
+                      out=lines.append)
+        source, _ = built[0].hints_for(P.window("nimbus-deck"))
+        self.assertNotIn("ZephyrLink", source.initial.hotwords)
+        self.assertEqual(code, 1)
+        self.assertFalse(summary.exists())
+        self.assertIn("not written", lines[-1])
+
+    def test_relevance_and_heard_hints_of_a_take(self):
+        product = make_product(self.root, ScriptedModel())
+        source, _ = product.hints_for(P.window("orchard"))
+        self.assertIs(P.heard_source(source), source)
+        self.assertEqual(P.relevance_hints(source), source.initial)
+        plain = SessionHints(prompt="Vocabulário: orchard.", hotwords="orchard")
+        self.assertIs(P.relevance_hints(plain), plain)
+        self.assertIsNone(P.heard_source(plain))
+        self.assertIsNone(P.relevance_hints(None))
+        self.assertIsNone(P.heard_source(None))
+        self.assertEqual(P.relevance_hints(lambda heard: plain), plain)  # a source without initial hints
+        self.assertEqual(P.hint_terms(source), {"orchard", "ledgerly", "florin", "invoice"})
+
+    def test_streamed_output_with_and_without_switches(self):
+        self.assertEqual(P.split_streamed([("a", 0.5), ("b", 0.7, 2)]), ([("a", 0.5), ("b", 0.7)], [0, 2]))
+        self.assertEqual(P.split_streamed([]), ([], []))
 
 
 class DictationTakesTest(unittest.TestCase):

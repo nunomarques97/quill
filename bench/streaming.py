@@ -42,7 +42,8 @@ from bench.dataset import DatasetError, Take
 from bench.engines.base import EngineError, EngineUnavailable, Hints, build_hints, wav_pcm
 from bench.metrics import corpus_wer, load_terms, percentile_nearest_rank
 from bench.settings import RESULTS_DIR, SettingsError, load_settings
-from quill.streaming import BYTES_PER_SECOND, FinalResult, StreamingTranscriber, StreamOptions, options_for
+from quill.streaming import (BYTES_PER_SECOND, FinalResult, HintSource, StreamingTranscriber, StreamOptions,
+                             options_for)
 from quill.whisper import DEFAULT_MODEL, MODELS, SessionHints
 
 CHUNK_S = 0.05
@@ -76,10 +77,15 @@ def _wait(handle, timeout: float) -> FinalResult:
 
 
 def replay_deterministic(transcriber: StreamingTranscriber, pcm: bytes, chunk_s: float = CHUNK_S,
-                         hints: SessionHints | None = None) -> FinalResult:
+                         hints: SessionHints | HintSource | None = None) -> FinalResult:
     """Feed by audio time, draining the worker after every chunk: reproducible text.
 
-    ``hints`` open the session as the app opens a voice session (None: the vocabulary hints).
+    ``hints`` open the session as the app opens a voice session (None: the
+    vocabulary hints). A hint source (``quill.heard.HeardHints``, as mouse 5
+    into Claude Code gets) is asked by the session after each of the replay's
+    own partials; as every partial runs at the same audio time, the hints it
+    chooses and their switches (``FinalResult.hint_switches``) are
+    reproducible too.
     """
     session = transcriber.open() if hints is None else transcriber.open(hints=hints)
     for chunk in chunks(pcm, chunk_s):

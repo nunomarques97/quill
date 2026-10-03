@@ -165,6 +165,14 @@ edit_window_s = 30
 # "1m" to "4h", or "" to send none. Quill never sends 0 or a negative value,
 # never unloads, deletes or pulls a model; another project that needs the
 # memory still gets it from Ollama.
+# common_sense_fixes: with mouse 5 into Claude Code the model may only replace
+# a misheard word with a vocabulary or project term (false). With true it may
+# also replace a short misheard group of at most three words that makes no
+# sense in its sentence with ordinary words that sound close and fit (for
+# example "museu local" as "modelo local"). The guard keeps such a fix only
+# when it sounds close in European Portuguese, changes no name, number,
+# vocabulary term or negation, and adds no other word; any other such fix is
+# typed as dictated.
 [autorewrite]
 enabled = true
 min_audio_s = 15
@@ -175,6 +183,7 @@ keep_alive = "30m"
 load_wait_s = 8
 undo_key = "f17"
 undo_window_s = 30
+common_sense_fixes = false
 
 # Alert when Claude Code (the VS Code panel or the terminal) finishes its reply
 # and waits for you, or asks for a permission: a short sound and the indicator

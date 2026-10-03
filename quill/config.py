@@ -103,7 +103,8 @@ SCHEMA: dict[str, object] = {
     "cleanup": {"mode": None},
     "corrections": {"key": None, "edit_window_s": None},
     "autorewrite": {"enabled": None, "min_audio_s": None, "min_words": None, "timeout_s": None, "enrich_timeout_s": None,
-                    "keep_alive": None, "load_wait_s": None, "undo_key": None, "undo_window_s": None},
+                    "keep_alive": None, "load_wait_s": None, "undo_key": None, "undo_window_s": None,
+                    "common_sense_fixes": None},
     "claude_alert": {"enabled": None, "sound": None, "filter": None, "speak_project": None, "speech_volume": None,
                      "speech_rate": None},
     "voice_commands": {"shortcut_dirs": None, "model": None},
@@ -157,7 +158,9 @@ class AutoRewrite:
     Ollama keeps Quill's model after each of Quill's requests; a correction waits at most
     ``load_wait_s`` for that model to load before its ``timeout_s`` starts. ``undo_key`` (None
     when disabled) puts the original text back for ``undo_window_s`` seconds after an
-    automatic rewrite."""
+    automatic rewrite. ``common_sense_fixes`` lets mouse 5 into Claude Code fix a short misheard
+    group of words with ordinary words that sound close (``quill.autorewrite``); off, only
+    vocabulary and project terms may replace a misheard word there."""
 
     enabled: bool = False
     min_audio_s: float = 15.0
@@ -168,6 +171,7 @@ class AutoRewrite:
     load_wait_s: float = 8.0
     undo_key: Input | None = None
     undo_window_s: int = 30
+    common_sense_fixes: bool = False
 
 
 @dataclass(frozen=True)
@@ -454,6 +458,7 @@ def _autorewrite(data: dict[str, object], triggers: tuple[Trigger, ...], correct
         undo_key=_undo_key(_get(data, "autorewrite.undo_key"), triggers, correction),
         undo_window_s=_integer(_get(data, "autorewrite.undo_window_s"), "autorewrite.undo_window_s",
                                UNDO_WINDOW_RANGE),
+        common_sense_fixes=_bool(_get(data, "autorewrite.common_sense_fixes"), "autorewrite.common_sense_fixes"),
     )
 
 

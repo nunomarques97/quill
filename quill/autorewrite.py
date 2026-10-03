@@ -75,6 +75,33 @@ term or the project name, the replaced word is no listed name, term or
 number, and the bounds above hold on ``pt_sound_key``; any other change to a
 name is still refused with ``name``.
 
+With ``[autorewrite] common_sense_fixes`` (``AutoRewriter(common_sense_fixes=
+...)``; off by default), context mode also keeps a fix that brings ordinary
+words: the prompt asks to replace a short misheard group that makes no sense
+in its sentence with the words that sound close and fit
+(``COMMON_SENSE_RULE`` in place of ``TERMS_ONLY_RULE``), and the guard keeps
+such a fix (``_sensible``, counted in ``Verdict.sensible``) only when each
+side has at most ``MAX_BLOCK_WORDS`` words; no replaced word is protected (a
+name or a number) or a listed term, no new word is a name, and no word on
+either side is a number written as a word (``COMMON_NUMBER_WORDS``); the joined
+sound keys of both sides (``common_key``: ``pt_sound_key`` with the European
+Portuguese unstressed vowels o as u and e as i and an s between vowels inside a word as z;
+word boundaries ignored) have a difflib ratio of at least
+``COMMON_SIMILARITY`` and each content word keeps ``MIN_COVERAGE`` of its
+letters on that key; neither side's key is the other's with letters only
+added around it (a prefix such as "des" or an ending), and no word on either
+side is a word of the other side with letters added in front or with a
+negating prefix (``NEGATING_PREFIXES``, ``_turned``: "liga o servidor" as
+"desliga os servidores"), so a fix brings or drops no negation prefix; and no
+word of ``COMMON_POLARITY`` (negation, condition, alternative, contrast) is
+added or removed. The guard cannot tell apart forms whose only difference is
+a folded vowel ("corrige" and "corrigi", "pode" and "pude" have one key):
+only the prompt forbids another form of a correct word, and the benchmark's
+invented-against-the-reference count is what measures it. The fix counts toward
+``MAX_CHANGE_RATIO`` as any other. Any other fix that brings a non-term word
+is undone as above, and one that fails both the letter bounds and these
+bounds is still refused.
+
 Only function words (articles, prepositions, pronouns, conjunctions) and
 hesitations may be dropped or added, and they count as changes; words of
 negation, condition, alternative and contrast (``POLARITY``: "sem", "nem",
@@ -104,7 +131,7 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field, replace
 
 from quill import enrich
-from quill.cleanup import HESITATIONS
+from quill.cleanup import HESITATIONS, NUMBER_WORDS
 from quill.command import contains_term
 from quill.config import AutoRewrite as Settings
 from quill.corrections import FUNCTION_WORDS
@@ -112,8 +139,8 @@ from quill.profiles import CLAUDE_CODE, DEFAULT, INFORMAL, FULL, TECHNICAL, appl
 
 log = logging.getLogger("quill.autorewrite")
 
-__all__ = ["AutoRewriter", "AutoRewrite", "Settings", "Verdict", "build_prompt", "fix_names", "guard", "is_long",
-           "project_hint", "pt_sound_key", "shape", "sound_key", "word_count"]
+__all__ = ["AutoRewriter", "AutoRewrite", "Settings", "Verdict", "build_prompt", "common_key", "fix_names", "guard",
+           "is_long", "project_hint", "pt_sound_key", "shape", "sound_key", "word_count"]
 
 MAX_TEXT_CHARS = 6000  # a longer dictation is typed as it is
 MAX_VOCABULARY_CHARS = 1500
@@ -125,6 +152,9 @@ LIKELY_TERMS = False
 # Whether context mode fixes misheard vocabulary and project names (``fix_names``, ``NAME_RULE``, the guard's
 # name allowance) by default; ``AutoRewriter(name_fixes=False)`` is the Phase 8 correction.
 NAME_FIXES = True
+# Common-sense fixes (``[autorewrite] common_sense_fixes``, context mode): the joined ``common_key`` ratio a
+# replacement of a short misheard group by ordinary words keeps.
+COMMON_SIMILARITY = 0.7
 MIN_TOKENS = 128
 TOKENS_PER_WORD = 3
 
@@ -211,6 +241,13 @@ TERMS_ONLY_RULE = (
     "with any other word, not even a word that fits better or a different form of the same word. When no term "
     "fits, keep the word exactly as it is written, even when it looks wrong."
 )
+COMMON_SENSE_RULE = (
+    "Replace a misheard word or a group of at most three misheard words either with a term of the vocabulary or of "
+    "the project, written exactly as listed, or with ordinary words, but only when the written words make no sense "
+    "in their sentence and the new words sound close to them (the boundaries between words may differ) and make "
+    "sense there. Never replace a word that already makes sense, never with a synonym or another form of it, and "
+    "never change a name, a number or a negation. When unsure, keep the words exactly as they are written."
+)
 NAME_RULE = (
     "A capitalised word may be a misheard vocabulary or project name: replace it with that name, written exactly as "
     "listed, only when it sounds close to the name."
@@ -234,6 +271,26 @@ SENTENCE_START = ".!?:\n"
 # Negation, condition, alternative and contrast change the meaning: never flexible here.
 POLARITY = frozenset({"sem", "nem", "ou", "se", "mas", "or", "if", "but"})
 FLEXIBLE = (FUNCTION_WORDS | HESITATIONS) - POLARITY
+# What a common-sense fix may never add or remove: polarity and negation words (a "n't" ending counts as "not").
+COMMON_POLARITY = POLARITY | frozenset({"não", "nao", "nunca", "nada", "nenhum", "nenhuma", "ninguém", "sim",
+                                        "not", "no", "never", "nothing", "none", "nobody", "nor", "yes", "unless"})
+_NOT = re.compile(r"n['’]t$")
+# Prefixes that turn a word around: a common-sense fix never adds or drops one ("liga" as "desliga").
+NEGATING_PREFIXES = ("contra", "anti", "non", "des", "dis", "mis", "un", "in", "im", "il", "ir")
+PREFIX_SIMILARITY = 0.8  # the rest of a prefixed word this close (difflib ratio on common_key) to a word on the other side
+# Spoken numbers written as words: a common-sense fix never replaces or brings one ("sete" as "sede", "quadro" as "quatro").
+COMMON_NUMBER_WORDS = NUMBER_WORDS | frozenset({
+    "um", "uma", "tres", "treze", "catorze", "quatorze", "quinze", "dezasseis", "dezassete", "dezoito", "dezanove",
+    "dezesseis", "dezessete", "dezenove", "quarenta", "cinquenta", "sessenta", "setenta", "oitenta", "noventa",
+    "duzentos", "duzentas", "trezentos", "trezentas", "quatrocentos", "quinhentos", "seiscentos", "setecentos",
+    "oitocentos", "novecentos", "milhar", "milhares", "milhões", "milhoes", "bilião", "biliões", "bilhão", "bilhões",
+    "primeira", "segunda", "terceira", "quarto", "quarta", "quinto", "quinta", "sexto", "sexta", "sétimo", "sétima",
+    "oitavo", "oitava", "nono", "nona", "décimo", "décima", "meio", "meia", "dúzia", "dúzias", "dobro", "triplo",
+    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen",
+    "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty", "thirty", "forty", "fifty",
+    "sixty", "seventy", "eighty", "ninety", "hundred", "thousand", "million", "billion", "first", "second", "third",
+    "fourth", "fifth", "half", "dozen", "once", "twice",
+})
 
 
 def fold(text: str) -> str:
@@ -274,6 +331,26 @@ def pt_sound_key(text: str) -> str:
     bare = re.sub(r"g(?=[eiy])", "j", bare).replace("z", "j")
     folded = bare.translate(_SOUNDS).replace("h", "")
     return re.sub(r"(.)\1+", r"\1", folded)
+
+
+_VOWELS = "aeiouáàâãéêíóôõú"
+_VOICED_S = re.compile(rf"(?<=[{_VOWELS}])s(?=[{_VOWELS}])")
+
+
+def common_key(text: str) -> str:
+    """``pt_sound_key`` of each word with European Portuguese vowel reduction folded, for common-sense fixes only.
+
+    An unstressed o says /u/ and an unstressed e says /ɨ/, close to /i/
+    ("modelo" as "mudélu"), and a single s between vowels inside a word says
+    /z/ (written j, as ``pt_sound_key`` writes z). Stress is not written, so
+    every o and e is folded. The words' keys are joined: word boundaries are
+    ignored.
+    """
+    keys = []
+    for word in WORD.findall(unicodedata.normalize("NFC", text.casefold())):
+        key = pt_sound_key(_VOICED_S.sub("z", word)).replace("o", "u").replace("e", "i")
+        keys.append(re.sub(r"(.)\1+", r"\1", key))
+    return "".join(keys)
 
 
 def word_count(text: str) -> int:
@@ -329,6 +406,7 @@ class Verdict:
     reason: str  # "ok" or one of REFUSALS
     changes: int = 0
     kept: int = 0  # fixes undone because their new words are not terms (``replacements``)
+    sensible: int = 0  # fixes of a misheard group with ordinary words kept by ``common_sense``
 
     @property
     def ok(self) -> bool:
@@ -435,9 +513,59 @@ def _named(lost: Sequence[_Word], new: Sequence[_Word], allowed: set[str] | None
     return len(lost) <= MAX_BLOCK_WORDS and len(new) <= MAX_BLOCK_WORDS and _unfit(lost, new, pt_sound_key) is None
 
 
+def _polarity(words: Sequence[_Word]) -> Counter:
+    return Counter("not" if _NOT.search(word.key) else word.key for word in words
+                   if word.key in COMMON_POLARITY or _NOT.search(word.key))
+
+
+def _turned(lost: Sequence[_Word], new: Sequence[_Word]) -> bool:
+    """Whether a word of one side is a word of the other with letters added in front or a negating prefix.
+
+    Compared word by word, so a prefix in a group of several words is found
+    even when the joined keys differ elsewhere ("liga o servidor" as "desliga
+    os servidores"). A key of fewer than 3 letters is too short to compare.
+    """
+    for one, other in ((lost, new), (new, lost)):
+        for word in one:
+            key, bare = common_key(word.text), _bare(word.text)
+            for that in other:
+                short = common_key(that.text)
+                if len(short) >= 3 and short != key and short in key[1:]:
+                    return True  # letters added in front of the other word
+                for prefix in NEGATING_PREFIXES:
+                    rest = bare[len(prefix):]
+                    if (bare.startswith(prefix) and len(rest) >= 3 and not _bare(that.text).startswith(prefix)
+                            and difflib.SequenceMatcher(None, common_key(rest), short, autojunk=False).ratio()
+                            >= PREFIX_SIMILARITY):
+                        return True
+    return False
+
+
+def _sensible(lost: Sequence[_Word], new: Sequence[_Word], allowed: set[str]) -> bool:
+    """Whether a common-sense fix may replace ``lost`` by the ordinary words ``new``; see the module docstring."""
+    if not lost or not new or len(lost) > MAX_BLOCK_WORDS or len(new) > MAX_BLOCK_WORDS:
+        return False
+    if any(word.protected for word in lost) or any(word.protected for word in new):
+        return False  # names and numbers are never replaced, and a fix never brings a name
+    if any(word.key in COMMON_NUMBER_WORDS for word in (*lost, *new)):
+        return False  # nor a number spoken as a word, on either side
+    if _bare(" ".join(word.text for word in lost)) in allowed or any(_bare(word.text) in allowed for word in lost):
+        return False  # a listed term is never replaced by ordinary words
+    if _polarity(lost) != _polarity(new):
+        return False
+    a, b = common_key(" ".join(word.text for word in lost)), common_key(" ".join(word.text for word in new))
+    if a != b and (a in b or b in a):
+        return False  # letters only added around the same sounds: a prefix or another form of a word
+    if _turned(lost, new):
+        return False  # a negating prefix added or dropped on one word of the group
+    if difflib.SequenceMatcher(None, a, b, autojunk=False).ratio() < COMMON_SIMILARITY:
+        return False
+    return _uncovered(lost, new, common_key) is None
+
+
 def guard(source: str, reply: str, *, profile: str = DEFAULT, keep: Iterable[str] = (),
           terms: Iterable[str] = (), replacements: Iterable[str] | None = None,
-          name_fixes: bool = False) -> Verdict:
+          name_fixes: bool = False, common_sense: bool = False) -> Verdict:
     """Compare the model's ``reply`` with its input ``source``; see the module docstring for the rules.
 
     ``terms`` (context mode only: the pack terms and the vocabulary) may also
@@ -447,6 +575,8 @@ def guard(source: str, reply: str, *, profile: str = DEFAULT, keep: Iterable[str
     ``name_fixes`` (context mode, with ``replacements``) also lets a term of
     ``replacements`` replace a protected name that sounds close on
     ``pt_sound_key`` (``_named``), and ``terms`` sound close on either key.
+    ``common_sense`` (context mode, with ``replacements``) also keeps a fix of
+    a short misheard group by ordinary words that sound close (``_sensible``).
     """
     style_of(profile)  # an unknown profile is a programming error
     keep = tuple(keep)
@@ -455,6 +585,7 @@ def guard(source: str, reply: str, *, profile: str = DEFAULT, keep: Iterable[str
     if replacements is not None:
         allowed = {_bare(term) for term in replacements if isinstance(term, str)} - {""}
     name_fixes = name_fixes and allowed is not None
+    common_sense = common_sense and allowed is not None
     keys = (sound_key, pt_sound_key) if name_fixes else (sound_key,)
     text = reply.replace("\r\n", "\n").strip()
     if not text:
@@ -470,7 +601,7 @@ def guard(source: str, reply: str, *, profile: str = DEFAULT, keep: Iterable[str
         return _refused(NUMBER)
 
     before, after = _words(source), _words(laid_out)
-    changes = 0
+    changes = sensible = 0
     undone: list[tuple[int, int, str]] = []  # (start, end) in the reply and the dictated words for that place
     matcher = difflib.SequenceMatcher(None, [w.key for w in before], [w.key for w in after], autojunk=False)
     for op, i1, i2, j1, j2 in matcher.get_opcodes():
@@ -505,11 +636,15 @@ def guard(source: str, reply: str, *, profile: str = DEFAULT, keep: Iterable[str
         if unfit and _bare(" ".join(w.text for w in new)) in sounds and any(_unfit(lost, new, key) is None
                                                                             for key in keys):
             unfit = None  # a pack or vocabulary term that sounds like the misheard words
+        if allowed is not None and (unfit is None or common_sense) and not _from_terms(lost, new, allowed):
+            if common_sense and _sensible(lost, new, allowed):
+                changes, sensible = changes + 1, sensible + 1  # a misheard group fixed with ordinary words
+                continue
+            if unfit is None:
+                undone.append((new[0].start, new[-1].end, source[lost[0].start:lost[-1].end]))
+                continue
         if unfit:
             return _refused(unfit, changes)
-        if allowed is not None and not _from_terms(lost, new, allowed):
-            undone.append((new[0].start, new[-1].end, source[lost[0].start:lost[-1].end]))
-            continue
         changes += 1
     if changes > max(MIN_CHANGES, int(MAX_CHANGE_RATIO * len(before))):
         return _refused(TOO_MANY, changes)
@@ -518,7 +653,7 @@ def guard(source: str, reply: str, *, profile: str = DEFAULT, keep: Iterable[str
     low, high = LENGTH_BOUNDS
     if not low * _letters(source) <= _letters(laid_out) <= high * _letters(source):
         return _refused(LENGTH, changes)
-    return Verdict(shape(laid_out, profile, keep), "ok", changes, len(undone))
+    return Verdict(shape(laid_out, profile, keep), "ok", changes, len(undone), sensible)
 
 
 # ---------------------------------------------------------------- context
@@ -632,16 +767,18 @@ def fix_names(text: str, names: Iterable[str], listed: Iterable[str] = ()) -> tu
 
 def build_prompt(text: str, profile: str, keep: Sequence[str] = (), project: str = "", *,
                  context: bool = False, pack: object | None = None, likely: Sequence[str] = (),
-                 name_fixes: bool = True) -> tuple[str, str]:
+                 name_fixes: bool = True, common_sense: bool = False) -> tuple[str, str]:
     """(system prompt, user message) for one long dictation; ``context`` (send_polished in Claude Code) adds
-    the context rule, the rule that a misheard word is only replaced with a term and the project pack as data,
-    with ``name_fixes`` the rule that a capitalised word may be a misheard name (``NAME_RULE``; False: the
-    Phase 8 prompt), and with ``likely`` (``likely_terms``) their rule and block. Outside context mode
-    ``likely`` and ``name_fixes`` are not used."""
+    the context rule, the rule that a misheard word is only replaced with a term (``TERMS_ONLY_RULE``; with
+    ``common_sense``, ``COMMON_SENSE_RULE``: also with ordinary words that sound close) and the project pack
+    as data, with ``name_fixes`` the rule that a capitalised word may be a misheard name (``NAME_RULE``;
+    False: the Phase 8 prompt), and with ``likely`` (``likely_terms``) their rule and block. Outside context
+    mode ``likely``, ``name_fixes`` and ``common_sense`` are not used."""
     layout = CLAUDE_LAYOUT if profile == CLAUDE_CODE else LAYOUTS[style_of(profile)]
     if context:
         likely = tuple(likely)
-        layout = (f"{layout} {CONTEXT_RULE} {TERMS_ONLY_RULE}" + (f" {NAME_RULE}" if name_fixes else "")
+        rule = COMMON_SENSE_RULE if common_sense else TERMS_ONLY_RULE
+        layout = (f"{layout} {CONTEXT_RULE} {rule}" + (f" {NAME_RULE}" if name_fixes else "")
                   + (f" {LIKELY_RULE}" if likely else ""))
         data = enrich.pack_data(pack, project, likely=likely)
         project = ""  # the project name is inside the data blocks
@@ -686,6 +823,7 @@ class AutoRewrite:
     kept: int = 0  # misheard-word fixes typed as dictated because their new words are not terms
     likely: int = 0  # terms listed in the prompt as sounding like the dictation (context mode)
     names: int = 0  # misheard names written as listed by the pre-step (``fix_names``, context mode)
+    sensible: int = 0  # misheard groups fixed with ordinary words (``common_sense_fixes``, context mode)
 
     @property
     def corrected(self) -> bool:
@@ -731,12 +869,18 @@ class AutoRewriter:
     personal vocabulary names, read at each dictation; None: none) and the
     project name, ``NAME_RULE`` in the prompt and the guard's name allowance.
     False gives the Phase 8 correction exactly.
+
+    ``common_sense_fixes`` (None: ``settings.common_sense_fixes``, off by
+    default) lets context mode fix a short misheard group with ordinary words
+    that sound close: ``COMMON_SENSE_RULE`` in the prompt and the guard's
+    ``common_sense`` bounds. Off, context mode keeps the terms-only rule.
     """
 
     def __init__(self, client: object, model: str, settings: Settings, *,
                  clock: Callable[[], float] = time.perf_counter, warmer: object | None = None,
                  likely_terms: bool = LIKELY_TERMS, name_fixes: bool = NAME_FIXES,
-                 names: Callable[[], Iterable[str]] | None = None) -> None:
+                 names: Callable[[], Iterable[str]] | None = None,
+                 common_sense_fixes: bool | None = None) -> None:
         self.client = client
         self.model = model
         self.settings = settings
@@ -745,6 +889,8 @@ class AutoRewriter:
         self.likely_terms = likely_terms
         self.name_fixes = name_fixes
         self.names = names
+        self.common_sense_fixes = (settings.common_sense_fixes if common_sense_fixes is None
+                                   else bool(common_sense_fixes))
         self.enricher = enrich.Enricher(client, model, settings.enrich_timeout_s, clock=clock)
 
     def wants(self, text: str, audio_s: float | None) -> bool:
@@ -800,15 +946,16 @@ class AutoRewriter:
         base, named = text, 0  # the text the model corrects: the dictation with the pre-step's names
 
         def done(reason: str, result: str | None = None, detail: str = "", seconds: float = 0.0,
-                 changes: int = 0, kept: int = 0) -> AutoRewrite:
+                 changes: int = 0, kept: int = 0, sensible: int = 0) -> AutoRewrite:
             if reason not in (SHORT, DISABLED):
-                log.info("autorewrite: %s%s (%d words%s%s%s, %.2f s%s)", reason, f" ({detail})" if detail else "",
+                log.info("autorewrite: %s%s (%d words%s%s%s%s, %.2f s%s)", reason, f" ({detail})" if detail else "",
                          words, f", {len(likely)} likely terms" if likely else "",
                          f", {named} names fixed" if named else "",
-                         f", {kept} fixes kept as dictated" if kept else "", seconds,
+                         f", {kept} fixes kept as dictated" if kept else "",
+                         f", {sensible} common-sense fixes" if sensible else "", seconds,
                          f", {waited:.2f} s waiting for the model to load" if waited >= 0.01 else "")
             return AutoRewrite(base if result is None else result, text, reason, detail, seconds, changes, kept=kept,
-                               likely=len(likely), names=named)
+                               likely=len(likely), names=named, sensible=sensible)
 
         if not force and not self.settings.enabled:
             return done(DISABLED)
@@ -818,6 +965,7 @@ class AutoRewriter:
             return done(REFUSED, detail=TOO_LONG)
         terms = (*keep, *enrich.pack_parts(pack)[1]) if context else ()
         name_fixes = context and self.name_fixes
+        common_sense = context and self.common_sense_fixes
         if name_fixes:
             try:
                 personal = tuple(self.names()) if self.names is not None else ()
@@ -831,7 +979,7 @@ class AutoRewriter:
             except Exception as exc:  # noqa: BLE001 - the correction goes ahead without the list
                 log.error("autorewrite: likely terms not chosen (%s)", type(exc).__name__)
         system, user = build_prompt(base, profile, keep, project, context=context, pack=pack, likely=likely,
-                                    name_fixes=name_fixes)
+                                    name_fixes=name_fixes, common_sense=common_sense)
         timeout = self.settings.timeout_s
         started = self.clock()
         if self.warmer is not None:
@@ -857,9 +1005,10 @@ class AutoRewriter:
             return done(FAILED, detail="no_text", seconds=seconds)
         replacements = (*terms, project) if context else None
         verdict = guard(base, content, profile=profile, keep=keep, terms=terms, replacements=replacements,
-                        name_fixes=name_fixes)
+                        name_fixes=name_fixes, common_sense=common_sense)
         if not verdict.ok:
             return done(REFUSED, detail=verdict.reason, seconds=seconds, changes=verdict.changes)
         if verdict.text == text.strip():
             return done(UNCHANGED, seconds=seconds, kept=verdict.kept)
-        return done(REWRITTEN, verdict.text, seconds=seconds, changes=verdict.changes, kept=verdict.kept)
+        return done(REWRITTEN, verdict.text, seconds=seconds, changes=verdict.changes, kept=verdict.kept,
+                    sensible=verdict.sensible)

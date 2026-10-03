@@ -584,7 +584,9 @@ class QuillApp:
                  self.config.indicator_position, "on" if self.command else "off",
                  f"on ({len(self.config.voice.shortcut_dirs)} folders)" if self.voice else "off",
                  self.config.voice.model if self.voice_transcriber else "engine",
-                 ("on" if self.config.autorewrite.enabled else "send_polished only") if self.rewriter else "off",
+                 (("on" if self.config.autorewrite.enabled else "send_polished only")
+                  + f" (common-sense fixes {'on' if self.rewriter.common_sense_fixes else 'off'})")
+                 if self.rewriter else "off",
                  "on" if self.alerts is not None and self.alerts.running else "off")
 
     def _start_alerts(self) -> None:

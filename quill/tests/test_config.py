@@ -71,6 +71,9 @@ class ExampleTest(ConfigCase):
         self.assertEqual(rewrite.enrich_timeout_s, 15.0)
         self.assertEqual((rewrite.keep_alive, rewrite.load_wait_s), ("30m", 8.0))
         self.assertEqual((rewrite.undo_key.name, rewrite.undo_key.vk, rewrite.undo_window_s), ("f17", 0x80, 30))
+        # Mouse 5 into Claude Code keeps the terms-only rule unless common-sense fixes are switched on.
+        self.assertIs(rewrite.common_sense_fixes, False)
+        self.assertIs(config.AutoRewrite().common_sense_fixes, False)
 
     def test_claude_alert_defaults(self) -> None:
         alert = load_config(None).claude_alert
@@ -274,6 +277,10 @@ class RejectTest(ConfigCase):
             ("undo_window_s = 700", "autorewrite.undo_window_s"),
             ("undo_window_s = 30.5", "autorewrite.undo_window_s"),
             ("undo_window_s = true", "autorewrite.undo_window_s"),
+            ("common_sense_fixes = 1", "autorewrite.common_sense_fixes"),
+            ('common_sense_fixes = "true"', "autorewrite.common_sense_fixes"),
+            ("common_sense_fixes = []", "autorewrite.common_sense_fixes"),
+            ("common_sense = true", "autorewrite.common_sense"),
         ):
             with self.subTest(text=text):
                 message = self.rejected(f"[autorewrite]\n{text}\n", field)
@@ -335,6 +342,11 @@ class RejectTest(ConfigCase):
         alert = self.load("[claude_alert]\nspeech_volume = 100\nspeech_rate = 0.5\n").claude_alert
         self.assertEqual((alert.speech_volume, alert.speech_rate), (100, 0.5))
         self.assertIsInstance(alert.speech_rate, float)
+
+    def test_common_sense_fixes(self) -> None:
+        self.assertIs(self.load("[autorewrite]\ncommon_sense_fixes = true\n").autorewrite.common_sense_fixes, True)
+        rewrite = self.load("[autorewrite]\ncommon_sense_fixes = false\ntimeout_s = 5\n").autorewrite
+        self.assertEqual((rewrite.common_sense_fixes, rewrite.timeout_s, rewrite.enabled), (False, 5.0, True))
 
     def test_undo_key_values(self) -> None:
         rewrite = self.load('[autorewrite]\nundo_key = "f18"\nundo_window_s = 60\n').autorewrite

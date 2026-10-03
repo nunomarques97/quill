@@ -1241,7 +1241,7 @@ class RewriteAppTest(RewriteCase):
         self.assertIn(SPOKEN, user)
         self.assertEqual(timeout, self.config.autorewrite.timeout_s)
         text = "\n".join(logs.output)
-        self.assertIn("automatic rewrite on", text)
+        self.assertIn("automatic rewrite on (common-sense fixes off)", text)
         self.assertNotRegex(text.casefold(), r"\bw[0-9]")  # never the spoken, rewritten or original words
 
     def test_ollama_down_timeout_or_refusal_types_the_original_at_once(self):

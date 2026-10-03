@@ -1,4 +1,4 @@
-"""The Claude Code attention alert: the hook notifier, the installer, the listener and the sound demo.
+"""The Claude Code attention alert: the hook notifier and its pointer, the installer, the listener and the sound demo.
 
 Everything runs on fakes and temporary files: no named event is created, no
 sound plays and the user's Claude Code settings are never read or written
@@ -13,6 +13,7 @@ import io
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -20,9 +21,11 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from quill import claude_hooks as H
+from quill import claude_reply as R
 from quill import notify as N
 from quill import sound
 from quill.tests import real_user_settings_path
@@ -472,6 +475,203 @@ class RecordTest(unittest.TestCase):
         self.assertEqual(reasons, ["signalled"] * len(names))
         written = sorted(json.loads((self.alerts_dir / name).read_text("ascii"))["project"] for name in self.files())
         self.assertEqual(written, sorted(names))
+
+
+class PointerTest(unittest.TestCase):
+    """The Stop hook's pointer to the session of the last reply, in a temporary pointers folder."""
+
+    def setUp(self) -> None:
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.base = Path(folder.name).resolve()
+        self.pointers = self.base / "pointers"
+        self.alerts_dir = self.base / "alerts"
+        self.alerts_dir.mkdir()
+        self.project = self.base / "zorblat-kit"
+        (self.project / ".git").mkdir(parents=True)
+        (self.project / "src").mkdir()
+        self.session_file = self.base / "claude-config" / "projects" / "x" / "0f3c2a51-invented.jsonl"
+        self.session_file.parent.mkdir(parents=True)
+        self.session_file.write_text(json.dumps({"message": PRIVATE, "type": "assistant"}) + "\n", "utf-8")
+        self.events = FakeAlertEvents()
+        for name in N.EVENT_NAMES.values():
+            self.events.create_event(name)
+        self.stop = {**STOP, "cwd": str(self.project / "src"), "session_id": "0f3c2a51-invented",
+                     "transcript_path": str(self.session_file)}
+
+    def run_hook(self, hook: str = "stop", event: object = None, environ=ATTENDED, settings=(True, "attended"),
+                 enabled=lambda: True, events: object = None) -> str:
+        event = self.stop if event is None else event
+        return N.notify(hook, reader(encoded(event)), environ, events=events or self.events,
+                        settings=lambda: settings, alerts_dir=self.alerts_dir, pointers_dir=self.pointers,
+                        reply_context=enabled)
+
+    def files(self) -> list[str]:
+        return sorted(path.name for path in self.pointers.iterdir()) if self.pointers.exists() else []
+
+    def record(self) -> dict:
+        files = self.files()
+        self.assertEqual(len(files), 1)
+        return json.loads((self.pointers / files[0]).read_text("ascii"))
+
+    def test_an_attended_stop_leaves_one_pointer_for_the_git_root(self) -> None:
+        before = time.time()
+        self.assertEqual(self.run_hook(), "signalled")
+        name = R.pointer_name(R.folder_identity(str(self.project)))
+        self.assertEqual(self.files(), [name])
+        record = self.record()
+        self.assertEqual(set(record), {"folder", "session_id", "transcript_path", "time"})
+        self.assertEqual((record["folder"], record["session_id"], record["transcript_path"]),
+                         (str(self.project), "0f3c2a51-invented", str(self.session_file)))
+        self.assertTrue(before <= record["time"] <= time.time())
+        self.assertLessEqual((self.pointers / name).stat().st_size, R.MAX_POINTER_RECORD)
+
+    def test_the_same_project_keeps_one_pointer(self) -> None:
+        self.run_hook()
+        other = self.session_file.with_name("1a2b-invented.jsonl")
+        self.run_hook(event={**self.stop, "cwd": str(self.project), "session_id": "1a2b-invented",
+                             "transcript_path": str(other)})
+        self.assertEqual(self.record()["session_id"], "1a2b-invented")
+        self.assertEqual(len(self.files()), 1)
+
+    def test_written_whatever_the_alert_does(self) -> None:
+        cases = (("not_running", FakeAlertEvents(), (True, "attended")),
+                 ("disabled", None, (False, "attended")))
+        for reason, events, settings in cases:
+            with self.subTest(reason=reason):
+                shutil.rmtree(self.pointers, ignore_errors=True)
+                self.assertEqual(self.run_hook(events=events, settings=settings), reason)
+                self.assertEqual(len(self.files()), 1)
+        self.assertEqual(list(self.alerts_dir.iterdir()), [])  # Quill not running: no alert record
+
+    def test_headless_and_unmarked_sessions_never_leave_one(self) -> None:
+        for environ in (HEADLESS, {}, {N.ATTENDED_VARIABLE: "true"},
+                        {"CLAUDE_CODE_ENTRYPOINT": "claude-vscode", **HEADLESS}):
+            for settings in ((True, "all"), (True, "unless-headless"), (True, "attended")):
+                with self.subTest(environ=environ, settings=settings):
+                    self.run_hook(environ=environ, settings=settings)
+        self.assertEqual(self.files(), [])
+        self.assertFalse(self.pointers.exists())
+
+    def test_none_when_the_setting_is_off_or_for_other_events(self) -> None:
+        self.assertEqual(self.run_hook(enabled=lambda: False), "signalled")
+        self.run_hook("permission", {**PERMISSION, "cwd": str(self.project), "session_id": "s1",
+                                     "transcript_path": str(self.session_file)})
+        self.run_hook(event={**self.stop, "stop_hook_active": True})
+        self.run_hook(event={**self.stop, "hook_event_name": "SubagentStop"})
+        self.assertEqual(self.files(), [])
+
+    def test_the_setting_defaults_on_when_unreadable(self) -> None:
+        loaded = mock.Mock()
+        loaded.claude_code.last_reply_context = False
+        self.assertFalse(N.reply_context_enabled(lambda: loaded))
+        loaded.claude_code.last_reply_context = True
+        self.assertTrue(N.reply_context_enabled(lambda: loaded))
+        self.assertTrue(N.reply_context_enabled(lambda: SimpleNamespace(claude_code=SimpleNamespace())))
+
+        def broken():
+            raise OSError("fake: unreadable")
+        self.assertTrue(N.reply_context_enabled(broken))
+        self.assertEqual(N.leave_pointer(self.stop, ATTENDED, self.pointers,
+                                         lambda: N.reply_context_enabled(broken)), "written")
+
+    def test_bad_fields_leave_no_pointer(self) -> None:
+        cases = {
+            "cwd": ("", "C:\\", 17, "relative\\x", "\\\\server\\share\\x", "C:\\a\x00", "C:\\" + "a" * N.MAX_CWD),
+            "session_id": (None, "", "a" * 129, "has space", "../x", 3),
+            "transcript_path": (None, "", "relative.jsonl", "\\\\server\\share\\x.jsonl", "C:\\a\\..\\b.jsonl",
+                                "C:\\x.txt", "C:\\" + "a" * R.MAX_PATH + ".jsonl"),
+        }
+        for key, values in cases.items():
+            for value in values:
+                with self.subTest(key=key, value=repr(value)[:30]):
+                    self.assertIn(self.run_hook(event={**self.stop, key: value}), ("signalled", "signalled_nameless"))
+                    self.assertEqual(self.files(), [])
+        self.assertEqual(N.write_pointer(self.pointers, str(self.project), "s1", str(self.session_file)), "written")
+        with mock.patch.object(R, "MAX_POINTER_RECORD", 64), mock.patch.object(N, "MAX_POINTER_RECORD", 64):
+            self.assertEqual(N.write_pointer(self.pointers, str(self.base / "brask"), "s1", str(self.session_file)),
+                             "too_large")
+        self.assertEqual(len(self.files()), 1)
+
+    def test_the_number_of_pointers_is_capped(self) -> None:
+        self.pointers.mkdir()
+        old = time.time() - 1000
+        for index in range(R.MAX_POINTERS + 3):
+            path = self.pointers / f"pointer-{index:032x}.json"
+            path.write_bytes(b"{}")
+            os.utime(path, (old + index, old + index))
+        (self.pointers / "pointer-stale.tmp").write_bytes(b"x")
+        os.utime(self.pointers / "pointer-stale.tmp", (old, old))
+        self.run_hook()
+        files = self.files()
+        self.assertEqual(len(files), R.MAX_POINTERS)
+        self.assertIn(R.pointer_name(R.folder_identity(str(self.project))), files)
+        self.assertNotIn("pointer-stale.tmp", files)
+        self.assertNotIn(f"pointer-{0:032x}.json", files)  # the oldest went first
+        self.assertIn(f"pointer-{R.MAX_POINTERS + 2:032x}.json", files)
+
+    def test_a_failed_write_leaves_no_temporary_file(self) -> None:
+        with mock.patch.object(N.os, "replace", side_effect=OSError("fake: disk full")):
+            self.assertEqual(N.leave_pointer(self.stop, ATTENDED, self.pointers, lambda: True), "write_failed")
+            self.assertEqual(self.run_hook(), "signalled_no_record")  # the alert still rings
+        self.assertEqual(self.files(), [])
+
+    def test_the_hook_never_reads_the_session_file(self) -> None:
+        touched: list[str] = []
+
+        def spy(real):
+            def call(path, *args, **kwargs):
+                touched.append(os.fspath(path) if isinstance(path, (str, os.PathLike)) else "")
+                return real(path, *args, **kwargs)
+            return call
+        with mock.patch("builtins.open", side_effect=spy(open)), \
+                mock.patch.object(N.os, "open", side_effect=spy(os.open)), \
+                mock.patch.object(N.os, "stat", side_effect=spy(os.stat)), \
+                mock.patch.object(N.os, "lstat", side_effect=spy(os.lstat)), \
+                mock.patch.object(N.os, "scandir", side_effect=spy(os.scandir)):
+            self.assertEqual(self.run_hook(), "signalled")
+        self.assertEqual(len(self.files()), 1)
+        self.assertTrue(touched)
+        self.assertFalse([path for path in touched if "claude-config" in path])
+
+    def test_the_hook_reads_six_fields_with_pointers(self) -> None:
+        TrackingDict.read = set()
+        loads = json.loads
+        with mock.patch.object(N.json, "loads", side_effect=lambda text: TrackingDict(loads(text))):
+            self.assertEqual(self.run_hook(), "signalled")
+        self.assertEqual(TrackingDict.read, {"hook_event_name", "stop_hook_active", "cwd", "session_id",
+                                             "transcript_path"})
+
+    def test_nothing_is_logged_or_printed(self) -> None:
+        capture = io.StringIO()
+        handler = logging.StreamHandler(capture)
+        root = logging.getLogger()
+        root.addHandler(handler)
+        old_level = root.level
+        root.setLevel(logging.DEBUG)
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                self.run_hook()
+                with mock.patch.object(N.os, "replace", side_effect=OSError("fake")):
+                    self.run_hook()
+        finally:
+            root.removeHandler(handler)
+            root.setLevel(old_level)
+        self.assertEqual((capture.getvalue(), out.getvalue(), err.getvalue()), ("", "", ""))
+
+    def test_main_leaves_pointers_in_the_local_folder_and_reads_the_settings_once(self) -> None:
+        with mock.patch.object(N, "notify") as called:
+            self.assertEqual(N.main(["stop"]), 0)
+        self.assertEqual(called.call_args.kwargs["pointers_dir"], N.POINTERS_DIR)
+        self.assertEqual(N.POINTERS_DIR, REPO_ROOT / "local" / "claude-pointers")
+        loads: list[int] = []
+        loaded = mock.Mock()
+        loaded.claude_alert.enabled, loaded.claude_alert.filter = True, "all"
+        loaded.claude_code.last_reply_context = False
+        once = N._once(lambda: loads.append(1) or loaded)
+        self.assertEqual((N.alert_settings(once), N.reply_context_enabled(once)), ((True, "all"), False))
+        self.assertEqual(loads, [1])
 
 
 class ListenerRecordsTest(unittest.TestCase):

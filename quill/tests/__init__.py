@@ -4,7 +4,8 @@ the real clipboard or Claude Code settings: importing this package disables the 
 the real hook installer, the real process reader, the real UI Automation reader, the real indicator window layer, the real sound
 player, the real speaker of the project names (Windows PowerShell), the real named events of the Claude Code alerts, the real launcher of
 the voice commands, the default paths of the user's Claude Code settings and
-Claude Code config (``.claude.json``, read by ``quill.names``) and the app's own-voice clips folder
+Claude Code config (``.claude.json``, read by ``quill.names``), the Claude Code config folder and the
+pointers folder (read by ``quill.claude_reply``) and the app's own-voice clips folder
 (``quill.clips.default_store``), so any test that reaches them fails instead of acting.
 """
 
@@ -28,6 +29,7 @@ from quill.indicator import window as _indicator_window  # noqa: E402
 _indicator_window.OverlayWin32.__init__ = _forbidden  # type: ignore[method-assign]
 
 from quill import claude_hooks as _claude_hooks  # noqa: E402
+from quill import claude_reply as _claude_reply  # noqa: E402
 from quill import clips as _clips  # noqa: E402
 from quill import names as _names  # noqa: E402
 from quill import notify as _notify  # noqa: E402
@@ -60,6 +62,14 @@ def _no_claude_config(*args: object, **kwargs: object) -> None:
     raise AssertionError("quill tests must use a temporary Claude Code config, never the user's .claude.json")
 
 
+def _no_claude_folder(*args: object, **kwargs: object) -> None:
+    raise AssertionError("quill tests must use a temporary Claude Code config folder, never the user's ~/.claude")
+
+
+def _no_pointers(*args: object, **kwargs: object) -> None:
+    raise AssertionError("quill tests must use a temporary pointers folder, never the app's local/claude-pointers")
+
+
 def _no_clips(*args: object, **kwargs: object) -> None:
     raise AssertionError("quill tests must use a temporary clips folder, never the user's local/names")
 
@@ -73,4 +83,7 @@ real_user_settings_path = _claude_hooks.user_settings_path
 _claude_hooks.user_settings_path = _no_user_settings  # type: ignore[assignment]
 real_claude_config_path = _names.claude_config_path
 _names.claude_config_path = _no_claude_config  # type: ignore[assignment]
+real_claude_config_dir = _claude_reply.claude_config_dir
+_claude_reply.claude_config_dir = _no_claude_folder  # type: ignore[assignment]
+_claude_reply.default_pointers_dir = _no_pointers  # type: ignore[assignment]
 _clips.default_store = _no_clips  # type: ignore[assignment]

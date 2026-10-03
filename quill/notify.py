@@ -10,7 +10,8 @@ Claude Code runs the notifier as a hook (installed only by
 the user); ``permission`` is the ``Notification`` hook with the matcher
 ``permission_prompt``. The notifier reads the hook's JSON from stdin (at most
 ``MAX_INPUT`` bytes, for at most ``READ_TIMEOUT_S``), keeps only the event
-name, ``stop_hook_active``, ``notification_type`` and ``cwd``, and never logs,
+name, ``stop_hook_active``, ``notification_type`` and ``cwd`` (plus
+``session_id`` and ``transcript_path`` for the pointer below), and never logs,
 prints or stores anything else (the message and the assistant's text are
 dropped unread). It ignores ``stop_hook_active`` true, any other notification
 type, malformed, oversized or late input, and the sessions the filter rejects.
@@ -23,6 +24,17 @@ name, then renamed, so a half-written record is never read), and the event is
 set. A failed write still sets the event: Quill then shows the alert without a
 name. It prints nothing, never blocks Claude Code and always exits 0; the
 project name is never logged.
+
+The ``stop`` hook also leaves, for attended sessions only (the variable
+below is ``1``, whatever ``[claude_alert]`` says) and only while
+``[claude_code] last_reply_context`` is on (on when the settings are
+unreadable), one small pointer per project in ``local/claude-pointers``: the
+Git root of ``cwd`` (else ``cwd``), ``session_id``, ``transcript_path`` and the
+time, written under a temporary name and then renamed, with a capped size and
+at most ``MAX_POINTERS`` files (the oldest go first). It is written whether
+Quill is running or not and whatever the alert state, so ``quill.claude_reply``
+can find the session the user answers. The hook never opens the session file,
+and never logs or prints a path, an id or text.
 
 The headless filter (``[claude_alert] filter``) reads the environment
 variable Claude Code gives every hook, ``CLAUDE_CODE_SESSION_ATTENDED``:
@@ -51,6 +63,7 @@ import os
 import sys
 import threading
 import time
+import re
 import unicodedata
 import uuid
 from collections.abc import Callable, Mapping
@@ -60,6 +73,9 @@ if __package__ in (None, ""):
     # Run as a script by the hook: find the quill package from any working directory.
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from quill.claude_reply import (  # noqa: E402
+    MAX_POINTER_RECORD, MAX_POINTERS, POINTER_PREFIX, POINTER_SUFFIX, POINTER_TEMP_SUFFIX, POINTERS_DIR,
+    SESSION_SUFFIX, folder_identity, local_path, pointer_name)
 from quill.sound import DONE, PERMISSION  # noqa: E402
 
 log = logging.getLogger("quill.notify")
@@ -94,6 +110,8 @@ NAMED_GRACE_S = 2.0  # a wake without a record this soon after a named alert of 
 MAX_NAME = 48  # characters of a project name
 MAX_CWD = 4096  # characters of a cwd worth looking at
 MAX_DEPTH = 32  # folders the Git root search walks up
+MAX_POINTER_SCAN = 256  # pointer folder entries the hook looks at
+SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
 
 # ---------------------------------------------------------------- hook side
@@ -140,21 +158,27 @@ def parse_input(data: bytes | None, hook: str) -> tuple[str | None, object]:
     Only ``hook_event_name``, ``stop_hook_active``, ``notification_type`` and
     ``cwd`` are looked at.
     """
+    kind, event = _decode(data, hook)
+    return (None, None) if kind is None else (kind, event.get("cwd"))
+
+
+def _decode(data: bytes | None, hook: str) -> tuple[str | None, dict]:
+    """(alert kind, the decoded input) of the hook's input; (None, {}) when it must not ring."""
     if hook not in HOOKS or data is None:
-        return None, None
+        return None, {}
     expected, kind = HOOKS[hook]
     try:
         event = json.loads(data.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, RecursionError):
-        return None, None
+        return None, {}
     if not isinstance(event, dict) or event.get("hook_event_name") != expected:
-        return None, None
+        return None, {}
     if kind == DONE and event.get("stop_hook_active", False) is not False:
         # Claude Code is continuing because a Stop hook asked it to: not the end of the reply.
-        return None, None
+        return None, {}
     if kind == PERMISSION and event.get("notification_type") != PERMISSION_TYPE:
-        return None, None
-    return kind, event.get("cwd")
+        return None, {}
+    return kind, event
 
 
 def clean_name(value: object) -> str | None:
@@ -213,6 +237,103 @@ def project_name(cwd: object, exists: Callable[[str], bool] = os.path.lexists) -
     return own
 
 
+def project_root(cwd: object, exists: Callable[[str], bool] = os.path.lexists) -> str | None:
+    """The folder of a Claude Code session's project: the nearest ancestor-or-self of
+    ``cwd`` holding a ``.git`` entry, else ``cwd`` itself, normalised.
+
+    None for a ``cwd`` that is not a local absolute path (UNC, device, relative,
+    ``..``, NUL-containing, oversized) or is a drive root. The walk up stops
+    after ``MAX_DEPTH`` folders and never checks a drive root.
+    """
+    path = local_path(cwd)
+    if path is None or ntpath.dirname(path) == path:
+        return None
+    folder = path
+    for _ in range(MAX_DEPTH):
+        parent = ntpath.dirname(folder)
+        if parent == folder:
+            break
+        try:
+            if exists(ntpath.join(folder, ".git")):
+                return folder
+        except (OSError, ValueError):
+            return path
+        folder = parent
+    return path
+
+
+def write_pointer(folder: Path, root: str, session_id: object, session_file: object,
+                  now: float | None = None) -> str:
+    """The pointer of project ``root`` in ``folder``, written under a temporary name and then
+    renamed; returns a reason code (``written`` when it was).
+
+    Only ``root``, ``session_id``, the session file's path text (the file is
+    never opened) and the time go in. The folder is created when missing. A
+    new project's pointer beyond ``MAX_POINTERS`` deletes the oldest ones first.
+    """
+    identity = folder_identity(root)
+    if identity is None:
+        return "no_folder"
+    if not isinstance(session_id, str) or not SESSION_ID.fullmatch(session_id):
+        return "bad_session"
+    path = local_path(session_file)
+    if path is None or not path.casefold().endswith(SESSION_SUFFIX):
+        return "bad_path"
+    data = json.dumps({"folder": root, "session_id": session_id, "transcript_path": path,
+                       "time": time.time() if now is None else now}, ensure_ascii=True).encode("ascii")
+    if len(data) > MAX_POINTER_RECORD:
+        return "too_large"
+    name = pointer_name(identity)
+    created: Path | None = None
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        others: list[tuple[float, str]] = []
+        with os.scandir(folder) as entries:
+            for entry in itertools.islice(entries, MAX_POINTER_SCAN):
+                if not entry.name.startswith(POINTER_PREFIX):
+                    continue
+                if entry.name.endswith(POINTER_TEMP_SUFFIX):
+                    _drop_stale_temporary(entry, time.time())
+                elif entry.name.endswith(POINTER_SUFFIX) and entry.name != name:
+                    try:
+                        others.append((entry.stat(follow_symlinks=False).st_mtime, entry.path))
+                    except OSError:
+                        pass
+        others.sort()
+        for _, oldest in others[:max(0, len(others) - (MAX_POINTERS - 1))]:
+            os.remove(oldest)
+        temporary = folder / (POINTER_PREFIX + uuid.uuid4().hex + POINTER_TEMP_SUFFIX)
+        with open(temporary, "xb") as handle:
+            created = temporary
+            handle.write(data)
+        os.replace(temporary, folder / name)
+        return "written"
+    except (OSError, ValueError):
+        if created is not None:
+            try:
+                os.remove(created)
+            except OSError:
+                pass
+        return "write_failed"
+
+
+def leave_pointer(event: Mapping, environ: Mapping[str, str], folder: Path, enabled: Callable[[], bool],
+                  exists: Callable[[str], bool] = os.path.lexists, now: float | None = None) -> str:
+    """The Stop hook's pointer for its session; a reason code. Only attended sessions
+    (``CLAUDE_CODE_SESSION_ATTENDED`` is ``1``) leave one, and only while ``enabled()``."""
+    if not session_allowed(environ, FILTER_ATTENDED):
+        return "filtered"
+    try:
+        if not enabled():
+            return "disabled"
+        root = project_root(event.get("cwd"), exists)
+        if root is None:
+            return "no_folder"
+        return write_pointer(folder, root, event.get("session_id"), event.get("transcript_path"), now)
+    except Exception:  # noqa: BLE001 - a hook never fails: no pointer
+        return "failed"
+
+
 def write_record(folder: Path, kind: str, project: str, now: float | None = None) -> bool:
     """One alert record in ``folder``, written under a temporary name and then renamed.
 
@@ -266,6 +387,33 @@ def alert_settings(load: Callable[[], object] | None = None) -> tuple[bool, str]
         return settings.enabled, settings.filter
     except Exception:  # noqa: BLE001 - a hook never fails: the defaults apply
         return True, DEFAULT_FILTER
+
+
+def reply_context_enabled(load: Callable[[], object] | None = None) -> bool:
+    """``[claude_code] last_reply_context`` from the Quill settings; on when they are unreadable."""
+    try:
+        if load is None:
+            load = _load_config
+        return bool(getattr(load().claude_code, "last_reply_context", True))
+    except Exception:  # noqa: BLE001 - a hook never fails: the default applies
+        return True
+
+
+def _load_config() -> object:
+    from quill.config import load_config
+
+    return load_config()
+
+
+def _once(load: Callable[[], object]) -> Callable[[], object]:
+    """``load`` that succeeds at most once: one hook run reads the settings file once."""
+    box: list[object] = []
+
+    def loaded() -> object:
+        if not box:
+            box.append(load())
+        return box[0]
+    return loaded
 
 
 class Events:
@@ -336,20 +484,25 @@ class Events:
 
 def notify(hook: str, read: Callable[[int], bytes], environ: Mapping[str, str], *, events: object | None = None,
            settings: Callable[[], tuple[bool, str]] = alert_settings, alerts_dir: Path | None = None,
-           exists: Callable[[str], bool] = os.path.lexists) -> str:
+           exists: Callable[[str], bool] = os.path.lexists, pointers_dir: Path | None = None,
+           reply_context: Callable[[], bool] = reply_context_enabled) -> str:
     """One hook run; returns a reason code (for tests only: the hook prints nothing).
 
     ``alerts_dir`` receives the project record (None: the alert carries no
-    name). The codes: ``signalled`` (with the project's record),
+    name). ``pointers_dir`` receives the Stop hook's pointer (None: none), left
+    before the alert and whatever it does. The codes: ``signalled`` (with the project's record),
     ``signalled_nameless`` (no project name), ``signalled_no_record`` (the
     record could not be written), ``not_running``, ``signal_failed``,
     ``ignored``, ``disabled``, ``filtered`` and ``unknown_hook``.
     """
     if hook not in HOOKS:
         return "unknown_hook"
-    kind, cwd = parse_input(read_input(read), hook)
+    kind, event = _decode(read_input(read), hook)
     if kind is None:
         return "ignored"
+    if pointers_dir is not None and kind == DONE:
+        leave_pointer(event, environ, pointers_dir, reply_context, exists)
+    cwd = event.get("cwd")
     enabled, mode = settings()
     if not enabled:
         return "disabled"
@@ -384,7 +537,10 @@ def main(argv: list[str] | None = None) -> int:
     """The hook entry point: always 0, nothing on stdout or stderr."""
     args = sys.argv[1:] if argv is None else argv
     try:
-        notify(args[0] if len(args) == 1 else "", _stdin_reader(), os.environ, alerts_dir=ALERTS_DIR)
+        config = _once(_load_config)
+        notify(args[0] if len(args) == 1 else "", _stdin_reader(), os.environ, alerts_dir=ALERTS_DIR,
+               pointers_dir=POINTERS_DIR, settings=lambda: alert_settings(config),
+               reply_context=lambda: reply_context_enabled(config))
     except BaseException:  # noqa: BLE001 - never report to (or block) Claude Code
         pass
     return 0

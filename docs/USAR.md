@@ -267,6 +267,29 @@ Para ver quantos termos o Quill encontra em cada projeto da lista (só contagens
 
 Depois de mudar o ficheiro, desligue e volte a ligar o Quill.
 
+### Passagem final do botão 5 (Fase 11, desligada)
+
+**O que muda no botão 5: nada, por omissão.** O botão 5 no Claude Code continua a escrever o texto do streaming, corrigido e organizado, com o mesmo tempo de antes.
+
+Com a passagem final ligada, ao largar o botão 5 no Claude Code o Quill transcreve outra vez, de uma só vez, tudo o que disse, com o large-v3 e as mesmas dicas do ditado. É esse texto que é corrigido, organizado e enviado. Se a passagem falhar, demorar mais de 3 s ou não der texto, é enviado o texto do streaming, como hoje: o ditado nunca se perde. O botão 5 noutras janelas, o botão 4, o botão do meio, o modo comando e os comandos de voz (F9) nunca a usam.
+
+- **Os segundos a mais:** medida com os seus 15 prompts, a passagem demorou 0,759 s a meio da lista (até 1,026 s). Do largar ao texto, o botão 5 passou de 2,292 s (até 2,916 s) para 2,84 s (até 5,587 s).
+- **Porque está desligada:** com a sua voz, não baixou os erros (69 erros de palavras em 304 nos prompts, contra 68 sem ela) e errou 4 termos do domínio em 16, contra 2 sem ela (a meta é no máximo 3). Detalhes e números em [research/FASE11.md](research/FASE11.md).
+- **Memória da placa gráfica:** com o large-v3, a passagem usa a mesma cópia do modelo que os comandos de voz já carregam. Se os comandos de voz estiverem desligados, o Quill carrega essa cópia na mesma quando a passagem está ligada.
+
+Para a experimentar, escreva em `local\quill.toml` e desligue e volte a ligar o Quill:
+
+    [final_pass]
+    enabled = true
+
+Para a desligar, apague a linha ou escreva `enabled = false` e desligue e volte a ligar o Quill. As outras opções (`model`, `beam_size`, `temperature_fallback`, `hints`, `timeout_s`) estão explicadas em `quill.example.toml`; `model = "large-v3-turbo"` é mais rápido (0,336 s a meio da lista, até 0,42 s), mas também não baixou os erros.
+
+**O que o registo diz** (`local\logs\quill.log`, só motivos e tempos, nunca o texto):
+
+- Ao ligar, a linha `Quill started` diz `final pass off` (desligada) ou `final pass on (large-v3)` (ligada). `.venv\Scripts\python -m quill --check` mostra a linha `final pass`.
+- Em cada ditado com o botão 5 no Claude Code, com a passagem ligada: `final pass ok, hints source, audio … s, wait … ms, compute … ms, total … ms`, e a linha `release to typed` acrescenta `final pass ok … ms`.
+- `ok` quer dizer que foi enviado o texto da passagem. Qualquer outro motivo quer dizer que foi enviado o texto do streaming: `not_claude_code` (outra janela), `not_ready` (o modelo ainda está a carregar), `timeout` (passou do tempo máximo), `no_speech` (não ouviu fala), `empty` ou `pass_empty_text` (a passagem não deu texto), `load_error`, `model_error` ou `pass_failed` (erro do modelo), `stopped` (o Quill estava a desligar).
+
 ## Acrescentar palavras ao vocabulário
 
 O vocabulário pessoal fica em `local\vocabulary.toml`, que nunca vai para o Git. Serve para nomes de projeto e termos técnicos que o Quill ouve mal (por exemplo, termos de trading).

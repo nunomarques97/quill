@@ -18,6 +18,7 @@ from quill.streaming import (
     BYTES_PER_SECOND,
     FRAME_BYTES,
     MODEL_OPTIONS,
+    PassOptions,
     SpeechDetector,
     Stabilizer,
     StreamingTranscriber,
@@ -1017,6 +1018,232 @@ class HintSourceTest(Case):
         self.assertEqual(source.heard, [""])
         self.assertEqual(set(self.prompts()), {"before"})
 
+
+class Exclusive:
+    """Wraps a model and records whether two threads were ever inside it at once."""
+
+    def __init__(self, model):
+        self.model = model
+        self.lock = threading.Lock()
+        self.inside = 0
+        self.overlapped = False
+
+    def load(self):
+        self.model.load()
+
+    def close(self):
+        self.model.close()
+
+    def transcribe(self, pcm, options):
+        with self.lock:
+            self.inside += 1
+            self.overlapped |= self.inside > 1
+        try:
+            return self.model.transcribe(pcm, options)
+        finally:
+            with self.lock:
+                self.inside -= 1
+
+
+class PassTest(Case):
+    """decode_once: one whole-buffer decode on the worker, queued with the finals."""
+
+    HINTS = whisper.SessionHints(prompt="Vocabulário: Zorblax.", hotwords="Zorblax", language="pt")
+    OPTIONS = PassOptions(beam_size=7, temperature_fallback=True, condition_on_previous_text=True, vad_filter=True)
+
+    def transcriber(self, model=None, **options):
+        transcriber = StreamingTranscriber(model or self.model, StreamOptions(**options), ["Zorblax", "deploy"],
+                                           clock=self.clock)
+        transcriber.start()
+        self.assertTrue(transcriber.ready.wait(5))
+        self.transcribers.append(transcriber)
+        return transcriber
+
+    def passes(self):
+        return [call for call in self.model.calls if call.options.beam_size == 7]
+
+    def test_decodes_the_buffer_once_with_the_hints_and_overrides(self):
+        self.model.cost_s = 0.4
+        transcriber = self.transcriber()
+        pcm = speech([1, 2, 3])
+        handle = transcriber.decode_once(pcm, self.HINTS, self.OPTIONS)
+        result = handle.wait(5)
+        self.assertEqual((result.ok, result.reason, result.error, result.text), (True, "ok", None, text([1, 2, 3])))
+        self.assertEqual(len(self.model.calls), 1)
+        options = self.model.calls[0].options
+        self.assertEqual((options.beam_size, options.temperature_fallback, options.condition_on_previous_text,
+                          options.vad_filter), (7, True, True, True))
+        self.assertEqual((options.initial_prompt, options.hotwords, options.language),
+                         (self.HINTS.prompt, self.HINTS.hotwords, "pt"))
+        self.assertEqual((options.word_timestamps, options.without_timestamps, options.detect_language), (False, True, False))
+        self.assertAlmostEqual(result.audio_s, len(pcm) / BYTES_PER_SECOND)
+        self.assertAlmostEqual(self.model.calls[0].seconds, len(pcm) / BYTES_PER_SECOND)
+        self.assertAlmostEqual(result.compute_s, 0.4)
+        self.assertAlmostEqual(result.latency_s, 0.4)
+        self.assertTrue(handle.done)
+        self.assertFalse(handle.cancel())  # already resolved: nothing changes
+        self.assertEqual(handle.wait(0).reason, "ok")
+
+    def test_defaults_decode_as_a_final_with_the_vocabulary_hints(self):
+        transcriber = self.transcriber()
+        result = transcriber.decode_once(speech([1])).wait(5)
+        self.assertTrue(result.ok)
+        options = self.model.calls[0].options
+        self.assertEqual((options.beam_size, options.temperature_fallback, options.condition_on_previous_text,
+                          options.vad_filter, options.language), (5, False, False, False, None))
+        self.assertEqual((options.initial_prompt, options.hotwords), ("Vocabulário: Zorblax, deploy.", "Zorblax deploy"))
+
+    def test_a_span_decodes_only_that_part(self):
+        transcriber = self.transcriber()
+        pcm = speech([1]) + speech([2])
+        middle = len(speech([1]))
+        result = transcriber.decode_once(memoryview(pcm), None, span=(middle + 1, len(pcm))).wait(5)
+        self.assertEqual(result.text, "w2")
+        self.assertAlmostEqual(self.model.calls[0].seconds, (len(pcm) - middle) / BYTES_PER_SECOND)  # aligned to a sample
+        with self.assertRaises(ValueError):
+            transcriber.decode_once(pcm, span=(0, len(pcm) + 2))
+        with self.assertRaises(TypeError):
+            transcriber.decode_once(pcm, lambda heard: None)
+        with self.assertRaises(ValueError):
+            PassOptions(beam_size=0)
+        empty = transcriber.decode_once(pcm, span=(4, 4)).wait(5)
+        self.assertEqual((empty.reason, empty.text, len(self.model.calls)), ("ok", "", 1))
+
+    def test_runs_before_queued_partials_and_speculative_finals_after_earlier_finals(self):
+        self.model.gate = threading.Event()
+        self.model.gate_when = lambda call: call.index == 0
+        transcriber = self.transcriber(speculate=False)
+        busy = transcriber.open()
+        busy.feed(speech([1, 2]))  # its first partial holds the worker
+        self.assertTrue(self.model.entered.wait(5))
+        busy.feed(speech([3]))  # a newer partial waits
+        released = transcriber.open()
+        released.feed(speech([4]))
+        final = released.release()
+        handle = transcriber.decode_once(speech([5]), None, self.OPTIONS)
+        self.model.gate.set()
+        self.assertEqual(handle.wait(5).text, "w5")
+        self.assertEqual(final.wait(5).text, "w4")
+        self.assertTrue(transcriber.drain(5))
+        kinds = [("pass" if c.options.beam_size == 7 else "final" if c.options.beam_size == 5 else "partial")
+                 for c in self.model.calls]
+        self.assertEqual(kinds[:3], ["partial", "final", "pass"])
+        self.assertIn("partial", kinds[3:])  # the waiting partial ran only after them
+
+    def test_never_two_model_calls_at_once(self):
+        model = Exclusive(self.model)
+        transcriber = self.transcriber(model)
+        handles, finals = [], []
+
+        def passes():
+            for index in range(6):
+                handles.append(transcriber.decode_once(speech([index % 4 + 1]), None, self.OPTIONS))
+
+        thread = threading.Thread(target=passes)
+        thread.start()
+        for index in range(3):
+            session = transcriber.open()
+            for chunk in range(0, len(speech([1, 2, 3])), 1600):
+                session.feed(speech([1, 2, 3])[chunk : chunk + 1600])
+            finals.append(session.release())
+        thread.join(5)
+        self.assertTrue(all(h.wait(5).ok for h in handles))
+        self.assertTrue(all(f.wait(5).ok for f in finals))
+        self.assertFalse(model.overlapped)
+
+    def test_stop_resolves_a_queued_and_a_running_pass_exactly_once(self):
+        self.model.gate = threading.Event()
+        self.model.gate_when = lambda call: call.index == 0
+        transcriber = self.transcriber()
+        running = transcriber.decode_once(speech([1]), None, self.OPTIONS)
+        self.assertTrue(self.model.entered.wait(5))
+        queued = transcriber.decode_once(speech([2]), None, self.OPTIONS)
+        transcriber.stop(timeout=0.05)  # the worker is still inside the model call
+        for handle in (running, queued):
+            result = handle.wait(1)
+            self.assertEqual((result.ok, result.reason, result.error, result.text), (False, "stopped", "streaming stopped", ""))
+        self.model.gate.set()  # the running call now succeeds: ignored
+        for thread in threading.enumerate():
+            if thread.name == "quill-asr":
+                thread.join(5)
+        self.assertEqual(running.wait(0).reason, "stopped")
+        self.assertEqual(len(self.passes()), 1)  # the queued one never ran
+        late = transcriber.decode_once(speech([3])).wait(0)
+        self.assertEqual((late.reason, late.error), ("not_running", "streaming not running"))
+        transcriber.start()
+        self.assertTrue(transcriber.ready.wait(5))
+        self.assertEqual(transcriber.decode_once(speech([4])).wait(5).text, "w4")
+
+    def test_cancel_drops_a_queued_pass_and_ignores_a_running_one(self):
+        self.model.gate = threading.Event()
+        self.model.gate_when = lambda call: call.index == 0
+        transcriber = self.transcriber()
+        running = transcriber.decode_once(speech([1]), None, self.OPTIONS)
+        self.assertTrue(self.model.entered.wait(5))
+        queued = transcriber.decode_once(speech([2]), None, self.OPTIONS)
+        self.assertTrue(queued.cancel())
+        self.assertFalse(queued.cancel())
+        self.assertTrue(running.cancel())
+        self.model.gate.set()
+        self.assertTrue(transcriber.drain(5))
+        self.assertEqual((running.wait(0).reason, queued.wait(0).reason), ("cancelled", "cancelled"))
+        self.assertEqual(len(self.passes()), 1)
+        self.assertEqual(transcriber.decode_once(speech([3])).wait(5).text, "w3")
+
+    def test_model_and_load_failures(self):
+        self.model.fail = lambda call: RuntimeError("boom") if call.index == 0 else None
+        transcriber = self.transcriber()
+        failed = transcriber.decode_once(speech([1])).wait(5)
+        self.assertEqual((failed.reason, failed.error, failed.text), ("model_error", "transcription failed: RuntimeError", ""))
+        self.assertEqual(transcriber.decode_once(speech([2])).wait(5).text, "w2")
+        broken = FakeModel(self.clock)
+        broken.fail_load = RuntimeError("no model")
+        transcriber = self.transcriber(broken)
+        result = transcriber.decode_once(speech([1])).wait(5)
+        self.assertEqual((result.reason, result.error), ("load_error", transcriber.load_error))
+        self.assertEqual(broken.calls, [])
+
+    def test_resolve_is_exactly_once_when_success_and_failure_overlap(self):
+        transcriber = self.transcriber()
+        handle = transcriber.decode_once(speech([1]))
+        result = handle.wait(5)
+        job = SimpleNamespace(handle=handle, span=(0, 0), requested=0.0)
+        self.assertFalse(transcriber._fail_pass(job, "stopped", "streaming stopped"))
+        self.assertIs(handle.wait(0), result)
+
+
+class ReleasedAudioTest(Case):
+    def test_the_capture_and_the_range_the_final_decoded(self):
+        transcriber = self.start(commit=False, speculate=False)
+        session = transcriber.open()
+        pcm = speech([1, 2], lead=1.0, trail=1.0)
+        session.feed(pcm)
+        self.assertIsNone(session.released_audio())
+        self.assertTrue(transcriber.drain(5))
+        result = session.release().wait(5)
+        audio = session.released_audio()
+        self.assertTrue(audio.speech)
+        self.assertTrue(audio.pcm.readonly)
+        self.assertIs(audio.pcm.obj, session._pcm)  # the session's own buffer, not a copy
+        self.assertEqual(bytes(audio.pcm), pcm)
+        final = self.model.calls[-1]
+        self.assertEqual(final.options.beam_size, 5)
+        self.assertAlmostEqual(audio.seconds, final.seconds)
+        self.assertAlmostEqual(audio.start / BYTES_PER_SECOND, 1.0 - 0.2, places=2)  # lead_s before the speech
+        self.assertLess(audio.end, len(pcm))  # trailing silence past tail_pad_s is left out
+        session.feed(speech([3]))  # ignored after the release
+        self.assertEqual(len(session.released_audio().pcm), len(pcm))
+        again = transcriber.decode_once(audio.pcm, None, span=(audio.start, audio.end)).wait(5)
+        self.assertEqual((again.text, result.text), (text([1, 2]), text([1, 2])))
+        self.assertAlmostEqual(self.model.calls[-1].seconds, final.seconds)
+
+    def test_silence_has_no_range(self):
+        transcriber = self.start()
+        session = transcriber.open()
+        session.feed(silence(1.0))
+        session.release().wait(5)
+        audio = session.released_audio()
+        self.assertEqual((audio.speech, audio.start, audio.end, audio.seconds), (False, 0, 0, 0.0))
 
 
 if __name__ == "__main__":

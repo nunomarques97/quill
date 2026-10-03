@@ -58,6 +58,18 @@ partial shown before the release still applies to the final; partials that
 complete after the release are dropped and ask nothing. A source that raises
 or returns anything else leaves the session's hints as they are.
 
+``StreamingTranscriber.decode_once`` decodes one given PCM buffer once, as a
+*pass* (the final pass of mouse 5 into Claude Code, ``quill.finalpass``): with
+given ``SessionHints`` (None: the vocabulary hints), ``PassOptions`` (beam,
+temperature fallback, conditioning, VAD filter) and optionally only a byte
+span of the buffer. A pass is queued with the finals, in request order, so it
+runs before speculative finals and partials, on the same worker thread: the
+model is never called from two threads. Its ``PassHandle`` resolves exactly
+once; ``stop`` resolves a queued or running pass with an error, and
+``PassHandle.cancel`` drops one that has not started. A released
+``Session.released_audio`` gives the capture and the trimmed speech range of
+its final without another copy of the audio.
+
 All session state is protected by one lock; the model runs outside it.
 Nothing here logs or stores text or audio.
 """
@@ -376,12 +388,17 @@ class FinalHandle:
 
     def __init__(self) -> None:
         self._event = threading.Event()
+        self._lock = threading.Lock()
         self._result: FinalResult | None = None
 
-    def _resolve(self, result: FinalResult) -> None:
-        if not self._event.is_set():
+    def _resolve(self, result: FinalResult) -> bool:
+        """Set the result unless one is already set; True when this call set it."""
+        with self._lock:
+            if self._event.is_set():
+                return False
             self._result = result
             self._event.set()
+            return True
 
     @property
     def done(self) -> bool:
@@ -390,6 +407,90 @@ class FinalHandle:
     def wait(self, timeout: float | None = None) -> FinalResult | None:
         self._event.wait(timeout)
         return self._result
+
+
+@dataclass(frozen=True)
+class ReleasedAudio:
+    """The capture of a released session and the speech range its final decoded.
+
+    ``pcm`` is a read-only view of the session's own buffer (no copy).
+    ``start`` is where the whole utterance starts once its leading silence is
+    trimmed to ``lead_s`` and ``end`` is ``tail_pad_s`` after its last speech
+    frame (bytes): the range the final decodes when nothing was committed.
+    Without enough speech for a final, ``speech`` is False and the range empty.
+    """
+
+    pcm: memoryview = field(repr=False)
+    start: int
+    end: int
+    speech: bool
+
+    @property
+    def seconds(self) -> float:
+        return max(0, self.end - self.start) / BYTES_PER_SECOND
+
+
+@dataclass(frozen=True)
+class PassOptions:
+    """Decoding of one pass; the defaults decode as a streaming final does."""
+
+    beam_size: int = 5
+    temperature_fallback: bool = False
+    condition_on_previous_text: bool = False
+    vad_filter: bool = False
+
+    def __post_init__(self) -> None:
+        if isinstance(self.beam_size, bool) or not isinstance(self.beam_size, int) or not 1 <= self.beam_size <= 10:
+            raise ValueError("pass option out of range: beam_size")
+        for name in ("temperature_fallback", "condition_on_previous_text", "vad_filter"):
+            if not isinstance(getattr(self, name), bool):
+                raise ValueError(f"pass option is not a boolean: {name}")
+
+
+# Reason codes of a pass result.
+PASS_OK = "ok"
+PASS_STOPPED = "stopped"
+PASS_NOT_RUNNING = "not_running"
+PASS_LOAD_ERROR = "load_error"
+PASS_MODEL_ERROR = "model_error"
+PASS_CANCELLED = "cancelled"
+
+
+@dataclass(frozen=True)
+class PassResult:
+    """Text of one pass, or why there is none (``reason``); times are clock readings."""
+
+    text: str = field(repr=False)
+    reason: str
+    error: str | None
+    audio_s: float  # seconds of audio decoded
+    waited_s: float  # request -> job start
+    compute_s: float  # model time
+    latency_s: float  # request -> result
+    language: str | None = None
+
+    @property
+    def ok(self) -> bool:
+        return self.reason == PASS_OK
+
+
+class PassHandle(FinalHandle):
+    """Resolves exactly once with a ``PassResult``."""
+
+    def __init__(self, owner: "StreamingTranscriber") -> None:
+        super().__init__()
+        self._owner = owner
+
+    def wait(self, timeout: float | None = None) -> PassResult | None:  # type: ignore[override]
+        return super().wait(timeout)
+
+    def cancel(self) -> bool:
+        """Drop the pass if it has not started and resolve it as cancelled; True when this resolved it.
+
+        A pass already running finishes its model call, but its result is
+        ignored.
+        """
+        return self._owner._cancel_pass(self)
 
 
 # ---------------------------------------------------------------- hint sources
@@ -415,7 +516,7 @@ def _choose(source: HintSource, heard: str) -> tuple[bool, SessionHints | None]:
 
 # ---------------------------------------------------------------- jobs
 
-PARTIAL, SPECULATIVE, FINAL = "partial", "speculative", "final"
+PARTIAL, SPECULATIVE, FINAL, PASS = "partial", "speculative", "final", "pass"
 
 
 @dataclass(eq=False)
@@ -425,6 +526,41 @@ class _Job:
     end: int  # bytes of session audio the job covers
     speech_end: int = 0
     hints_version: int = 0  # the session's hints when the job was planned
+
+
+@dataclass(eq=False)
+class _PassJob:
+    handle: PassHandle
+    pcm: object  # bytes-like; only ``span`` of it is decoded
+    span: tuple[int, int]
+    hints: SessionHints | None
+    options: PassOptions
+    requested: float
+    kind: str = PASS
+
+
+def _hint_parts(hints: SessionHints | None, vocabulary: Sequence[str], context: str = "") -> tuple[str | None, str | None, str | None]:
+    """(initial prompt, hotwords, language) of a decode with ``hints`` (None: ``vocabulary``) and committed ``context``."""
+    prompt_parts = []
+    language = None
+    if hints is not None:
+        # The session's own hints; committed text follows them only as far as it fits.
+        if hints.prompt:
+            prompt_parts.append(hints.prompt)
+            room = PROMPT_MAX_CHARS - len(hints.prompt) - 1
+            if len(context) > room:
+                context = context[len(context) - room :].split(" ", 1)[-1] if room > 0 else ""
+        hotwords = hints.hotwords or None
+        language = hints.language
+    else:
+        if vocabulary:
+            joined = join_vocabulary(vocabulary, max(0, PROMPT_MAX_CHARS - len(context)))
+            if joined:
+                prompt_parts.append(HINTS_PREFIX + joined + ".")
+        hotwords = join_vocabulary(vocabulary, PROMPT_MAX_CHARS, separator=" ") or None
+    if context:
+        prompt_parts.append(context)
+    return " ".join(prompt_parts) or None, hotwords, language
 
 
 class Session:
@@ -542,6 +678,19 @@ class Session:
         """Stop feeding and ask for the final text; the handle resolves exactly once."""
         return self.owner._release(self)
 
+    def released_audio(self) -> ReleasedAudio | None:
+        """The capture and the trimmed speech range of its final; None before the release."""
+        with self.owner._cond:
+            if not self.released:
+                return None
+            # Nothing is appended after the release, so the view never blocks a resize.
+            view = memoryview(self._pcm).toreadonly()
+            end = self._final_end()
+            start, _ = self._window(0, end)
+            if start is None or end <= start:
+                return ReleasedAudio(view, 0, 0, False)
+            return ReleasedAudio(view, start, end, True)
+
     def cancel(self) -> None:
         """Forget this hold without a final (for example a cancelled trigger)."""
         with self.owner._cond:
@@ -575,31 +724,11 @@ class Session:
             context = self._stable.text[-options.context_chars :]
             if len(self._stable.text) > options.context_chars and " " in context:
                 context = context.split(" ", 1)[1]
-        prompt_parts = []
-        hints = self.hints
-        language = None
-        if hints is not None:
-            # The session's own hints; committed text follows them only as far as it fits.
-            if hints.prompt:
-                prompt_parts.append(hints.prompt)
-                room = PROMPT_MAX_CHARS - len(hints.prompt) - 1
-                if len(context) > room:
-                    context = context[len(context) - room :].split(" ", 1)[-1] if room > 0 else ""
-            hotwords = hints.hotwords or None
-            language = hints.language
-        else:
-            vocabulary = self.owner.vocabulary
-            if vocabulary:
-                joined = join_vocabulary(vocabulary, max(0, PROMPT_MAX_CHARS - len(context)))
-                if joined:
-                    prompt_parts.append(HINTS_PREFIX + joined + ".")
-            hotwords = join_vocabulary(vocabulary, PROMPT_MAX_CHARS, separator=" ") or None
-        if context:
-            prompt_parts.append(context)
+        prompt, hotwords, language = _hint_parts(self.hints, self.owner.vocabulary, context)
         seconds = min((end - start) / BYTES_PER_SECOND, WINDOW_S)
         return Decode(
             beam_size=beam,
-            initial_prompt=" ".join(prompt_parts) or None,
+            initial_prompt=prompt,
             hotwords=hotwords,
             word_timestamps=words,
             without_timestamps=not words,
@@ -629,7 +758,8 @@ class StreamingTranscriber:
         self.clock = clock
         self._cond = threading.Condition()
         self._sessions: list[Session] = []
-        self._finals: deque[_Job] = deque()
+        self._finals: deque[_Job | _PassJob] = deque()  # finals and passes, in request order
+        self._current_pass: _PassJob | None = None  # the pass inside the model call
         self._busy = False
         self._running = False
         self._stopping = False
@@ -678,6 +808,9 @@ class StreamingTranscriber:
         with self._cond:
             finals = list(self._finals)
             self._finals.clear()
+            if self._current_pass is not None:
+                finals.append(self._current_pass)  # still in the model: its late result is ignored
+                self._current_pass = None
             sessions = list(self._sessions)
             self._sessions.clear()
             self._busy = False
@@ -685,7 +818,10 @@ class StreamingTranscriber:
             self._thread = None
             self._cond.notify_all()
         for job in finals:
-            self._fail(job.session, "streaming stopped")
+            if job.kind == PASS:
+                self._fail_pass(job, PASS_STOPPED, "streaming stopped")
+            else:
+                self._fail(job.session, "streaming stopped")
         for session in sessions:
             session.closed = True
             if session.handle is not None:
@@ -708,6 +844,35 @@ class StreamingTranscriber:
             session = Session(self, self._numbers, on_partial, hints, source)
             self._sessions.append(session)
             return session
+
+    def decode_once(self, pcm: bytes | bytearray | memoryview, hints: SessionHints | None = None,
+                    options: PassOptions = PassOptions(), *, span: tuple[int, int] | None = None) -> PassHandle:
+        """Decode ``pcm`` (16 kHz mono PCM16; only ``span``, in bytes, when given) once, as a pass.
+
+        ``hints`` replace the vocabulary hints as a session's do (None: the
+        vocabulary hints at decode time). The pass is queued with the finals,
+        before every speculative final and partial. The buffer is read when the
+        pass starts and must not change until then. Not running: the handle
+        resolves at once with ``not_running``.
+        """
+        if hints is not None and not isinstance(hints, SessionHints):
+            raise TypeError("pass hints must be SessionHints or None")
+        if not isinstance(options, PassOptions):
+            raise TypeError("pass options must be PassOptions")
+        size = memoryview(pcm).nbytes
+        start, end = (0, size) if span is None else span
+        if not (isinstance(start, int) and isinstance(end, int) and 0 <= start <= end <= size):
+            raise ValueError("pass span out of range")
+        span = (start - start % SAMPLE_WIDTH, end - end % SAMPLE_WIDTH)
+        handle = PassHandle(self)
+        with self._cond:
+            job = _PassJob(handle, pcm, span, hints, options, self.clock())
+            if self._running and not self._stopping:
+                self._finals.append(job)
+                self._cond.notify_all()
+                return handle
+        self._fail_pass(job, PASS_NOT_RUNNING, "streaming not running")
+        return handle
 
     def drain(self, timeout: float | None = None) -> bool:
         """Wait until no job is pending or running; False on timeout."""
@@ -767,6 +932,38 @@ class StreamingTranscriber:
             hint_switches=session.hint_switches,
         )
 
+    def _cancel_pass(self, handle: PassHandle) -> bool:
+        with self._cond:
+            job = next((job for job in self._finals if job.kind == PASS and job.handle is handle), None)
+            if job is not None:
+                self._finals.remove(job)
+                self._cond.notify_all()
+            elif self._current_pass is not None and self._current_pass.handle is handle:
+                job = self._current_pass
+        if job is None:
+            return False
+        return self._fail_pass(job, PASS_CANCELLED, "pass cancelled")
+
+    def _pass_result(self, job: _PassJob, text: str, reason: str, error: str | None, *, started: float,
+                     compute: float, language: str | None = None) -> PassResult:
+        now = self.clock()
+        return PassResult(
+            text=text,
+            reason=reason,
+            error=error,
+            audio_s=(job.span[1] - job.span[0]) / BYTES_PER_SECOND,
+            waited_s=max(0.0, started - job.requested),
+            compute_s=compute,
+            latency_s=max(0.0, now - job.requested),
+            language=language,
+        )
+
+    def _fail_pass(self, job: _PassJob, reason: str, error: str) -> bool:
+        if job.handle.done:
+            return False
+        now = self.clock()
+        return job.handle._resolve(self._pass_result(job, "", reason, error, started=now, compute=0.0))
+
     def _fail(self, session: Session, reason: str) -> None:
         if session.handle is None or session.handle.done:
             return
@@ -804,12 +1001,17 @@ class StreamingTranscriber:
                     return
                 job = self._next_job()
                 self._busy = True
-                plan = self._plan(job)
+                if job.kind == PASS:
+                    plan, execute = self._plan_pass(job), self._execute_pass
+                else:
+                    plan, execute = self._plan(job), self._execute
             try:
                 if plan is not None:
-                    self._execute(job, *plan)
+                    execute(job, *plan)
             finally:
                 with self._cond:
+                    if self._current_pass is job:
+                        self._current_pass = None
                     if generation == self._generation:
                         self._busy = False
                     self._cond.notify_all()
@@ -856,6 +1058,51 @@ class StreamingTranscriber:
         words = self._partial_commits(job.end - audio)
         decode = session._decode(self.options.partial_beam, audio, job.end, words=words)
         return ("decode", (start, job.end), bytes(session._pcm[audio : job.end]), decode, audio, seconds)
+
+    def _plan_pass(self, job: _PassJob) -> tuple | None:
+        """(audio, decode, error) of a pass, read under the lock; None when it was already resolved."""
+        if job.handle.done:
+            return None
+        self._current_pass = job
+        if self.load_error:
+            return (b"", None, self.load_error)
+        start, end = job.span
+        pcm = bytes(memoryview(job.pcm).cast("B")[start:end])
+        options = job.options
+        prompt, hotwords, language = _hint_parts(job.hints, self.vocabulary)
+        seconds = min(len(pcm) / BYTES_PER_SECOND, WINDOW_S)
+        decode = Decode(
+            beam_size=options.beam_size,
+            initial_prompt=prompt,
+            hotwords=hotwords,
+            without_timestamps=True,
+            max_new_tokens=int(math.ceil(seconds * self.options.tokens_per_s)) + self.options.min_new_tokens,
+            language=language,
+            temperature_fallback=options.temperature_fallback,
+            condition_on_previous_text=options.condition_on_previous_text,
+            vad_filter=options.vad_filter,
+        )
+        return (pcm, decode, None)
+
+    def _execute_pass(self, job: _PassJob, pcm: bytes, decode: Decode | None, error: str | None) -> None:
+        started = self.clock()
+        if error is not None:
+            job.handle._resolve(self._pass_result(job, "", PASS_LOAD_ERROR, error, started=started, compute=0.0))
+            return
+        if not pcm:
+            job.handle._resolve(self._pass_result(job, "", PASS_OK, None, started=started, compute=0.0))
+            return
+        try:
+            transcript = self.model.transcribe(pcm, decode)
+        except Exception as exc:
+            compute = self.clock() - started
+            job.handle._resolve(self._pass_result(job, "", PASS_MODEL_ERROR, f"transcription failed: {type(exc).__name__}",
+                                                  started=started, compute=compute))
+            return
+        compute = self.clock() - started
+        text = " ".join(spoken_words(transcript.text))
+        job.handle._resolve(self._pass_result(job, text, PASS_OK, None, started=started, compute=compute,
+                                              language=transcript.language))
 
     def _partial_commits(self, window: int) -> bool:
         """Whether a partial over ``window`` bytes may commit words (it then needs word timestamps)."""

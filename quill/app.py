@@ -87,7 +87,7 @@ from quill.triggers import KEY, InputEvent
 from quill.voice import VoiceCommands, VoiceHints, default_parser
 from quill.vocabulary import (Matcher, Vocabulary, VocabularyError, VocabularyFile, hint_list, load_generic_terms,
                               load_vocabulary, whisper_hints)
-from quill.whisper import MODELS, Decode, TokenCounter, model_present
+from quill.whisper import MODELS, Decode, SessionHints, TokenCounter, model_present, project_terms, session_hints
 
 log = logging.getLogger("quill.app")
 
@@ -101,6 +101,12 @@ LOAD_WAIT_S = 0.1
 WARMUP_S = 1.0
 # The profile of an editor window: the project hint and the one-paragraph layout of a terminal's rewrite.
 EDITOR_PROFILE = "vscode"
+# Reason codes of the decoding hints of mouse 5 (logged; never a name, title or path).
+PROJECT_HINTS = "project_hints"
+HINTS_NOT_CLAUDE_CODE = "not_claude_code"
+HINTS_NO_PROJECT = "no_project"
+HINTS_NO_PACK = "no_pack"
+HINTS_FAILED = "failed"
 
 EXIT_OK = 0
 EXIT_FAILED = 1
@@ -385,6 +391,41 @@ class TextPipeline:
                          send_key=send_key)
 
 
+# ---------------------------------------------------------------- mouse 5 decoding hints
+
+
+def project_hints(info: WindowInfo | None, pid: int, *, profiles: Profiles, projects: ProjectDetector | None,
+                  pack_for: Callable[[Path], object | None] | None, vocabulary: Vocabulary,
+                  generic_terms: Sequence[str]) -> tuple[SessionHints | None, str]:
+    """(decoding hints, reason code) of mouse 5 into the window ``info`` of process ``pid``.
+
+    Only Claude Code with a detected project and a context pack gets hints of
+    its own: the vocabulary hints with the project name and its most relevant
+    pack terms (``quill.whisper.project_terms``, at most
+    ``PROJECT_HINT_MAX_CHARS``) placed after the personal names, the whole list
+    within today's hint budget (``whisper_hints``), so the last generic and
+    personal terms make room. Any other window, no project, no pack or a
+    failure gives None: today's vocabulary hints. Reads only; never raises.
+    """
+    try:
+        if profiles.select(info) != CLAUDE_CODE:
+            return None, HINTS_NOT_CLAUDE_CODE
+        found = projects.detect(info, pid, claude_code=True) if projects is not None else None
+        if found is None:
+            return None, HINTS_NO_PROJECT
+        pack = pack_for(found.folder) if pack_for is not None else None
+        terms = getattr(pack, "terms", None)
+        if pack is None or not isinstance(terms, (tuple, list)):
+            return None, HINTS_NO_PACK
+        today = whisper_hints(vocabulary, (), generic_terms)
+        words = whisper_hints(vocabulary, project_terms(found.name, terms, today), generic_terms)
+        hints = session_hints(words)
+        return (hints, PROJECT_HINTS) if hints is not None else (None, HINTS_NO_PACK)
+    except Exception as exc:  # noqa: BLE001 - hints are optional: today's hints decode instead
+        log.warning("project hints: %s (%s)", HINTS_FAILED, type(exc).__name__)
+        return None, HINTS_FAILED
+
+
 # ---------------------------------------------------------------- parts and app
 
 
@@ -410,6 +451,8 @@ class Parts:
     voice_model: object | None = None  # decodes the voice holds (load / transcribe / close); None: ``model`` does
     processes: object | None = None  # reads a terminal's Claude Code session (quill.win32.Processes); None: titles only
     context_packs: object | None = None  # project context packs (quill.context_pack.ContextPacks); None: no pack
+    # How the decoding hints of a mouse 5 session are built (tests: at once); None: on a daemon thread.
+    run_hints: Callable[[Callable[[], None]], None] | None = None
     focus_probe: object | None = None  # focus verdict of a VS Code window (quill.uia.FocusProbe); None: titles only
     vocabulary: Vocabulary = field(default_factory=Vocabulary)
     generic_terms: Sequence[str] = ()
@@ -492,7 +535,8 @@ class QuillApp:
             housekeeping=self._housekeeping, player=parts.player if config.claude_alert.sound else None,
             speaker=parts.speaker if config.claude_alert.sound and config.claude_alert.speak_project else None,
             context_pack=parts.context_packs.get if parts.context_packs is not None else None,
-            enter_check=self._enter_check, clock=parts.clock,
+            enter_check=self._enter_check, send_hints=self._send_hints if parts.context_packs is not None else None,
+            run_hints=parts.run_hints, clock=parts.clock,
         )
         self.alerts: AlertListener | None = None
         if config.claude_alert.enabled and parts.alert_events is not None:
@@ -706,6 +750,23 @@ class QuillApp:
             self.undo.forget()
         else:
             self.undo.remember(dictation, original, target, newline)
+
+    def _send_hints(self, target: Target) -> SessionHints | None:
+        """Decoding hints of a mouse 5 session once its window is known (hint thread); None: today's hints.
+
+        Reads the window (title, class, process and the focused element) and
+        the project's context pack; never clicks, types or moves the focus.
+        """
+        if target is None or not target.hwnd:
+            return None
+        profiles = self.pipeline.profiles
+        info = profiles.describe(self.parts.api, target.hwnd, self.focus_probe)
+        packs = self.parts.context_packs
+        hints, reason = project_hints(info, target.pid, profiles=profiles, projects=self.projects,
+                                      pack_for=packs.get if packs is not None else None,
+                                      vocabulary=self.vocabulary, generic_terms=self.parts.generic_terms)
+        log.info("decoding hints: %s", reason)
+        return hints
 
     def _enter_check(self, target: Target | None, before: WindowInfo | None) -> str | None:
         """None when a send trigger may press Enter in ``target`` now, else a reason code (session thread).

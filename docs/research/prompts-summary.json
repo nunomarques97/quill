@@ -23,9 +23,9 @@
       "packs_found": 15,
       "term_occurrences": 16,
       "term_errors": {
-        "pipeline": 7,
+        "pipeline": 5,
         "today": 7,
-        "new": 5
+        "new": 4
       },
       "lost": {
         "today": 0,
@@ -36,7 +36,7 @@
         "new": 0
       },
       "pack_outside_context": 0,
-      "enriched": 3,
+      "enriched": 4,
       "reasons": {
         "today": {
           "autorewrite_refused": 13,
@@ -44,22 +44,22 @@
         },
         "correction": {
           "autorewrite_refused": 2,
-          "autorewrite_rewritten": 4,
-          "autorewrite_unchanged": 9
+          "autorewrite_rewritten": 3,
+          "autorewrite_unchanged": 10
         },
         "correction_refusals": {
           "changed": 1,
           "name": 1
         },
         "enrichment": {
-          "enrich_enriched": 3,
-          "enrich_refused": 10,
+          "enrich_enriched": 4,
+          "enrich_refused": 9,
           "not_asked": 2
         },
         "enrichment_refusals": {
-          "empty_part": 3,
-          "invented": 1,
+          "empty_part": 2,
           "length": 5,
+          "lost": 1,
           "pack_outside": 1
         },
         "packs": {
@@ -67,22 +67,47 @@
         }
       },
       "latency": {
-        "transcription_p50_s": 0.419,
-        "transcription_p95_s": 0.471,
-        "today_correction_p50_s": 3.324,
-        "today_correction_p95_s": 3.863,
-        "pack_p50_s": 0.095,
-        "pack_p95_s": 0.143,
-        "correction_p50_s": 0.986,
-        "correction_p95_s": 1.484,
-        "enrichment_p50_s": 3.265,
-        "enrichment_p95_s": 7.911,
-        "total_p50_s": 4.222,
-        "total_p95_s": 8.894
+        "transcription_p50_s": 0.385,
+        "transcription_p95_s": 0.704,
+        "today_correction_p50_s": 1.871,
+        "today_correction_p95_s": 2.005,
+        "pack_p50_s": 0.036,
+        "pack_p95_s": 0.113,
+        "correction_p50_s": 0.611,
+        "correction_p95_s": 0.805,
+        "enrichment_p50_s": 1.669,
+        "enrichment_p95_s": 4.008,
+        "total_p50_s": 2.157,
+        "total_p95_s": 4.551
       },
       "over_product_timeout": {
+        "correction_calls": 30,
         "correction": 0,
         "enrichment": 0
+      },
+      "hints": {
+        "project_hints": 15
+      },
+      "before_hints": {
+        "no_speech": 0,
+        "term_errors": {
+          "pipeline": 7,
+          "new": 5
+        },
+        "lost": 0,
+        "invented": 0,
+        "pack_outside_context": 0,
+        "enriched": 3,
+        "latency": {
+          "transcription_p50_s": 0.262,
+          "transcription_p95_s": 0.401,
+          "correction_p50_s": 0.563,
+          "correction_p95_s": 0.788,
+          "enrichment_p50_s": 1.777,
+          "enrichment_p95_s": 4.008,
+          "total_p50_s": 2.157,
+          "total_p95_s": 4.551
+        }
       }
     },
     "dictation": {
@@ -108,7 +133,7 @@
         "new": 0
       },
       "pack_outside_context": 0,
-      "enriched": 5,
+      "enriched": 4,
       "reasons": {
         "today": {
           "autorewrite_refused": 4,
@@ -116,20 +141,20 @@
           "autorewrite_unchanged": 3
         },
         "correction": {
-          "autorewrite_refused": 1,
-          "autorewrite_rewritten": 3,
-          "autorewrite_unchanged": 5
+          "autorewrite_refused": 3,
+          "autorewrite_rewritten": 2,
+          "autorewrite_unchanged": 4
         },
         "correction_refusals": {
-          "changed": 1
+          "changed": 3
         },
         "enrichment": {
-          "enrich_enriched": 5,
-          "enrich_refused": 3,
-          "not_asked": 1
+          "enrich_enriched": 4,
+          "enrich_refused": 2,
+          "not_asked": 3
         },
         "enrichment_refusals": {
-          "length": 2,
+          "length": 1,
           "pack_outside": 1
         },
         "packs": {
@@ -138,22 +163,45 @@
         }
       },
       "latency": {
-        "transcription_p50_s": 0.39,
-        "transcription_p95_s": 0.541,
-        "today_correction_p50_s": 1.21,
-        "today_correction_p95_s": 3.369,
-        "pack_p50_s": 0.092,
-        "pack_p95_s": 0.095,
-        "correction_p50_s": 1.241,
-        "correction_p95_s": 1.615,
-        "enrichment_p50_s": 1.543,
-        "enrichment_p95_s": 7.292,
-        "total_p50_s": 2.658,
-        "total_p95_s": 8.768
+        "transcription_p50_s": 0.251,
+        "transcription_p95_s": 0.647,
+        "today_correction_p50_s": 0.734,
+        "today_correction_p95_s": 1.869,
+        "pack_p50_s": 0.031,
+        "pack_p95_s": 0.06,
+        "correction_p50_s": 0.793,
+        "correction_p95_s": 0.914,
+        "enrichment_p50_s": 0.906,
+        "enrichment_p95_s": 3.974,
+        "total_p50_s": 1.022,
+        "total_p95_s": 4.798
       },
       "over_product_timeout": {
+        "correction_calls": 18,
         "correction": 0,
         "enrichment": 0
+      },
+      "hints": {
+        "no_project": 5,
+        "project_hints": 4
+      },
+      "before_hints": {
+        "no_speech": 0,
+        "term_errors": null,
+        "lost": 0,
+        "invented": 0,
+        "pack_outside_context": 0,
+        "enriched": 4,
+        "latency": {
+          "transcription_p50_s": 0.39,
+          "transcription_p95_s": 0.647,
+          "correction_p50_s": 0.793,
+          "correction_p95_s": 0.914,
+          "enrichment_p50_s": 0.961,
+          "enrichment_p95_s": 3.974,
+          "total_p50_s": 1.563,
+          "total_p95_s": 4.798
+        }
       }
     }
   },
@@ -180,6 +228,10 @@
     "hints": {
       "count": 41,
       "chars": 247
+    },
+    "project_hints": {
+      "takes": 19,
+      "hotword_chars_max": 294
     }
   },
   "rewrite": {
@@ -187,7 +239,13 @@
     "timeout_s": 4.0,
     "enrich_timeout_s": 15.0,
     "bench_timeout_s": 120.0,
-    "cleanup": "rules"
+    "timeouts": "bench",
+    "cleanup": "rules",
+    "first_call": {
+      "model_loaded_before": true,
+      "seconds": 0.636,
+      "reason": "autorewrite_refused"
+    }
   },
   "meets_targets": {
     "complete": true,

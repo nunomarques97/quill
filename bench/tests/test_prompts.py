@@ -114,7 +114,8 @@ def make_product(root, model, packs=PACKS, projects=PROJECTS):
     info = {"model": "fake-model", "timeout_s": config.autorewrite.timeout_s,
             "enrich_timeout_s": config.autorewrite.enrich_timeout_s, "bench_timeout_s": P.BENCH_TIMEOUT_S,
             "cleanup": config.cleanup_mode}
-    return P.Product(pipeline, holder, rewriter, (), lookup, info)
+    hints_for = P.app_hints(pipeline, lambda folder: by_folder.get(str(folder)), _vocabulary(), ())
+    return P.Product(pipeline, holder, rewriter, (), lookup, info, hints_for=hints_for)
 
 
 def _vocabulary():
@@ -124,16 +125,24 @@ def _vocabulary():
 
 
 class FakeStreamer:
-    def __init__(self, texts):
+    """The engine: ``texts`` with the vocabulary hints, ``hinted`` (when given) with a take's own session hints."""
+
+    def __init__(self, texts, hinted=None):
         self.texts = texts
+        self.hinted = hinted or {}
         self.hints = None
         self.closed = False
+        self.calls = []  # (take ids, session hints or None) of each stream call
 
     def factory(self, hints):
         self.hints = hints
 
-        def stream(takes):
-            return [(self.texts[take.id], 0.5) for take in takes]
+        def stream(takes, session_hints=None):
+            self.calls.append(([take.id for take in takes], session_hints))
+            if session_hints is None:
+                return [(self.texts[take.id], 0.5) for take in takes]
+            return [(self.hinted.get(take.id, self.texts[take.id]) if own is not None else self.texts[take.id], 0.6)
+                    for take, own in zip(takes, session_hints, strict=True)]
 
         stream.close = self.close
         return stream, {"model": "fake-engine"}
@@ -531,6 +540,123 @@ class MeasureTest(Case):
         self.assertEqual(P.main(["--check", str(summary_path)], out=lines.append), 1)
         self.assertTrue(any(line.startswith("NOT met: domain-term errors") for line in lines))
         self.assertTrue(any(line.startswith("NOT met: invented") for line in lines))
+
+
+class ProjectHintsTest(Case):
+    """The same takes replayed with the decoding hints the app now gives mouse 5, reported before and after."""
+
+    def heard(self):
+        return {row.id: spoken(row, heard=True) for row in self.rows()}
+
+    def run_hinted(self, hinted, model=None, packs=PACKS):
+        model = model or ScriptedModel()
+        streamer = FakeStreamer(self.heard(), hinted)
+        lines = []
+        summary = self.results / "committed-summary.json"
+        vocabulary = self.root / "vocabulary.toml"
+        vocabulary.write_text("", encoding="utf-8")
+        code = P.main(["--config", str(self.config), "--summary", str(summary), "--vocabulary", str(vocabulary),
+                       "--set", "prompts"], product_factory=lambda vocab, generic: make_product(
+                           self.root, model, packs=packs), streamer_factory=streamer.factory,
+                      results_dir=self.results, out=lines.append)
+        return code, lines, streamer, summary, model
+
+    def test_the_project_hints_reach_the_engine_and_the_summary_reports_before_and_after(self):
+        self.record()
+        right = {row.id: spoken(row) for row in self.rows()}  # with its project's hints the engine hears the terms
+        code, lines, streamer, summary_path, model = self.run_hinted(right)
+        self.assertEqual(code, 0)
+        # Warm-up and today's run with the vocabulary hints, then each take with its own project hints.
+        self.assertEqual([hints for _, hints in streamer.calls[:2]], [None, None])
+        ids, hints = streamer.calls[2]
+        self.assertEqual(ids, ["pp-01", "pp-02", "pp-03"])
+        self.assertIn("nimbus-deck", hints[0].prompt)
+        self.assertIn("Kwartz", hints[0].hotwords)
+        self.assertIn("ledgerly", hints[1].hotwords)
+        self.assertNotIn("Kwartz", hints[1].hotwords)  # another project's term never helps this take
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        block = summary["sets"]["prompts"]
+        self.assertEqual(block["hints"], {"project_hints": 3})
+        self.assertEqual(block["term_errors"], {"pipeline": 0, "today": 3, "new": 0})
+        self.assertEqual(block["before_hints"]["term_errors"], {"pipeline": 3, "new": 0})
+        self.assertEqual((block["before_hints"]["lost"], block["before_hints"]["invented"]), (0, 0))
+        self.assertEqual(block["latency"]["transcription_p50_s"], 0.6)
+        self.assertEqual(block["before_hints"]["latency"]["transcription_p50_s"], 0.5)
+        self.assertEqual(summary["engine"]["project_hints"]["takes"], 3)
+        self.assertTrue(summary["meets_targets"]["term_errors"])
+        # Today's mouse 5 is asked once per take, with today's text; the new one again for each changed take.
+        corrections = [call for call in model.calls if not call.enrich]
+        self.assertEqual(sum("<project_terms>" not in call.user for call in corrections), 3)
+        self.assertEqual(sum("<project_terms>" in call.user for call in corrections), 6)
+        self.assertTrue(any(line.startswith("  before the project hints:") for line in lines))
+        self.assertIn("  decoding hints: project_hints 3", lines)
+        serialized = summary_path.read_text(encoding="utf-8")
+        for secret in ("Kwartz", "ledgerly", "florin", "quartz", "nimbus", "orchard", "scheduler", "invoice"):
+            self.assertNotIn(secret.casefold(), serialized.casefold())
+        run = next((self.results / "prompts").iterdir())
+        before = json.loads((run / "takes-before.json").read_text(encoding="utf-8"))
+        after = json.loads((run / "takes.json").read_text(encoding="utf-8"))
+        self.assertIn("quartz", before[0]["heard"])
+        self.assertIn("Kwartz", after[0]["heard"])
+        self.assertEqual(after[0]["hints"], "project_hints")
+        self.assertIn("quartz", after[0]["today"])  # today's mouse 5 kept today's transcription
+        self.assertIn("Ouvido com as dicas de hoje", (run / "exemplos.md").read_text(encoding="utf-8"))
+
+    def test_a_take_heard_the_same_is_not_asked_again(self):
+        self.record()
+        code, _, streamer, summary_path, model = self.run_hinted({})
+        self.assertEqual(code, 0)
+        self.assertEqual(len(streamer.calls), 3)
+        corrections = [call for call in model.calls if not call.enrich]
+        self.assertEqual(len(corrections), 6)  # today's and the new mouse 5 once per take
+        self.assertEqual(sum(call.enrich for call in model.calls), 3)
+        block = json.loads(summary_path.read_text(encoding="utf-8"))["sets"]["prompts"]
+        self.assertEqual(block["term_errors"], {"pipeline": 3, "today": 3, "new": 0})
+        self.assertEqual(block["before_hints"]["term_errors"], {"pipeline": 3, "new": 0})
+
+    def test_without_a_pack_every_take_keeps_todays_hints_and_transcription(self):
+        self.record()
+        code, _, streamer, summary_path, _ = self.run_hinted({row.id: "never heard" for row in self.rows()}, packs={})
+        self.assertEqual(code, 0)
+        self.assertEqual([hints for _, hints in streamer.calls], [None, None])  # no replay with other hints
+        block = json.loads(summary_path.read_text(encoding="utf-8"))["sets"]["prompts"]
+        self.assertEqual(block["hints"], {"no_pack": 3})
+        self.assertEqual(block["takes"], 3)
+        run = next((self.results / "prompts").iterdir())
+        self.assertNotIn("never heard", (run / "takes.json").read_text(encoding="utf-8"))
+
+    def test_take_hints_follow_the_window_of_each_take(self):
+        product = make_product(self.root, ScriptedModel())
+        takes = [Take("t1", 1.0, "dictation", "", "", Path("t1.wav"), "x", ("orchard",), CLAUDE_CODE),
+                 Take("t2", 1.0, "dictation", "", "", Path("t2.wav"), "x", (), CLAUDE_CODE),
+                 Take("t3", 1.0, "dictation", "", "", Path("t3.wav"), "x", ("nimbus-deck", "orchard"), CLAUDE_CODE)]
+        hints = P.take_hints(takes, product)
+        self.assertEqual([reason for _, reason in hints], ["project_hints", "no_project", "no_project"])
+        self.assertIn("florin", hints[0][0].hotwords)
+        self.assertIsNone(hints[1][0])
+        self.assertEqual(P.take_hints(takes, replace(product, hints_for=None)), [(None, "")] * 3)
+
+    def test_a_summary_leaking_a_project_hint_term_is_refused(self):
+        self.record()
+        packs = {**PACKS, "nimbus-deck": ContextPack("A board.", ("Kwartz", "QuasarSync", "board"))}
+        right = {row.id: spoken(row) for row in self.rows()}
+
+        def factory(vocab, generic):
+            built = make_product(self.root, ScriptedModel(), packs=packs)
+            built.info["model"] = "QuasarSync"  # a pack term that only reached the hints
+            return built
+
+        summary = self.results / "committed-summary.json"
+        vocabulary = self.root / "vocabulary.toml"
+        vocabulary.write_text("", encoding="utf-8")
+        lines = []
+        code = P.main(["--config", str(self.config), "--summary", str(summary), "--vocabulary", str(vocabulary),
+                       "--set", "prompts"], product_factory=factory,
+                      streamer_factory=FakeStreamer(self.heard(), right).factory, results_dir=self.results,
+                      out=lines.append)
+        self.assertEqual(code, 1)
+        self.assertFalse(summary.exists())
+        self.assertIn("not written", lines[-1])
 
 
 class DictationTakesTest(unittest.TestCase):

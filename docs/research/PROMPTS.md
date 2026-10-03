@@ -1,8 +1,62 @@
-# Quill: botão 5 no Claude Code com o contexto do projeto (Fase 6)
+# Quill: botão 5 no Claude Code com o contexto do projeto (Fases 6 e 7)
+
+## Fase 7: os termos do projeto como dicas do Whisper
+
+**Estado: medido, 2026-10-03.** Com o botão 5 no Claude Code, o Whisper passa a receber como dicas o nome do projeto e os termos mais relevantes do pacote do projeto. Os erros nos termos do domínio desceram de 7 para 5 na transcrição e de 5 para 4 no texto final do botão 5. A meta (no máximo metade dos 7 de hoje, ou seja 3) **não foi cumprida**. Fica para decisão sua (em baixo); a meta não foi baixada. Continuam a não se perder palavras nem a aparecer palavras inventadas.
+
+O resumo com só números ([prompts-summary.json](prompts-summary.json)) é agora o desta medição. O texto de cada gravação, com e sem as dicas do projeto, fica em `bench/results/prompts/20261003-005208/` (ignorado pelo Git): `takes.json` (com as dicas do projeto), `takes-before.json` (com as dicas de hoje) e `exemplos.md`.
+
+### O que mudou
+
+- **Só no botão 5 para o Claude Code, com projeto reconhecido e pacote de contexto:** quando o clique para focar já identificou a janela, o Quill lê (sem clicar, escrever nem mudar o foco) o título, a classe e o processo da janela, o elemento com o foco e o pacote do projeto. A partir daí, o Whisper ouve o resto do ditado com estas dicas: os nomes do seu vocabulário, depois o nome do projeto e os termos do pacote, depois a lista genérica. O espaço das dicas é o mesmo de hoje (330 caracteres); o projeto ocupa no máximo 110, e saem os últimos termos genéricos para dar lugar.
+- **Que termos do pacote entram:** os que se dizem em voz alta (ficam de fora nomes de ficheiros, caminhos, identificadores com 3 ou mais partes em maiúsculas e constantes longas em maiúsculas), primeiro os que o Whisper não consegue adivinhar como se escrevem (maiúscula a meio, hífen a meio ou algarismo), depois os outros, sempre pela ordem de relevância do pacote. Repetições do que já está nas dicas não entram.
+- **O que fica igual:** o botão 4, o botão do meio, os comandos de voz e o botão 5 nas outras janelas usam as dicas de hoje. Sem projeto, sem pacote, ou se a leitura falhar, o botão 5 também usa as dicas de hoje. O ditado seguinte volta às dicas de hoje. O registo só guarda o motivo (`decoding hints: project_hints`, `not_claude_code`, `no_project`, `no_pack` ou `failed`), nunca um título, nome, termo ou caminho.
+
+### Como foi medido
+
+- Comando: `.venv\Scripts\python -m bench.prompts` (os dois conjuntos), com o qwen3:8b no Ollama partilhado (nenhum outro modelo estava carregado; nada foi descarregado nem instalado; 0 €).
+- Cada gravação passou duas vezes pela transcrição em streaming da aplicação (large-v3-turbo): **antes**, com as dicas de hoje; **depois**, com as dicas que a aplicação agora dá ao botão 5 nessa janela (a mesma função da aplicação). Na aplicação, as dicas do projeto chegam uma fração de segundo depois de carregar no botão; na medição, valem desde o início do ditado.
+- Depois, cada transcrição seguiu o mesmo caminho: pipeline de texto, deteção do projeto, pacote, correção com contexto e enriquecimento. Quando uma gravação foi ouvida exatamente igual nas duas vezes, o resultado do botão 5 é o mesmo (o modelo não foi chamado outra vez).
+- As dicas do projeto foram dadas em 15 dos 15 prompts e em 4 dos 9 ditados (os outros 5 não dizem o nome de nenhum projeto). Com elas, 11 das 24 gravações foram ouvidas de outra forma (9 prompts e 2 ditados).
+
+### Resultados
+
+| Medição | Hoje (correção de antes) | Antes (dicas de hoje) | Depois (dicas do projeto) | Meta | Cumprida |
+|---|---|---|---|---|---|
+| Erros em termos do domínio depois da transcrição e do pipeline (prompts) | 7 de 16 | 7 de 16 | 5 de 16 | — | — |
+| Erros em termos do domínio no texto final (prompts) | 7 de 16 | 5 de 16 | 4 de 16 | no máximo metade de hoje (3) | **não** |
+| Palavras de conteúdo perdidas (24 gravações) | 1 | 0 | 0 | 0 | sim |
+| Palavras de conteúdo inventadas (24 gravações) | 4 | 0 | 0 | 0 | sim |
+| Palavras do pacote fora da parte «Contexto» | — | 0 | 0 | 0 | sim |
+| Prompts enriquecidos (prompts / ditados) | — | 3 / 4 | 4 / 4 | — | — |
+
+Latência, em segundos (p50 / p95), antes e depois das dicas do projeto:
+
+| Etapa | Prompts antes | Prompts depois | Ditados antes | Ditados depois |
+|---|---|---|---|---|
+| Transcrição (do fim da fala ao texto) | 0,26 / 0,40 | 0,39 / 0,70 | 0,39 / 0,65 | 0,25 / 0,65 |
+| Botão 5 depois da transcrição (pacote, correção e enriquecimento) | 2,16 / 4,55 | 2,16 / 4,55 | 1,56 / 4,80 | 1,02 / 4,80 |
+
+Nenhuma chamada ao modelo passou os limites da aplicação (4 s na correção, 15 s no enriquecimento). A transcrição com as dicas do projeto ficou mais lenta nos prompts e mais rápida nos ditados; as duas passagens correram uma a seguir à outra na mesma placa gráfica, por isso esta medição não separa o efeito das dicas do da carga da placa. Em todos os casos, ficou abaixo de 0,75 s.
+
+### O que os números mostram
+
+1. **As dicas ajudam quando o termo lá está.** Os termos ditados estavam nas dicas do projeto em 2 dos 15 prompts, e esses 2 ficaram certos (antes, estavam errados na transcrição). Nos outros 13, o termo ditado não estava nas dicas: em 2 nem está no pacote do projeto; nos restantes, ficou abaixo dos termos que couberam. Cada pacote tem 150 termos e só cabem entre 7 e 15 nos 110 caracteres do projeto; a maior parte dos termos ditados estava abaixo do 30.º lugar na ordem do pacote, e um, entre os primeiros, ficou atrás dos termos de grafia difícil.
+2. **Os 4 erros que ficaram:** num deles, o termo nem está no pacote do projeto (nada o podia ajudar); nos outros 3, o termo não coube nas dicas.
+3. **Nada piorou nas metas de conteúdo:** 0 palavras perdidas e 0 inventadas nas 24 gravações, como antes.
+
+### Decisões para o Sponsor (Fase 7)
+
+1. **Meta dos termos do domínio não cumprida (4 contra 7; meta 3).** A meta não foi baixada. Recomendação: escolher os termos do pacote pelo que já foi ouvido no ditado (os termos que soam parecido com as palavras da transcrição parcial), em vez de só pela relevância do pacote, e medir outra vez nestas 15 gravações. Custo 0 €, nada a instalar. A alternativa mais simples é dar ao projeto mais espaço nas dicas, tirando termos da lista genérica; foi deixada de fora porque tira dicas a todos os outros ditados para o Claude Code.
+2. **Sem gravações novas nesta fase:** a medição usou só as gravações que já existiam.
+
+---
+
+## Fase 6 (2026-09-30)
 
 **Estado: medido, 2026-09-30.** As 15 gravações do guião de prompts (4 projetos) e os 9 ditados para o Claude Code que já existiam foram medidos com a sua voz. No botão 5 novo, nenhuma palavra perdida e nenhuma inventada (metas cumpridas). A meta dos termos do domínio (com o contexto do projeto, no máximo metade dos erros de hoje) **não foi cumprida**: 5 erros contra 7. Fica para decisão sua (em baixo); a meta não foi baixada.
 
-O resumo com só números está em [prompts-summary.json](prompts-summary.json). O texto de cada gravação, o que o botão 5 escreveria hoje e com a mudança, e os exemplos antes e depois do enriquecimento ficam em `bench/results/prompts/20260930-185820/` (ignorado pelo Git).
+O resumo com só números desta medição foi substituído pelo da Fase 7 (acima). O texto de cada gravação, o que o botão 5 escreveria hoje e com a mudança, e os exemplos antes e depois do enriquecimento ficam em `bench/results/prompts/20260930-185820/` (ignorado pelo Git).
 
 ## O que mudou antes desta medição
 

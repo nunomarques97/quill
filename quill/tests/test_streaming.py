@@ -772,5 +772,88 @@ class SessionHintsTest(Case):
         self.assertTrue(all(len(prompt) <= whisper.PROMPT_MAX_CHARS for prompt in prompts))
 
 
+class SetHintsTest(Case):
+    """``Session.set_hints``: mouse 5 gets its project's hints once its window is known."""
+
+    HINTS = SessionHintsTest.HINTS
+    transcriber = SessionHintsTest.transcriber
+    assert_voice = SessionHintsTest.assert_voice
+    assert_dictation = SessionHintsTest.assert_dictation
+
+    def feed(self, transcriber, session, pcm, drain=True):
+        size = int(0.05 * BYTES_PER_SECOND)
+        for start in range(0, len(pcm), size):
+            session.feed(pcm[start : start + size])
+            if drain:
+                self.assertTrue(transcriber.drain(5))
+
+    def test_later_decodes_use_the_new_hints_and_an_earlier_speculation_is_decoded_again(self):
+        transcriber = self.transcriber()
+        session = transcriber.open()
+        self.feed(transcriber, session, speech([1, 2], trail=0.6))  # a pause: a speculative final, vocabulary hints
+        before = len(self.model.calls)
+        self.assert_dictation(self.model.calls)
+        self.assertTrue(any(c.options.beam_size == 5 for c in self.model.calls))
+        self.assertTrue(session.set_hints(self.HINTS))
+        self.feed(transcriber, session, speech([3], lead=0.0, trail=0.1))
+        result = session.release().wait(5)
+        self.assertEqual((result.ok, result.text, result.speculative_hit), (True, text([1, 2, 3]), False))
+        after = self.model.calls[before:]
+        self.assertTrue(any(c.options.beam_size == 5 for c in after))  # the final decoded with the new hints
+        self.assert_voice(after)
+
+    def test_a_pause_reused_only_when_decoded_with_the_current_hints(self):
+        transcriber = self.transcriber()
+        session = transcriber.open()
+        self.feed(transcriber, session, speech([1, 2], trail=0.6))
+        self.assertTrue(session.set_hints(self.HINTS))
+        result = session.release().wait(5)  # no new audio: the old speculation is not reused
+        self.assertEqual((result.text, result.speculative_hit), (text([1, 2]), False))
+        self.assert_voice(self.model.calls[-1:])
+
+    def test_a_speculation_running_when_the_hints_change_is_dropped(self):
+        self.model.gate = threading.Event()
+        self.model.gate_when = lambda call: not call.options.word_timestamps and call.options.beam_size == 5
+        transcriber = self.transcriber()
+        session = transcriber.open()
+        partials = []
+        session.on_partial = partials.append
+        self.feed(transcriber, session, speech([1, 2], trail=0.6), drain=False)
+        self.assertTrue(self.model.entered.wait(5))
+        self.assertTrue(session.set_hints(self.HINTS))
+        shown = len(partials)
+        handle = session.release()
+        self.model.gate_when = lambda call: False
+        self.model.gate.set()
+        result = handle.wait(5)
+        self.assertEqual((result.ok, result.text, result.speculative_hit), (True, text([1, 2]), False))
+        finals = [c for c in self.model.calls if c.options.beam_size == 5]
+        self.assertEqual(len(finals), 2)  # the dropped speculation and the final decoded again
+        self.assert_dictation(finals[:1])
+        self.assert_voice(finals[1:])
+        self.assertEqual(len(partials), shown)  # the stale speculation was never shown
+
+    def test_refused_after_release_or_cancel_and_other_sessions_keep_the_vocabulary(self):
+        transcriber = self.transcriber()
+        session = transcriber.open()
+        self.feed(transcriber, session, speech([1]))
+        handle = session.release()
+        self.assertFalse(session.set_hints(self.HINTS))
+        self.assertTrue(handle.wait(5).ok)
+        self.assert_dictation(self.model.calls)
+        cancelled = transcriber.open()
+        cancelled.cancel()
+        self.assertFalse(cancelled.set_hints(self.HINTS))
+        hinted = transcriber.open()
+        self.assertTrue(hinted.set_hints(self.HINTS))
+        self.assertTrue(hinted.set_hints(None))  # back to the vocabulary hints
+        before = len(self.model.calls)
+        self.feed(transcriber, hinted, speech([2]))
+        self.assertTrue(hinted.release().wait(5).ok)
+        _, other = replay(transcriber, speech([3]))
+        self.assertTrue(other.ok)
+        self.assert_dictation(self.model.calls[before:])
+
+
 if __name__ == "__main__":
     unittest.main()

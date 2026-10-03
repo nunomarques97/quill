@@ -186,7 +186,8 @@ class AppCase(unittest.TestCase):
         parts = A.Parts(api=self.api, model=self.model, capture_factory=self.captures, indicator=self.indicator,
                         instance=A.InstanceLock(kernel or self.kernel), hooks_factory=self.new_hooks,
                         client=client, focus_options={"sleep": focus_clock.sleep, "clock": focus_clock},
-                        inject_options={"sleep": inject_clock.sleep, "clock": inject_clock}, **parts)
+                        inject_options={"sleep": inject_clock.sleep, "clock": inject_clock},
+                        **{"run_hints": lambda job: job(), **parts})  # mouse 5 hints at once: deterministic
         quill = A.QuillApp(config or self.config, parts)
         self.addCleanup(quill.stop)
         return quill
@@ -1547,7 +1548,7 @@ class PolishAppTest(RewriteCase):
         outcome = self.app.sessions.outcomes[-1]
         self.assertEqual((outcome.reason, outcome.rewrite, outcome.enrichment),
                          (S.SENT_ENTER, R.REWRITTEN, "enrich_enriched"))
-        self.assertEqual(self.packs.folders, [self.project])
+        self.assertEqual(self.packs.folders, [self.project, self.project])  # the hints, then the correction
         correct, enrich = self.ollama.calls
         self.assertIn("<project_terms>", correct[1])
         self.assertIn("<project_summary>", enrich[1])
@@ -1589,7 +1590,7 @@ class PolishAppTest(RewriteCase):
         self.hold(WORDS, which=XBUTTON2)
         outcome = self.app.sessions.outcomes[-1]
         self.assertEqual((outcome.reason, outcome.enrichment), (S.SENT_ENTER, "enrich_enriched"))
-        self.assertEqual(self.packs.folders, [self.project])
+        self.assertEqual(self.packs.folders, [self.project, self.project])  # the hints, then the correction
         self.assertIn("one paragraph", self.ollama.calls[0][0])  # the terminal layout of the correction
         self.assertEqual(sent_segments(self.api), [self.PARAGRAPH, ""])
         self.assertEqual(self.api.enter_presses(), [False])
@@ -1641,6 +1642,83 @@ class PolishAppTest(RewriteCase):
         self.assertEqual(self.api.received_text(), REWRITTEN)
         self.assertEqual(self.press_undo(), ("hide",))  # no Enter: the dictation comes back
         self.assertEqual(self.api.received_text(), SPOKEN)
+
+    # Decoding hints: the project's pack terms for mouse 5 into Claude Code only.
+
+    PROJECT_PROMPT = "Vocabulário: invented, carteira, saldo."
+
+    def prompts(self):
+        """The initial prompts the model decoded with, in order."""
+        return [call.options.initial_prompt for call in self.model.calls]
+
+    def hold_after_hints(self, words=WORDS):
+        """Hold mouse 5 and speak only once the session decodes with its project hints."""
+        clicks, made, done = len(self.api.mouse_calls), len(self.captures.made), len(self.app.sessions.outcomes)
+        self.assertEqual(self.button(True, XBUTTON2), 1)
+        wait_for(lambda: len(self.captures.made) > made, "the capture to start")
+        wait_for(lambda: len(self.api.mouse_calls) > clicks, "the click to focus")
+        hold = self.app.sessions._active
+        wait_for(lambda: getattr(hold.asr, "hints", None) is not None, "the project hints")
+        # Reading the window, the project and its pack typed nothing and clicked nothing more.
+        self.assertEqual((self.api.calls, len(self.api.mouse_calls), self.api.foreground), ([], clicks + 1, CLAUDE_HWND))
+        self.captures.made[-1].push(speech(words))
+        self.assertEqual(self.button(False, XBUTTON2), 1)
+        self.outcomes(done + 1)
+
+    def test_mouse_5_into_claude_code_decodes_with_the_project_and_its_pack_terms(self):
+        self.in_the_panel()
+        self.start()
+        with self.assertLogs("quill", level="INFO") as logs:
+            self.hold_after_hints()
+        outcome = self.app.sessions.outcomes[-1]
+        self.assertEqual((outcome.reason, outcome.enrichment), (S.SENT_ENTER, "enrich_enriched"))
+        self.assertTrue(self.model.calls)
+        self.assertEqual(set(self.prompts()), {self.PROJECT_PROMPT})  # every decode after the hints, the final too
+        self.assertEqual(self.model.calls[-1].options.hotwords, "invented carteira saldo")
+        self.assertEqual(sent_segments(self.api), [self.ENRICHED, ""])
+        text = "\n".join(logs.output)
+        self.assertIn("decoding hints: project_hints", text)
+        self.assertIn("project hints applied", text)
+        for private in ("invented", "carteira", "saldo", str(self.project), self.HUB_TITLE, "Code.exe"):
+            self.assertNotIn(private.casefold(), text.casefold())
+
+    def test_the_next_dictation_after_project_hints_gets_todays_hints_again(self):
+        self.in_the_panel()
+        self.start()
+        self.hold_after_hints()
+        calls = len(self.model.calls)
+        self.hold(WORDS)  # mouse 4 into the same panel
+        self.assertEqual(set(self.prompts()[calls:]), {None})  # no vocabulary in this test: no hints at all
+        self.assertEqual(self.packs.folders, [self.project, self.project])  # mouse 4 asks for no pack
+
+    def test_other_triggers_and_windows_keep_todays_hints(self):
+        self.in_the_panel()
+        self.start()
+        self.hold(WORDS)  # mouse 4 into the panel
+        self.hold(WORDS, which=MIDDLE)  # middle click into the panel
+        self.api.under_pointer = self.api.foreground = TARGET.hwnd
+        self.hold(WORDS, which=XBUTTON2)  # mouse 5 outside Claude Code
+        self.assertEqual(self.app.sessions.outcomes[-1].reason, S.NOT_CLAUDE)
+        self.assertEqual(set(self.prompts()), {None})
+        self.assertEqual(self.packs.folders, [])
+
+    def test_a_failing_or_missing_pack_or_project_gives_todays_hints(self):
+        cases = {"pack error": ("error", None),
+                 "no pack": ("none", None),
+                 "unknown project": ("ok", "unknown | notes.md - Visual Studio Code [Claude Code]")}
+        self.start()
+        for label, (pack, title) in cases.items():
+            with self.subTest(label):
+                self.in_the_panel(title or self.HUB_TITLE)
+                self.packs.error = OSError("fake") if pack == "error" else None
+                self.packs.pack = None if pack == "none" else FakePacks().pack
+                calls = len(self.model.calls)
+                with self.assertLogs("quill", level="INFO") as logs:
+                    self.hold(WORDS, which=XBUTTON2)
+                self.assertEqual(self.app.sessions.outcomes[-1].reason, S.SENT_ENTER)
+                self.assertEqual(set(self.prompts()[calls:]), {None})
+                self.assertNotIn("project hints applied", "\n".join(logs.output))
+        self.assertEqual(sent_segments(self.api)[-1], "")  # each one still sent with Enter
 
     def test_without_context_packs_mouse_5_enriches_without_a_pack(self):
         self.ollama.replies = [REWRITTEN, "Pedido: w1 w2 w3 w4 w5 w6.\nRestrições: w7 w8 w9 w10 w11 w12."]
@@ -1708,11 +1786,11 @@ class EditorTabTest(RewriteCase):
         outcome = self.app.sessions.outcomes[-1]
         self.assertEqual((outcome.reason, outcome.rewrite, outcome.enrichment),
                          (S.SENT_ENTER, R.REWRITTEN, "enrich_enriched"))
-        self.assertEqual(self.packs.folders, [self.project])
+        self.assertEqual(self.packs.folders, [self.project, self.project])  # the hints, then the correction
         self.assertIn("<project_terms>", self.ollama.calls[0][1])  # context mode
         self.assertEqual(sent_segments(self.api), [self.ENRICHED, ""])
         self.assertEqual(self.api.enter_presses(), [True, True, True, True, False])  # Shift+Enter lines, one Enter
-        self.assertEqual(self.reader.reads, 2)  # before typing, and again before the Enter
+        self.assertEqual(self.reader.reads, 3)  # the hints, before typing, and again before the Enter
         self.assertIn("focus check: claude_code_input (claude-code profile)", "\n".join(logs.output))
         self.assertNotIn("invented", "\n".join(logs.output).replace("quill.app", ""))
 
@@ -2081,6 +2159,113 @@ class WarmUpAppTest(RewriteCase):
         self.ollama.reply = "W1 w2 w3."
         self.hold((1, 2, 3), which=XBUTTON2, quill=quill)
         self.assertEqual(quill.sessions.outcomes[-1].rewrite, R.REWRITTEN)
+
+
+
+class ProjectHintsTest(unittest.TestCase):
+    """The decoding hints of mouse 5: the project name and pack terms within today's hint budget."""
+
+    NAMES = ("Ana Lima", "nimbus-deck")
+    GENERIC = tuple(f"generic{n:02d}" for n in range(40))  # far more than the budget holds
+
+    def setUp(self):
+        from quill.profiles import Profiles, WindowInfo
+        from quill.projects import Project
+
+        self.vocabulary = V.Vocabulary(names=tuple(V.Entry(name, "name") for name in self.NAMES))
+        self.profiles = Profiles(load_config(None, EXAMPLE_CONFIG).profiles)
+        self.panel = WindowInfo("Code.exe", "Chrome_WidgetWin_1", "orchard | notes.md - Visual Studio Code [Claude Code]")
+        self.editor = WindowInfo("Code.exe", "Chrome_WidgetWin_1", "orchard | notes.md - Visual Studio Code")
+        self.found = Project("orchard", Path("C:/invented/orchard"), "vscode_title")
+        self.detected = []
+        self.pack = SimpleNamespace(summary="", terms=("ledger", "Ledgerly", "invoice", "GlacierPlanCsvTest",
+                                                       "build.gradle", "UNAVAILABLE", "API", "hand-off", "generic03"))
+
+    def detector(self, found=True, error=None):
+        test = self
+
+        class Detector:
+            def detect(self, info, pid, claude_code=False):
+                test.detected.append((pid, claude_code))
+                if error is not None:
+                    raise error
+                return test.found if found else None
+
+        return Detector()
+
+    def hints(self, info=None, *, projects=None, pack_for=None):
+        return A.project_hints(info or self.panel, 7, profiles=self.profiles,
+                               projects=projects if projects is not None else self.detector(),
+                               pack_for=pack_for or (lambda folder: self.pack), vocabulary=self.vocabulary,
+                               generic_terms=self.GENERIC)
+
+    def words(self, hints):
+        return hints.hotwords.split(" ")
+
+    def test_claude_code_gets_the_project_and_its_terms_after_the_names(self):
+        from quill.whisper import HINTS_PREFIX, PROJECT_HINT_MAX_CHARS, join_vocabulary
+
+        today = V.whisper_hints(self.vocabulary, (), self.GENERIC)
+        hints, reason = self.hints()
+        self.assertEqual(reason, A.PROJECT_HINTS)
+        self.assertEqual(self.detected, [(7, True)])
+        listed = hints.prompt[len(HINTS_PREFIX):-1].split(", ")
+        # Names first; then the project and its spoken terms, distinctive spellings first; then today's generic terms.
+        self.assertEqual(listed[:7], ["Ana Lima", "nimbus-deck", "orchard", "hand-off", "ledger", "Ledgerly", "invoice"])
+        self.assertIn("API", listed)
+        for code in ("GlacierPlanCsvTest", "build.gradle", "UNAVAILABLE"):
+            self.assertNotIn(code, listed)
+        self.assertEqual(listed.count("generic03"), 1)  # already a hint: never twice
+        project_part = listed[2:listed.index("generic00")]
+        self.assertLessEqual(len(", ".join(project_part)), PROJECT_HINT_MAX_CHARS)
+        # Within today's budget: the last generic terms make room.
+        self.assertLessEqual(len(", ".join(listed)), V.HINT_MAX_CHARS)
+        self.assertEqual(listed[len(listed) - len([w for w in listed if w.startswith("generic")]):],
+                         [w for w in today if w.startswith("generic")][: len([w for w in listed if w.startswith("generic")])])
+        self.assertLess(len(listed) - len(project_part), len(today))
+        self.assertEqual(hints.hotwords, join_vocabulary(listed, separator=" "))
+        self.assertIsNone(hints.language)
+
+    def test_the_same_words_decode_exactly_like_the_vocabulary_hints(self):
+        from quill.streaming import StreamingTranscriber
+        from quill.whisper import session_hints
+
+        today = V.whisper_hints(self.vocabulary, (), self.GENERIC)
+        transcriber = StreamingTranscriber(object(), vocabulary=today)
+        plain, hinted = transcriber.open(), transcriber.open(hints=session_hints(today))
+        self.assertEqual(plain._decode(5, 0, 32000, words=False), hinted._decode(5, 0, 32000, words=False))
+        self.assertIsNone(session_hints(()))
+
+    def test_anything_else_gives_todays_hints(self):
+        from quill.whisper import SessionHints  # noqa: F401 - the type the app passes on
+
+        cases = {
+            "an ordinary editor tab": (dict(info=self.editor), A.HINTS_NOT_CLAUDE_CODE),
+            "no window": (dict(info=SimpleNamespace(process="", window_class="", title="", focus=None)),
+                          A.HINTS_NOT_CLAUDE_CODE),
+            "no project": (dict(projects=self.detector(found=False)), A.HINTS_NO_PROJECT),
+            "no pack": (dict(pack_for=lambda folder: None), A.HINTS_NO_PACK),
+            "a pack without terms": (dict(pack_for=lambda folder: SimpleNamespace(terms=None)), A.HINTS_NO_PACK),
+            "a failing detector": (dict(projects=self.detector(error=OSError("fake"))), A.HINTS_FAILED),
+            "a failing pack": (dict(pack_for=mock.Mock(side_effect=OSError("fake"))), A.HINTS_FAILED),
+        }
+        for label, (kwargs, reason) in cases.items():
+            with self.subTest(label):
+                self.assertEqual(self.hints(**kwargs), (None, reason))
+
+    def test_project_terms_selection(self):
+        from quill.whisper import distinctive_term, project_terms, spoken_term
+
+        self.assertEqual([t for t in ("QuasarSync", "zeta-Ledger", "sha256", "plinth", "Grommet", "API", "x-")
+                          if distinctive_term(t)], ["QuasarSync", "zeta-Ledger", "sha256"])
+        self.assertEqual([t for t in ("plinth", "HTTP", "HTTPS", "NovaRoute", "GlacierPlanTest", "a.b", "a_b", "a/b")
+                          if spoken_term(t)], ["plinth", "HTTP", "NovaRoute"])
+        terms = project_terms("orchard", ("plinth", "Plinth", "NovaRoute", "plínth", "", "  ", 42, "table"), known=("table",),
+                              max_chars=40)
+        self.assertEqual(terms, ["orchard", "NovaRoute", "plinth"])  # folded duplicates and known words skipped
+        self.assertEqual(project_terms("orchard", ("one", "two"), known=("Orchard",)), ["one", "two"])
+        self.assertEqual(project_terms("orchard", ("abcdefghij",), max_chars=12), ["orchard"])  # the list ends there
+        self.assertEqual(project_terms("orchard", (), max_chars=3), [])
 
 
 if __name__ == "__main__":

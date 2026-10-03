@@ -40,7 +40,11 @@ waiting for a final never hangs; ``start`` after ``stop`` works again.
 
 A session opened with ``SessionHints`` (a voice command) is decoded with
 those hints instead of the vocabulary hints: every partial, speculative and
-final decode of that session, and no other session.
+final decode of that session, and no other session. ``Session.set_hints``
+replaces a session's hints until it is released (mouse 5 into Claude Code
+gets its project's hints once its window is known): later windows use them,
+speculative finals decoded with the earlier hints are forgotten, and a
+partial or speculative final still running with them is dropped.
 
 All session state is protected by one lock; the model runs outside it.
 Nothing here logs or stores text or audio.
@@ -386,6 +390,7 @@ class _Job:
     session: "Session"
     end: int  # bytes of session audio the job covers
     speech_end: int = 0
+    hints_version: int = 0  # the session's hints when the job was planned
 
 
 class Session:
@@ -405,6 +410,7 @@ class Session:
         self._partial_speech_end = 0
         self._spec_speech_end = -1
         self._spec_results: dict[tuple[int, int], str] = {}
+        self._hints_version = 0
         self._pause_end = -1  # offset set by the last pause commit
         self._pending_partial: _Job | None = None
         self._pending_spec: _Job | None = None
@@ -450,6 +456,21 @@ class Session:
                     self.dropped += 1
                 self._pending_spec = _Job(SPECULATIVE, self, end, speech_end)
                 owner._cond.notify_all()
+
+    def set_hints(self, hints: SessionHints | None) -> bool:
+        """Decode the later windows with ``hints`` (None: the vocabulary hints); False once released or closed.
+
+        Speculative finals decoded with the earlier hints are forgotten, so the
+        final decodes its audio again, and the next pause asks for a new one.
+        """
+        with self.owner._cond:
+            if self.released or self.closed:
+                return False
+            self.hints = hints
+            self._hints_version += 1
+            self._spec_results.clear()
+            self._spec_speech_end = -1
+            return True
 
     def release(self) -> FinalHandle:
         """Stop feeding and ask for the final text; the handle resolves exactly once."""
@@ -721,6 +742,7 @@ class StreamingTranscriber:
     def _plan(self, job: _Job) -> tuple | None:
         """Everything a job needs from the session, read under the lock."""
         session = job.session
+        job.hints_version = session._hints_version
         if job.kind == FINAL:
             end = session._final_end()
             start = session._stable.offset
@@ -804,6 +826,11 @@ class StreamingTranscriber:
             return
         partial: Partial | None = None
         with self._cond:
+            if job.hints_version != session._hints_version:
+                # Decoded with hints the session no longer has: neither shown, committed nor reused.
+                if job.kind == PARTIAL:
+                    session.dropped += 1
+                return
             if session.released or session.closed:
                 if job.kind == PARTIAL:
                     session.dropped += 1

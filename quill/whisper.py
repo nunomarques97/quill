@@ -17,9 +17,11 @@ import gc
 import importlib
 import importlib.util
 import os
+import re
 import sys
 import threading
 import types
+import unicodedata
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -44,6 +46,11 @@ PROMPT_MAX_CHARS = 600
 MAX_LENGTH = 448
 PROMPT_PART_MAX = MAX_LENGTH // 2 - 1
 SOT_SEQUENCE_TOKENS = 3  # start of transcript, language, task
+# Mouse 5 into Claude Code: the project name and its pack terms take at most
+# this many characters of the vocabulary hint budget (quill.vocabulary.HINT_MAX_CHARS).
+PROJECT_HINT_MAX_CHARS = 110
+_CAMEL_PART = re.compile(r"[A-Z][a-z]")
+_INNER_MARK = re.compile(r"[^\W_]-[^\W_]|\d")
 
 _dll_handles: list = []
 
@@ -139,6 +146,64 @@ def hint_options(vocabulary: Sequence[str], max_chars: int = PROMPT_MAX_CHARS) -
     return HINTS_PREFIX + joined + ".", join_vocabulary(vocabulary, max_chars, separator=" ")
 
 
+def _hint_key(word: str) -> str:
+    """A hint word folded for comparison: case, accents and spacing ignored."""
+    text = unicodedata.normalize("NFKD", " ".join(word.split()).casefold())
+    return "".join(ch for ch in text if not unicodedata.combining(ch))
+
+
+def spoken_term(term: str) -> bool:
+    """Whether a pack term is something said aloud rather than a code symbol.
+
+    Not spoken: file names and paths (a dot, underscore or slash), identifiers
+    of three or more capitalised parts (``GlacierPlanCsvTest``) and long
+    all-capital constants (``UNAVAILABLE``; short acronyms such as ``API`` stay).
+    """
+    if any(mark in term for mark in "._/\\"):
+        return False
+    if not any(ch.islower() for ch in term) and len(term) > 4:
+        return False
+    return len(_CAMEL_PART.findall(term)) < 3
+
+
+def distinctive_term(term: str) -> bool:
+    """Whether Whisper cannot guess the term's spelling from speech: a capital inside it, an inner hyphen or a digit."""
+    return any(ch.islower() for ch in term) and (any(ch.isupper() for ch in term[1:])
+                                                 or _INNER_MARK.search(term) is not None)
+
+
+def project_terms(project: str, terms: Sequence[str], known: Sequence[str] = (),
+                  max_chars: int = PROJECT_HINT_MAX_CHARS) -> list[str]:
+    """The project name, then its most relevant pack terms, joined within ``max_chars``.
+
+    ``terms`` are the context pack's terms, most relevant first (its score
+    order). Words already in ``known`` (today's hints) or repeated are skipped,
+    and so are terms that are not said aloud (``spoken_term``). Terms whose
+    spelling Whisper cannot guess (``distinctive_term``) come first, then the
+    others, each group in the pack's order; the list ends at the first term that
+    does not fit. The project name is left out when it is already known.
+    """
+    seen = {_hint_key(word) for word in known}
+    out: list[str] = []
+    length = 0
+    candidates = [project] if isinstance(project, str) else []
+    usable = [term for term in terms if isinstance(term, str) and term.strip() and spoken_term(term)]
+    candidates += [term for term in usable if distinctive_term(term)]
+    candidates += [term for term in usable if not distinctive_term(term)]
+    for word in candidates:
+        word = " ".join(word.split())
+        key = _hint_key(word)
+        if not key or key in seen:
+            continue
+        added = len(word) + (2 if out else 0)
+        if length + added > max_chars:
+            break
+        seen.add(key)
+        out.append(word)
+        length += added
+    return out
+
+
 class TokenCounter:
     """Tokens faster-whisper puts for one prompt part (``" " + text.strip()``) with a model's tokenizer.
 
@@ -213,6 +278,14 @@ class SessionHints:
     prompt: str | None = field(default=None, repr=False)
     hotwords: str | None = field(default=None, repr=False)
     language: str | None = None
+
+
+def session_hints(words: Sequence[str]) -> SessionHints | None:
+    """Session hints that decode exactly as the vocabulary hints would with ``words``; None without words."""
+    prompt, hotwords = hint_options(words)
+    if prompt is None:
+        return None
+    return SessionHints(prompt=prompt, hotwords=hotwords)
 
 
 @dataclass(frozen=True)

@@ -50,8 +50,12 @@ nothing and presses no Enter: its final text goes to ``quill.voice``
 it listens, then the command's outcome ("A abrir <nome>", the closest names
 or the reason). Its transcription is opened with the ``voice_hints()`` of
 that press (``quill.voice.VoiceHints``: Portuguese, the command prompt and
-the project names); every other session keeps the transcriber's vocabulary
-hints. Hints that cannot be built never stop the capture.
+the project names). A mouse 5 session starts with the vocabulary hints and,
+once click-to-focus has named its window, gets ``send_hints(target)`` on
+another thread (in Claude Code: the project name and its pack terms) for
+the audio decoded after that, until its release. Every other session keeps
+the transcriber's vocabulary hints. Hints that cannot be built never stop
+the capture.
 
 A long dictation (over the ``[autorewrite]`` audio or word threshold) goes,
 after the text pipeline, to the ``rewriter`` (``quill.autorewrite``) while
@@ -354,6 +358,10 @@ def _later(seconds: float, job: Callable[[], None]) -> None:
     timer.start()
 
 
+def _in_thread(job: Callable[[], None]) -> None:
+    threading.Thread(target=job, name="quill-hints", daemon=True).start()
+
+
 class _SafeIndicator:
     """The indicator behind a guard: a failing overlay never breaks a session.
 
@@ -414,7 +422,12 @@ class SessionManager:
     now, else a reason code (None: no check beyond the injector's own).
     ``schedule(seconds, job)`` runs ``job`` once after ``seconds`` on another
     thread (None: a daemon ``threading.Timer``); it brings back the pending
-    session's words after the "Aguarde" notice.
+    session's words after the "Aguarde" notice. ``send_hints(target)``
+    returns the decoding hints of a mouse 5 session once click-to-focus has
+    named its window (``quill.whisper.SessionHints``: the project's terms in
+    Claude Code; None: the vocabulary hints); it runs through
+    ``run_hints(job)`` (None: a daemon thread), never on the hook or session
+    thread, and hints that arrive after the release are not used.
     """
 
     def __init__(self, *, transcriber: object, capture_factory: Callable[[Callable[[bytes], None]], object],
@@ -429,6 +442,8 @@ class SessionManager:
                  enter_check: Callable[[Target | None, object | None], str | None] | None = None,
                  alert_repeat_s: float = ALERT_REPEAT_S,
                  schedule: Callable[[float, Callable[[], None]], None] | None = None,
+                 send_hints: Callable[[Target], object | None] | None = None,
+                 run_hints: Callable[[Callable[[], None]], None] | None = None,
                  pending_limit_s: float = PENDING_LIMIT_S,
                  clock: Callable[[], float] = time.perf_counter,
                  final_timeout_s: float = FINAL_TIMEOUT_S, poll_s: float = POLL_S) -> None:
@@ -452,6 +467,8 @@ class SessionManager:
         self.enter_check = enter_check
         self.alert_repeat_s = alert_repeat_s
         self.schedule = schedule or _later
+        self.send_hints = send_hints
+        self.run_hints = run_hints or _in_thread
         self.pending_limit_s = pending_limit_s
         self.clock = clock
         self.final_timeout_s = final_timeout_s
@@ -707,6 +724,31 @@ class SessionManager:
             hold.target, hold.focus_reason = None, FOCUS_FAILED
             return
         hold.target, hold.focus_reason = result.target, result.reason
+        if hold.action == SEND_POLISHED and self.send_hints is not None and result.target is not None:
+            target = result.target
+            try:
+                self.run_hints(lambda: self._apply_hints(hold, target))
+            except Exception as exc:  # noqa: BLE001 - the session decodes with the vocabulary hints
+                log.error("session %d: decoding hints not started (%s)", hold.number, type(exc).__name__)
+
+    def _apply_hints(self, hold: _Hold, target: Target) -> None:
+        """The project hints of a mouse 5 session, given to its transcription unless it was released (hint thread)."""
+        try:
+            hints = self.send_hints(target)
+        except Exception as exc:  # noqa: BLE001 - the vocabulary hints decode instead
+            log.error("session %d: decoding hints failed (%s)", hold.number, type(exc).__name__)
+            return
+        if hints is None:
+            return
+        applied = False
+        setter = getattr(hold.asr, "set_hints", None)
+        if setter is not None:
+            try:
+                applied = bool(setter(hints))
+            except Exception as exc:  # noqa: BLE001
+                log.error("session %d: decoding hints not applied (%s)", hold.number, type(exc).__name__)
+                return
+        log.info("session %d: project hints %s", hold.number, "applied" if applied else "too late")
 
     def _cancel(self, reason: str) -> None:
         with self._lock:

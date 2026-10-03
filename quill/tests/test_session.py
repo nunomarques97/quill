@@ -64,6 +64,7 @@ class FakeAsr:
         self.fed = []
         self.cancelled = False
         self.handle = None
+        self.hints = None
         self.fail_release = fail_release
 
     def feed(self, pcm):
@@ -80,6 +81,13 @@ class FakeAsr:
 
     def cancel(self):
         self.cancelled = True
+
+    def set_hints(self, hints):
+        """As ``quill.streaming.Session.set_hints``: refused once released or cancelled."""
+        if self.cancelled or self.handle is not None:
+            return False
+        self.hints = hints
+        return True
 
     @property
     def released_or_cancelled(self):
@@ -2072,3 +2080,127 @@ class PendingPressTest(SessionCase):
         self.rewriter.gate.set()
         self.assertEqual(self.wait_outcomes(2)[-1].reason, S.SENT_ENTER)
         self.assert_released()
+
+
+class SendHintsTest(SessionCase):
+    """Mouse 5 gets ``send_hints(target)`` on the hint runner once click-to-focus named its window."""
+
+    HINTS = SimpleNamespace(prompt="Vocabulário: inventado.", hotwords="inventado", language=None)
+
+    def setUp(self):
+        super().setUp()
+        self.ready()
+        self.jobs = []  # the hint jobs, run by the test when it chooses
+        self.asked = []
+        self.reply = self.HINTS
+        self.error = None
+        self.manager.send_hints = self._send_hints
+        self.manager.run_hints = self.jobs.append
+
+    def _send_hints(self, target):
+        self.asked.append(target)
+        if self.error is not None:
+            raise self.error
+        return self.reply
+
+    def run_jobs(self):
+        jobs, self.jobs[:] = list(self.jobs), []
+        for job in jobs:
+            job()
+
+    def test_mouse_5_asks_for_its_window_hints_and_gives_them_to_its_transcription(self):
+        with self.assertLogs("quill", level="INFO") as logs:
+            self.press("send_polished", "xbutton2")
+            self.assertEqual((len(self.jobs), self.asked), (1, []))  # never asked on the signal thread
+            self.run_jobs()
+            asr = self.transcriber.sessions[-1]
+            self.assertEqual((self.asked, asr.hints), ([TARGET], self.HINTS))
+            self.captures.made[-1].push(PCM)
+            self.release("send_polished", "xbutton2")
+            asr.handle.resolve("frase curta")
+            outcome = self.wait_outcomes(1)[-1]
+        self.assertEqual((outcome.action, outcome.reason), ("send_polished", S.NOT_CLAUDE))
+        self.assertIn("session 1: project hints applied", "\n".join(logs.output))
+        self.assertNotIn("inventado", "\n".join(logs.output))
+
+    def test_other_triggers_never_ask(self):
+        for action in ("dictation", "send_claude", "send_raw"):
+            with self.subTest(action):
+                self.dictate(action=action)
+        self.wait_outcomes(3)
+        self.assertEqual((self.jobs, self.asked), ([], []))
+        self.assertTrue(all(asr.hints is None for asr in self.transcriber.sessions))
+
+    def test_no_window_a_failed_click_or_an_ignored_press_never_asks(self):
+        for number, (targets, error) in enumerate((([None], None), ([TARGET], RuntimeError("fake click failure"))), 1):
+            self.settle()
+            self.focus.targets, self.focus.error = targets, error
+            self.press("send_polished")
+            self.captures.made[-1].push(PCM)
+            self.release("send_polished")
+            handle = self.transcriber.sessions[-1].handle
+            if handle is not None:
+                handle.resolve(SPOKEN)
+            self.wait_outcomes(number)
+        self.focus.targets, self.focus.error = [TARGET], None
+        self.assertEqual(self.jobs, [])
+        self.settle()
+        self.press("send_polished", "xbutton2")  # its hints are never asked for before the release
+        self.captures.made[-1].push(PCM)
+        self.release("send_polished", "xbutton2")
+        self.press("send_polished", "xbutton2")  # pressed while that one is pending: ignored
+        self.release("send_polished", "xbutton2")
+        self.assertEqual(len(self.jobs), 1)
+        self.transcriber.sessions[-1].handle.resolve(SPOKEN)
+        self.wait_outcomes(4)
+
+    def test_none_a_failure_or_a_late_answer_keeps_todays_hints(self):
+        cases = {"none": (None, None), "failure": (self.HINTS, OSError("fake")), "late": (self.HINTS, None)}
+        for number, (label, (reply, error)) in enumerate(cases.items(), 1):
+            with self.subTest(label), self.assertLogs("quill", level="INFO") as logs:
+                self.settle()
+                self.reply, self.error = reply, error
+                self.press("send_polished", "xbutton2")
+                asr = self.transcriber.sessions[-1]
+                self.captures.made[-1].push(PCM)
+                if label == "late":
+                    self.release("send_polished", "xbutton2")
+                self.run_jobs()
+                if label != "late":
+                    self.release("send_polished", "xbutton2")
+                asr.handle.resolve("frase curta")
+                self.assertEqual(self.wait_outcomes(number)[-1].reason, S.NOT_CLAUDE)
+                self.assertIsNone(asr.hints)
+                text = "\n".join(logs.output)
+                self.assertNotIn("project hints applied", text)
+                if label == "failure":
+                    self.assertIn("decoding hints failed (OSError)", text)
+                if label == "late":
+                    self.assertIn("project hints too late", text)
+
+    def test_a_failing_runner_never_stops_the_session(self):
+        def broken(job):
+            raise RuntimeError("fake: no thread")
+
+        self.manager.run_hints = broken
+        self.dictate("frase curta", action="send_polished")
+        self.assertEqual(self.wait_outcomes(1)[-1].reason, S.NOT_CLAUDE)
+        self.assertEqual(self.asked, [])
+
+    def test_the_default_runner_uses_its_own_thread(self):
+        threads = []
+        done = threading.Event()
+        manager = SessionManager(transcriber=self.transcriber, capture_factory=self.captures, focus=self.focus,
+                                 injector=self.injector, indicator=self.indicator, pipeline=self.pipeline,
+                                 send_hints=lambda target: (threads.append(threading.current_thread()), done.set()),
+                                 clock=self.clock)
+        manager.start()
+        self.addCleanup(manager.stop)
+        manager.loaded()
+        manager.handle(signal(START, "send_polished", "xbutton2"))
+        manager.handle(signal(CONFIRM, "send_polished", "xbutton2"))
+        self.assertTrue(done.wait(5))
+        self.assertNotEqual(threads[0], threading.current_thread())
+        self.assertEqual(threads[0].name, "quill-hints")
+        manager.handle(signal(CANCEL, "send_polished", "xbutton2", "cancelled"))
+

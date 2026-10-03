@@ -374,6 +374,32 @@ py -3.12 -m quill.speech --probe
 
 Mostra só a língua da voz (por exemplo `pt-PT`) e o tamanho do áudio de teste.
 
+### O nome na sua própria voz
+
+Pode gravar a sua voz a dizer o nome de cada projeto, uma vez. Depois disso, logo a seguir ao som do aviso, o Quill toca a sua gravação do nome em vez da voz do Windows (com a mesma pausa depois do som). Se vários projetos estiverem à espera, os nomes tocam um a seguir ao outro, pela mesma ordem de antes. Um nome que não gravou continua a ser dito pela voz do Windows; se uma gravação faltar ou estiver estragada, esse nome também é dito pela voz do Windows, sem aviso. Se começar a ditar enquanto a gravação toca, ela para logo, antes de o microfone abrir, tal como a voz.
+
+As gravações ficam só neste PC, na pasta `local\names` do Quill, que o Git ignora (um ficheiro WAV por nome e uma lista `manifest.json`). Nada é enviado para a internet.
+
+Para gravar, siga os passos de [GRAVAR-NOMES.md](research/GRAVAR-NOMES.md). Em resumo, na pasta do Quill:
+
+```
+py -3.12 -m quill.names --dry-run
+py -3.12 -m quill.names
+```
+
+O primeiro mostra só os números (nomes encontrados, gravados, em falta e saltados) e não liga o microfone. O segundo mostra cada nome que o aviso pode dizer (os projetos que o Claude Code já abriu, as pastas de projetos e atalhos e os nomes do vocabulário), grava-o com o microfone de `[audio]` (Enter para começar e para parar), corta o silêncio e acerta o volume. Escreva `r` para repetir um nome, `s` para o saltar e `q` para fazer uma pausa; ao correr de novo, continua onde parou. Um nome que falte acrescenta-se com `--add <nome>` e um nome já gravado regrava-se com `--redo <nome>`. Depois de gravar, desligue e volte a ligar o Quill. Para ouvir um exemplo com a sua gravação:
+
+```
+py -3.12 -m quill.sound --play-sound --speak --project <nome>
+```
+
+O volume das gravações é o mesmo da voz, `speech_volume`; a velocidade (`speech_rate`) não muda as gravações. Para voltar a usar a voz do Windows em todos os nomes, sem apagar as gravações, escreva em `local\quill.toml` e depois desligue e volte a ligar o Quill:
+
+```
+[claude_alert]
+own_voice = false
+```
+
 Limites do filtro das execuções automáticas: o Quill usa uma indicação que o Claude Code dá a cada hook (`CLAUDE_CODE_SESSION_ATTENDED`: `1` quando alguém está a usar a sessão, `0` quando é automática). Foi confirmada na versão do Claude Code instalada neste PC. Uma versão que não dê esta indicação nunca toca; nesse caso use `filter = "unless-headless"` em `[claude_alert]` (toca sempre, menos quando a indicação diz que a sessão é automática). Um `claude -p` que corra à mão também não toca, porque também é automático. Com `filter = "all"` toca em todas as sessões, também nas automáticas.
 
 Remover:

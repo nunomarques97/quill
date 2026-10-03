@@ -24,6 +24,7 @@ from unittest import mock
 
 from quill import app as A
 from quill import clips as C
+from quill import finalpass as FP
 from quill import notify as N
 from quill import autorewrite as R
 from quill import inject
@@ -1566,6 +1567,171 @@ class SendPolishedAppTest(RewriteCase):
         self.assertEqual(self.api.enter_presses(), [False])
 
 
+class PassModel(GatedModel):
+    """The second Whisper model: its words carry a "p" (``w1p``), so its final pass text is told apart."""
+
+    def __init__(self):
+        super().__init__()
+        self.suffix = lambda call: "p"
+
+
+def without_voice(config):
+    """``config`` with the voice trigger unbound."""
+    return dataclasses.replace(config, triggers=tuple(
+        dataclasses.replace(t, inputs=()) if t.action == "voice" else t for t in config.triggers))
+
+
+class FinalPassAppTest(RewriteCase):
+    """Mouse 5 into Claude Code types the final pass text; no other window or trigger asks the pass."""
+
+    def setUp(self):
+        super().setUp()
+        self.ollama.error = OllamaError("Ollama unreachable: URLError")  # the correction types its input as it is
+        self.pass_model = PassModel()
+
+    def pass_app(self, config=None, **parts):
+        config = config or self.make_config(autorewrite=dataclasses.replace(self.config.autorewrite, min_words=10))
+        return self.make_app(config, rewrite_client=self.ollama, layout=FakeLayout(),
+                             **{"voice_model": self.pass_model, **parts})
+
+    def pass_config(self, **changes):
+        config = self.make_config(autorewrite=dataclasses.replace(self.config.autorewrite, min_words=10))
+        return without_voice(dataclasses.replace(config, final_pass=dataclasses.replace(config.final_pass,
+                                                                                        **changes)))
+
+    def into_claude(self):
+        self.api.under_pointer = CLAUDE_HWND
+        self.api.foreground = CLAUDE_HWND
+
+    def assert_no_text_logged(self, text):
+        self.assertNotRegex(text, r"\bw\dp?\b")
+
+    def test_mouse_5_into_claude_code_types_the_pass_text_of_the_second_model(self):
+        with self.assertLogs("quill", level="INFO") as logs:
+            quill = self.start(self.pass_app())
+            wait_for(lambda: quill.second_transcriber.ready.is_set(), "the second model to load")
+            self.assertIsNone(quill.voice_transcriber)  # no launcher: no voice commands
+            self.assertIs(quill.pass_transcriber, quill.second_transcriber)
+            self.assertIsNot(quill.pass_transcriber, quill.transcriber)
+            self.into_claude()
+            self.hold((1, 2, 3), which=XBUTTON2, quill=quill)
+            quill.stop()
+        outcome = quill.sessions.outcomes[-1]
+        self.assertEqual((outcome.action, outcome.reason, outcome.final_pass), ("send_polished", S.SENT_ENTER, FP.OK))
+        self.assertEqual([call.options.beam_size for call in self.pass_model.calls], [10])
+        self.assertIn("<dictation>\nw1p w2p w3p.\n</dictation>", self.ollama.calls[0][1])
+        self.assertEqual(sent_segments(self.api), ["w1p w2p w3p.", ""])
+        self.assertEqual(self.api.enter_presses(), [False])
+        self.assertEqual((self.pass_model.loads, self.pass_model.closes), (1, 1))
+        text = "\n".join(logs.output)
+        self.assertIn("final pass on (large-v3)", text)
+        self.assertIn("final pass model ready in", text)
+        self.assertIn("final pass ok, hints", text)
+        self.assertRegex(text, r"release to typed \d+ ms \(engine \d+ ms, final pass ok \d+ ms, text \d+ ms")
+        self.assert_no_text_logged(text)
+
+    def test_mouse_5_into_another_window_and_the_other_triggers_never_ask_the_pass(self):
+        quill = self.start(self.pass_app())
+        wait_for(lambda: quill.second_transcriber.ready.is_set(), "the second model to load")
+        self.hold((1, 2, 3), which=XBUTTON2, quill=quill)  # the invented notepad under the pointer
+        self.into_claude()
+        self.hold((1, 2, 3), which=XBUTTON1, quill=quill)
+        self.hold((1, 2, 3), which=MIDDLE, quill=quill)
+        quill.stop()
+        self.assertEqual([(o.action, o.final_pass) for o in quill.sessions.outcomes],
+                         [("send_polished", A.PASS_NOT_CLAUDE_CODE), ("dictation", None), ("send_raw", None)])
+        self.assertEqual(self.pass_model.calls, [])
+        self.assertEqual(sent_segments(self.api), ["w1 w2 w3." * 3, ""])  # the streaming text each time
+
+    def test_a_second_model_still_loading_or_failed_types_the_streaming_text(self):
+        self.pass_model.loaded.clear()
+        with self.assertLogs("quill", level="INFO") as logs:
+            quill = self.start(self.pass_app())
+            wait_for(lambda: quill.second_transcriber.running, "the second model to start loading")
+            self.into_claude()
+            self.hold((1, 2, 3), which=XBUTTON2, quill=quill)
+            self.assertEqual(quill.sessions.outcomes[-1].final_pass, FP.NOT_READY)
+            self.pass_model.fail_load = RuntimeError("invented")
+            self.pass_model.loaded.set()
+            wait_for(lambda: "final pass model not loaded" in "\n".join(logs.output), "the load failure log line")
+            self.hold((1, 2, 3), which=XBUTTON2, quill=quill)
+            quill.stop()
+        self.assertEqual(quill.sessions.outcomes[-1].final_pass, FP.LOAD_ERROR)
+        self.assertEqual([o.reason for o in quill.sessions.outcomes], [S.SENT_ENTER, S.SENT_ENTER])
+        self.assertEqual(sent_segments(self.api), ["w1 w2 w3.", "w1 w2 w3.", ""])
+        self.assertEqual(self.pass_model.calls, [])
+        text = "\n".join(logs.output)
+        self.assertIn("final pass model not loaded, mouse 5 types the streaming text", text)
+        self.assertIn("final pass not_ready", text)
+        self.assertIn("final pass load_error", text)
+        self.assert_no_text_logged(text)
+
+    def test_the_voice_commands_and_the_pass_share_one_instance_of_the_second_model(self):
+        config = dataclasses.replace(self.pass_config(), triggers=self.config.triggers,
+                                     voice=VoiceSettings((self.folder,)))
+        with self.assertLogs("quill", level="INFO") as logs:
+            quill = self.start(self.pass_app(config, launcher=FakeLauncher(),
+                                             voice_hint_options={"tokens": word_tokens}))
+            self.assertIsNotNone(quill.second_transcriber)
+            self.assertIs(quill.voice_transcriber, quill.second_transcriber)
+            self.assertIs(quill.pass_transcriber, quill.second_transcriber)
+            wait_for(lambda: quill.second_transcriber.ready.is_set(), "the second model to load")
+            wait_for(lambda: "voice model ready" in "\n".join(logs.output), "the ready log line")
+            self.into_claude()
+            self.hold((1, 2, 3), which=XBUTTON2, quill=quill)
+            quill.stop()
+        self.assertEqual(quill.sessions.outcomes[-1].final_pass, FP.OK)
+        self.assertEqual([call.options.beam_size for call in self.pass_model.calls], [10])
+        self.assertEqual((self.pass_model.loads, self.pass_model.closes), (1, 1))  # one instance, loaded once
+        text = "\n".join(logs.output)
+        self.assertIn("(also the final pass model)", text)
+        self.assertIn("voice model large-v3, final pass on (large-v3)", text)
+
+    def test_off_or_on_the_engine_model_no_second_model_is_needed(self):
+        off = self.pass_config(enabled=False)
+        on_engine = self.pass_config(model="large-v3-turbo")
+        unbound = dataclasses.replace(self.pass_config(), triggers=tuple(
+            dataclasses.replace(t, inputs=()) if t.action == "send_polished" else t
+            for t in self.pass_config().triggers))
+        self.assertEqual([A.second_model(c) for c in (off, on_engine, unbound, self.pass_config())],
+                         [None, None, None, "large-v3"])
+        self.assertEqual(A.second_model(self.config), "large-v3")  # the voice model and the pass model: one
+        self.assertEqual([A.final_pass_on(c) for c in (off, on_engine, unbound)], [False, True, False])
+
+        with self.assertLogs("quill", level="INFO") as logs:
+            quill = self.start(self.pass_app(off, voice_model=None))
+            self.assertEqual((quill.sessions.final_pass, quill.pass_transcriber, quill.second_transcriber),
+                             (None, None, None))
+            self.into_claude()
+            self.hold((1, 2, 3), which=XBUTTON2, quill=quill)
+            quill.stop()
+        self.assertEqual(quill.sessions.outcomes[-1].final_pass, None)
+        self.assertIn("final pass off", "\n".join(logs.output))
+
+        with self.assertLogs("quill", level="INFO") as logs:
+            quill = self.start(self.pass_app(on_engine, voice_model=None))
+            self.assertIs(quill.pass_transcriber, quill.transcriber)
+            self.assertIsNone(quill.second_transcriber)
+            self.hold((1, 2, 3), which=XBUTTON2, quill=quill)
+            quill.stop()
+        self.assertEqual(quill.sessions.outcomes[-1].final_pass, FP.OK)
+        self.assertEqual(len([call for call in self.model.calls if call.options.beam_size == 10]), 1)
+        self.assertIn("final pass on (large-v3-turbo)", "\n".join(logs.output))
+        self.assertEqual(sent_segments(self.api), ["w1 w2 w3.", "w1 w2 w3.", ""])
+
+    def test_without_an_instance_of_the_pass_model_mouse_5_types_the_streaming_text(self):
+        with self.assertLogs("quill", level="INFO") as logs:
+            quill = self.start(self.pass_app(self.pass_config(), voice_model=None))
+            self.assertIsNone(quill.pass_transcriber)
+            self.into_claude()
+            self.hold((1, 2, 3), which=XBUTTON2, quill=quill)
+            quill.stop()
+        self.assertEqual((quill.sessions.outcomes[-1].reason, quill.sessions.outcomes[-1].final_pass),
+                         (S.SENT_ENTER, FP.NOT_READY))
+        self.assertEqual(sent_segments(self.api), ["w1 w2 w3.", ""])
+        self.assertIn("final pass on (large-v3, no model instance: streaming text)", "\n".join(logs.output))
+
+
 class SequenceOllama(RewriteOllama):
     """One reply per call, in order (the correction, then the enrichment); the last one repeats."""
 
@@ -2096,6 +2262,26 @@ class CheckTest(unittest.TestCase):
         self.config = dataclasses.replace(self.config, voice=VoiceSettings(model="large-v3-turbo"))
         line = {line.name: line for line in self.check()}["voice model"]
         self.assertEqual((line.ok, line.detail), (True, "large-v3-turbo (the engine model)"))
+
+    def test_the_final_pass_model_is_checked_but_not_required(self):
+        self.ready_files()
+        line = {line.name: line for line in self.check()}["final pass"]
+        self.assertEqual((line.ok, line.required), (False, False))
+        self.assertIn("large-v3: files missing in models/faster-whisper-large-v3; mouse 5 types the streaming "
+                      "text", line.detail)
+        (self.models / "faster-whisper-large-v3").mkdir()
+        for name in ("model.bin", "config.json", "tokenizer.json"):
+            (self.models / "faster-whisper-large-v3" / name).write_bytes(b"")
+        line = {line.name: line for line in self.check()}["final pass"]
+        self.assertEqual((line.ok, line.detail), (True, "large-v3: files present"))
+        self.config = dataclasses.replace(self.config, final_pass=dataclasses.replace(
+            self.config.final_pass, model="large-v3-turbo"))
+        line = {line.name: line for line in self.check()}["final pass"]
+        self.assertEqual((line.ok, line.detail), (True, "large-v3-turbo (the engine model)"))
+        self.config = dataclasses.replace(self.config, final_pass=dataclasses.replace(
+            self.config.final_pass, enabled=False))
+        line = {line.name: line for line in self.check()}["final pass"]
+        self.assertEqual((line.ok, line.required, line.detail), (True, False, "off"))
 
     def test_ollama_is_required_only_for_the_llm_cleanup(self):
         self.ready_files()

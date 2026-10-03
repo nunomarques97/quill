@@ -59,6 +59,15 @@ the number of hint switches is logged, never the hints. Every other session keep
 the transcriber's vocabulary hints. Hints that cannot be built never stop
 the capture.
 
+A ``send_polished`` (mouse 5) session may get a final pass
+(``final_pass(asr, final, target)``, ``quill.finalpass``): after its
+streaming final it returns the text to use (the pass text, or the streaming
+text with a reason code) and the target window it described, which the text
+pipeline then receives as ``window`` so the window is described once. The
+caller decides whether the target is Claude Code; no other trigger ever calls
+it, and a failing or raising pass keeps the streaming text. The ``release to
+typed`` log line adds the pass reason and milliseconds.
+
 A long dictation (over the ``[autorewrite]`` audio or word threshold) goes,
 after the text pipeline, to the ``rewriter`` (``quill.autorewrite``) while
 the indicator shows ``reviewing`` ("A rever o texto"); a short one never
@@ -172,6 +181,9 @@ INTERNAL_ERROR = "internal_error"
 CLEANUP_FALLBACK = "cleanup_fallback"
 FOCUS_FAILED = "focus_failed"
 PREVIOUS_PENDING = "previous_pending"  # a press while an earlier session is still pending: ignored
+# Final pass reasons the session adds to those of ``quill.finalpass`` (the streaming text is typed).
+PASS_FAILED = "pass_failed"  # the final pass raised or returned no outcome
+PASS_EMPTY_TEXT = "pass_empty_text"  # the pass text left nothing to type after the text pipeline
 
 # What the indicator says (European Portuguese); the reason codes stay in the logs.
 MESSAGES = {
@@ -327,6 +339,7 @@ class Outcome:
     rewrite: str | None = None  # the automatic rewrite's reason code, when it was asked
     notice: str | None = None  # a notice shown with a text that was typed (for example after Enter)
     enrichment: str | None = None  # the enrichment's reason code, when it was asked
+    final_pass: str | None = None  # the final pass's reason code, when it was asked (mouse 5)
 
 
 @dataclass(eq=False)
@@ -349,6 +362,14 @@ class _Hold:
     audio_bytes: int = 0
     reviewing: bool = False
     enriching: bool = False
+
+
+@dataclass(frozen=True)
+class _Passed:
+    """The final pass of a mouse 5 session: its reason code and how long it took (seconds)."""
+
+    reason: str
+    seconds: float
 
 
 _STOP = object()
@@ -431,6 +452,12 @@ class SessionManager:
     vocabulary hints); it runs through
     ``run_hints(job)`` (None: a daemon thread), never on the hook or session
     thread, and hints that arrive after the release are not used.
+    ``final_pass(asr, final, target)`` (None: none) runs on the finalizer
+    thread for ``send_polished`` sessions only, with the session's streaming
+    session (``quill.streaming.Session``), its final result and its target; it
+    returns ``(outcome, window)``: a ``quill.finalpass.FinalPassOutcome`` (text,
+    reason, ``log_fields()``) and the target window it described (given to the
+    pipeline as ``window``).
     """
 
     def __init__(self, *, transcriber: object, capture_factory: Callable[[Callable[[bytes], None]], object],
@@ -447,6 +474,7 @@ class SessionManager:
                  schedule: Callable[[float, Callable[[], None]], None] | None = None,
                  send_hints: Callable[[Target], object | None] | None = None,
                  run_hints: Callable[[Callable[[], None]], None] | None = None,
+                 final_pass: Callable[[object, object, Target], tuple[object, object]] | None = None,
                  pending_limit_s: float = PENDING_LIMIT_S,
                  clock: Callable[[], float] = time.perf_counter,
                  final_timeout_s: float = FINAL_TIMEOUT_S, poll_s: float = POLL_S) -> None:
@@ -472,6 +500,7 @@ class SessionManager:
         self.schedule = schedule or _later
         self.send_hints = send_hints
         self.run_hints = run_hints or _in_thread
+        self.final_pass = final_pass
         self.pending_limit_s = pending_limit_s
         self.clock = clock
         self.final_timeout_s = final_timeout_s
@@ -885,7 +914,12 @@ class SessionManager:
             if not result.text.strip():
                 self._fail(hold, NO_SPEECH)
                 return
-            processed = self.pipeline(result.text, hold.target)
+            passed = None
+            if hold.action == SEND_POLISHED and self.final_pass is not None:
+                passed, processed = self._final_pass(hold, result)
+            else:
+                processed = self.pipeline(result.text, hold.target)
+            pass_at = engine_at if passed is None else engine_at + passed.seconds
             if not processed.text.strip():
                 self._fail(hold, NO_SPEECH)
                 return
@@ -909,12 +943,13 @@ class SessionManager:
             typed_at = self.clock()
             latency = typed_at - hold.released_at
             enrichment = (rewrite.enrichment or None) if rewrite is not None else None
-            log.info("session %d: typed (%s profile%s%s); release to typed %.0f ms (engine %.0f ms, text %.0f ms, "
+            log.info("session %d: typed (%s profile%s%s); release to typed %.0f ms (engine %.0f ms, %stext %.0f ms, "
                      "%styping %.0f ms)", hold.number, processed.profile,
                      f", rewrite {rewrite.reason}" if rewrite is not None else "",
                      f", {enrichment} in {rewrite.enrich_seconds * 1000:.0f} ms" if enrichment else "",
-                     latency * 1000,
-                     (engine_at - hold.released_at) * 1000, (pipeline_at - engine_at) * 1000,
+                     latency * 1000, (engine_at - hold.released_at) * 1000,
+                     f"final pass {passed.reason} {passed.seconds * 1000:.0f} ms, " if passed is not None else "",
+                     (pipeline_at - pass_at) * 1000,
                      f"rewrite {(text_at - pipeline_at) * 1000:.0f} ms, " if rewrite is not None else "",
                      (typed_at - text_at) * 1000)
             enter = hold.action in SEND_ACTIONS and processed.claude_code
@@ -943,10 +978,35 @@ class SessionManager:
             elif notice:
                 reason = notice
             self._end(hold, reason, typed=typed.typed, latency=latency,
-                      rewrite=rewrite.reason if rewrite is not None else None, notice=notice, enrichment=enrichment)
+                      rewrite=rewrite.reason if rewrite is not None else None, notice=notice, enrichment=enrichment,
+                      final_pass=passed.reason if passed is not None else None)
         except Exception as exc:  # noqa: BLE001 - the message may not carry text: log the type only
             log.error("session %d: finalization failed (%s)", hold.number, type(exc).__name__)
             self._fail(hold, INTERNAL_ERROR)
+
+    def _final_pass(self, hold: _Hold, final: object) -> tuple[_Passed, Processed]:
+        """(the pass's reason and time, the pipeline's result) of a mouse 5 session's final.
+
+        The pipeline gets the pass text with the window the pass described; on
+        any failure, or when the pass text leaves nothing to type, it gets the
+        streaming text as it would without a pass.
+        """
+        began = self.clock()
+        try:
+            outcome, window = self.final_pass(hold.asr, final, hold.target)
+            text, reason = outcome.text, outcome.reason
+            if not isinstance(text, str) or not isinstance(reason, str):
+                raise TypeError("final pass outcome without a text and a reason")
+            log.info("session %d: %s", hold.number, outcome.log_fields())
+        except Exception as exc:  # noqa: BLE001 - never lose the dictation: the streaming text is typed
+            log.error("session %d: final pass failed (%s)", hold.number, type(exc).__name__)
+            return _Passed(PASS_FAILED, self.clock() - began), self.pipeline(final.text, hold.target)
+        passed = _Passed(reason, self.clock() - began)
+        processed = self.pipeline(text, hold.target, window=window)
+        if text == final.text or processed.text.strip():
+            return passed, processed
+        log.warning("session %d: final pass text left nothing to type; the streaming text is used", hold.number)
+        return _Passed(PASS_EMPTY_TEXT, passed.seconds), self.pipeline(final.text, hold.target, window=window)
 
     def _wants_rewrite(self, hold: _Hold, processed: Processed) -> bool:
         if hold.action not in (DICTATION, SEND_CLAUDE):
@@ -1086,7 +1146,8 @@ class SessionManager:
 
     def _end(self, hold: _Hold, reason: str, typed: int = 0, latency: float | None = None,
              rewrite: str | None = None, notice: str | None = None,
-             shown: tuple[str, str, float] | None = None, enrichment: str | None = None) -> None:
+             shown: tuple[str, str, float] | None = None, enrichment: str | None = None,
+             final_pass: str | None = None) -> None:
         """``shown`` (state, text, seconds) replaces the outcome the reason would show."""
         with self._lock:
             if hold.ended:
@@ -1101,7 +1162,7 @@ class SessionManager:
                 else:
                     self._show_outcome(hold, reason, typed, notice)
             self.outcomes.append(Outcome(hold.number, hold.action, reason, typed, latency, rewrite, notice,
-                                         enrichment))
+                                         enrichment, final_pass))
             self._deliver_alerts()
 
     def _idle(self) -> None:

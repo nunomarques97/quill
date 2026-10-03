@@ -30,6 +30,8 @@ import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from quill.finalpass import MAX_TIMEOUT_S as PASS_MAX_TIMEOUT_S
+from quill.finalpass import FinalPassSettings
 from quill.notify import DEFAULT_FILTER, FILTERS
 from quill.ollama import keep_alive_seconds
 from quill.speech import DEFAULT_RATE, DEFAULT_VOLUME, RATE_RANGE, VOLUME_RANGE
@@ -88,6 +90,9 @@ MAX_PROJECT_NAME = 60
 # [project_context]: how old a cached context pack may get, and how long building one may take.
 PACK_AGE_RANGE = (1, 720)  # hours
 PACK_TIMEOUT_RANGE = (0.5, 30.0)  # seconds
+# [final_pass]: the beam of its decode, and how long mouse 5 waits for it.
+PASS_BEAM_RANGE = (1, 10)
+PASS_TIMEOUT_RANGE = (0.5, PASS_MAX_TIMEOUT_S)
 
 # A schema entry whose value is a table of free names (validated by its own reader).
 NAMES_TABLE = "names"
@@ -109,6 +114,8 @@ SCHEMA: dict[str, object] = {
                      "speech_rate": None, "own_voice": None},
     "voice_commands": {"shortcut_dirs": None, "model": None},
     "claude_code": {"send_key": None, "focus_check": None},
+    "final_pass": {"enabled": None, "model": None, "beam_size": None, "temperature_fallback": None, "hints": None,
+                   "timeout_s": None},
     "project_context": {"folders": NAMES_TABLE, "cache": None, "max_age_h": None, "build_timeout_s": None},
     "paths": {"vocabulary": None, "corrections": None, "style": None},
     "profiles": {name: {"processes": None, "classes": None, "titles": None} for name in PROFILE_NAMES},
@@ -256,6 +263,8 @@ class Config:
     voice: VoiceSettings = VoiceSettings()
     project_context: ProjectContext = ProjectContext()
     claude_code: ClaudeCode = ClaudeCode()
+    # [final_pass]: the whole-audio decode of mouse 5 into Claude Code (``quill.finalpass``); off unless configured.
+    final_pass: FinalPassSettings = FinalPassSettings(enabled=False)
 
     def trigger(self, action: str) -> Trigger:
         for trigger in self.triggers:
@@ -541,6 +550,18 @@ def _claude_code(data: dict[str, object]) -> ClaudeCode:
     )
 
 
+def _final_pass(data: dict[str, object]) -> FinalPassSettings:
+    """``[final_pass]``; the decode switches it does not name keep ``FinalPassSettings``' defaults."""
+    return FinalPassSettings(
+        enabled=_bool(_get(data, "final_pass.enabled"), "final_pass.enabled"),
+        model=_choice(_get(data, "final_pass.model"), "final_pass.model", ENGINE_MODELS),
+        beam_size=_integer(_get(data, "final_pass.beam_size"), "final_pass.beam_size", PASS_BEAM_RANGE),
+        temperature_fallback=_bool(_get(data, "final_pass.temperature_fallback"), "final_pass.temperature_fallback"),
+        hints=_bool(_get(data, "final_pass.hints"), "final_pass.hints"),
+        timeout_s=_number(_get(data, "final_pass.timeout_s"), "final_pass.timeout_s", PASS_TIMEOUT_RANGE),
+    )
+
+
 def _min_hold(value: object) -> int:
     low, high = MIN_HOLD_RANGE
     if not isinstance(value, int) or isinstance(value, bool) or not low <= value <= high:
@@ -620,6 +641,7 @@ def validate(data: dict[str, object]) -> Config:
         voice=_voice(data),
         project_context=_project_context(data),
         claude_code=_claude_code(data),
+        final_pass=_final_pass(data),
     )
 
 

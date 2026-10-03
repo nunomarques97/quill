@@ -10,6 +10,7 @@ from pathlib import Path
 
 from quill import config
 from quill.config import ConfigError, load_config
+from quill.finalpass import FinalPassSettings
 
 
 class ConfigCase(unittest.TestCase):
@@ -550,6 +551,46 @@ class ClaudeCodeTest(ConfigCase):
         for bad in ("1", "\"true\"", "\"yes\""):
             self.rejected(f"[claude_code]\nfocus_check = {bad}\n", "claude_code.focus_check")
         self.rejected("[claude_code]\nsend = \"enter\"\n", "claude_code.send")
+
+
+class FinalPassTest(ConfigCase):
+    """[final_pass]: the whole-audio decode of mouse 5 into Claude Code."""
+
+    def test_the_example_turns_it_on_with_the_diagnosis_best_configuration(self) -> None:
+        settings = load_config(None).final_pass
+        self.assertIsInstance(settings, FinalPassSettings)
+        self.assertEqual((settings.enabled, settings.model, settings.beam_size, settings.temperature_fallback,
+                          settings.hints, settings.timeout_s), (True, "large-v3", 10, False, True, 3.0))
+        # The switches the section does not name keep the defaults of FinalPassSettings.
+        self.assertEqual((settings.condition_on_previous_text, settings.vad_filter, settings.trim), (False, False, True))
+        # A Config built without the section keeps today's path.
+        self.assertFalse(config.Config.__dataclass_fields__["final_pass"].default.enabled)
+
+    def test_local_settings_are_read(self) -> None:
+        settings = self.load("[final_pass]\nenabled = false\nmodel = \"large-v3-turbo\"\nbeam_size = 1\n"
+                             "temperature_fallback = true\nhints = false\ntimeout_s = 30\n").final_pass
+        self.assertEqual((settings.enabled, settings.model, settings.beam_size, settings.temperature_fallback,
+                          settings.hints, settings.timeout_s), (False, "large-v3-turbo", 1, True, False, 30.0))
+        # One field alone keeps the others from the example.
+        settings = self.load("[final_pass]\ntimeout_s = 0.5\n").final_pass
+        self.assertEqual((settings.enabled, settings.model, settings.beam_size, settings.timeout_s),
+                         (True, "large-v3", 10, 0.5))
+
+    def test_bad_values_are_refused(self) -> None:
+        for bad in ("1", "\"true\"", "\"on\""):
+            self.rejected(f"[final_pass]\nenabled = {bad}\n", "final_pass.enabled")
+            self.rejected(f"[final_pass]\ntemperature_fallback = {bad}\n", "final_pass.temperature_fallback")
+            self.rejected(f"[final_pass]\nhints = {bad}\n", "final_pass.hints")
+        for bad in ("\"large-v2\"", "\"medium\"", "\"\"", "\"LARGE-V3\"", "3", "[\"large-v3\"]"):
+            message = self.rejected(f"[final_pass]\nmodel = {bad}\n", "final_pass.model")
+            self.assertIn("large-v3-turbo, large-v3", message)
+        for bad in ("0", "11", "-1", "5.0", "true", "\"5\""):
+            self.rejected(f"[final_pass]\nbeam_size = {bad}\n", "final_pass.beam_size")
+        for bad in ("0", "0.4", "30.5", "-1", "true", "\"3\"", "nan", "inf"):
+            self.rejected(f"[final_pass]\ntimeout_s = {bad}\n", "final_pass.timeout_s")
+        for unknown in ("vad_filter = true", "trim = false", "language = \"pt\""):
+            self.rejected(f"[final_pass]\n{unknown}\n", "final_pass." + unknown.split(" ")[0])
+        self.rejected("final_pass = true\n", "final_pass")
 
 
 class CliTest(ConfigCase):

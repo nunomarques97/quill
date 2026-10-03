@@ -17,8 +17,10 @@ from types import SimpleNamespace
 from quill import autorewrite as R
 from quill import command as C
 from quill import enrich as E
+from quill import finalpass as FP
 from quill import inject
 from quill import session as S
+from quill.finalpass import FinalPassOutcome
 from quill.focus import CLICKED, NO_WINDOW, FocusResult
 from quill.indicator.render import (CLAUDE_DONE, CLAUDE_PERMISSION, ERROR, LISTENING, LOADING, REVIEWING, SENT,
                                     TRANSCRIBING, VOICE, VOICE_NONE, VOICE_OPEN)
@@ -33,6 +35,7 @@ TARGET = Target(hwnd=100, pid=7)
 CLAUDE = Target(hwnd=500, pid=50)
 OTHER = Target(hwnd=200, pid=8)
 SPOKEN = "texto inventado de teste"
+DESCRIBED = "described"  # FakePipeline: no window was given
 PCM = b"\x10\x27" * 1600  # 0.1 s of a constant level
 
 
@@ -154,14 +157,18 @@ class FakePipeline:
         self.notice = None
         self.folder = None  # the project folder found for the Claude Code window
         self.terminal = False  # Claude Code in a terminal: one paragraph, spaces for line breaks
+        self.raws = []  # the raw text of each call
+        self.windows = []  # the window given to each call (DESCRIBED: none, the pipeline describes it)
 
-    def __call__(self, raw, target):
+    def __call__(self, raw, target, **given):
         self.calls += 1
+        self.raws.append(raw)
+        self.windows.append(given.get("window", DESCRIBED))
         if self.error is not None:
             raise self.error
         claude = target == CLAUDE
         newline = inject.NEWLINE_SHIFT_ENTER if claude and not self.terminal else inject.NEWLINE_SPACE
-        return Processed(raw.strip().capitalize() + ".", "claude-code" if claude else "default", claude, self.notice,
+        return Processed(raw.strip().capitalize() + "." if raw.strip() else "", "claude-code" if claude else "default", claude, self.notice,
                          keep=("Invented",), project="projeto", project_folder=self.folder if claude else None,
                          rewrite_profile="vscode" if claude else None, newline=newline)
 
@@ -238,7 +245,8 @@ class SessionCase(unittest.TestCase):
             indicator=self.indicator, pipeline=self.pipeline, rewriter=self.rewriter, voice=self.voice,
             command=self.make_command(), on_session_start=self._started,
             on_typed=self._typed, player=self.player, speaker=self.speaker, context_pack=self.make_context_pack(),
-            schedule=self._schedule, clock=self.clock, final_timeout_s=5.0, poll_s=0.05)
+            schedule=self._schedule, final_pass=self.make_final_pass(), clock=self.clock, final_timeout_s=5.0,
+            poll_s=0.05)
         self.manager.start()
         self.addCleanup(self.manager.stop)
 
@@ -258,6 +266,9 @@ class SessionCase(unittest.TestCase):
         return None
 
     def make_context_pack(self):
+        return None
+
+    def make_final_pass(self):
         return None
 
     def _started(self, action):
@@ -2226,3 +2237,129 @@ class SendHintsTest(SessionCase):
         self.assertEqual(threads[0].name, "quill-hints")
         manager.handle(signal(CANCEL, "send_polished", "xbutton2", "cancelled"))
 
+
+class FakeFinalPass:
+    """``final_pass(asr, final, target)`` stand-in: records each call and returns ``(outcome, window)``."""
+
+    WINDOW = SimpleNamespace(name="the described window")
+
+    def __init__(self, clock):
+        self.clock = clock
+        self.calls = []  # (streaming session, streaming final text, target)
+        self.text = FinalPassSessionTest.PASSED  # the pass text; None: the streaming text
+        self.reason = FP.OK
+        self.seconds = 1.5  # how long the pass takes on the fake clock
+        self.error = None
+        self.reply = None  # replaces the whole reply when set (a malformed one)
+
+    def __call__(self, asr, final, target):
+        self.calls.append((asr, final.text, target))
+        self.clock.now += self.seconds
+        if self.error is not None:
+            raise self.error
+        if self.reply is not None:
+            return self.reply
+        return FinalPassOutcome(final.text if self.text is None else self.text, self.reason), self.WINDOW
+
+
+class FinalPassSessionTest(SessionCase):
+    """Mouse 5 (send_polished) asks ``final_pass`` once its streaming final is in; no other trigger does."""
+
+    PASSED = "frase da passagem final"
+    STREAMED = "TEXTO INVENTADO DE TESTE."  # SPOKEN through the fake pipeline and the fake correction
+
+    def setUp(self):
+        super().setUp()
+        self.ready()
+        self.focus.targets = [CLAUDE]
+
+    def make_rewriter(self):
+        return FakeRewriter()
+
+    def make_voice(self):
+        return FakeVoice()
+
+    def make_command(self):
+        self.command = FakeCommand()
+        return self.command
+
+    def make_final_pass(self):
+        self.passes = FakeFinalPass(self.clock)
+        return self.passes
+
+    def assert_no_text_logged(self, logs):
+        text = "\n".join(logs.output).casefold()
+        for word in ("frase", "passagem", "texto", "inventado"):
+            self.assertNotRegex(text, rf"\b{word}\b")
+
+    def test_mouse_5_types_the_pass_text_through_the_pipeline_with_the_window_the_pass_described(self):
+        with self.assertLogs("quill.session", level="INFO") as logs:
+            self.dictate(SPOKEN, action="send_polished")
+            outcome = self.wait_outcomes(1)[0]
+        self.assertEqual((outcome.action, outcome.reason, outcome.final_pass), ("send_polished", S.SENT_ENTER, FP.OK))
+        self.assertEqual(self.passes.calls, [(self.transcriber.sessions[-1], SPOKEN, CLAUDE)])
+        self.assertEqual(self.pipeline.raws, [self.PASSED])
+        self.assertEqual(self.pipeline.windows, [FakeFinalPass.WINDOW])  # described once, by the pass
+        self.assertEqual(self.rewriter.calls[0]["text"], "Frase da passagem final.")
+        self.assertEqual(self.injector.typed, [("FRASE DA PASSAGEM FINAL.", CLAUDE)])
+        self.assertEqual(self.injector.enters, [CLAUDE])
+        text = "\n".join(logs.output)
+        self.assertIn("session 1: final pass ok, hints -, audio 0.0 s", text)
+        self.assertRegex(text, r"release to typed \d+ ms \(engine \d+ ms, final pass ok 1500 ms, text \d+ ms, "
+                               r"rewrite \d+ ms, typing \d+ ms\)")
+        self.assert_no_text_logged(logs)
+        self.assert_released()
+
+    def test_every_failing_pass_types_the_streaming_text(self):
+        malformed = (SimpleNamespace(text=None, reason=FP.OK, log_fields=lambda: ""), FakeFinalPass.WINDOW)
+        cases = (
+            ("timeout", dict(text=None, reason=FP.TIMEOUT), FP.TIMEOUT, [SPOKEN], [FakeFinalPass.WINDOW]),
+            ("not ready", dict(text=None, reason=FP.NOT_READY), FP.NOT_READY, [SPOKEN], [FakeFinalPass.WINDOW]),
+            ("raises", dict(error=RuntimeError("frase inventada")), S.PASS_FAILED, [SPOKEN], [DESCRIBED]),
+            ("no reply", dict(reply=(None, None)), S.PASS_FAILED, [SPOKEN], [DESCRIBED]),
+            ("not a pair", dict(reply="frase"), S.PASS_FAILED, [SPOKEN], [DESCRIBED]),
+            ("no text", dict(reply=malformed), S.PASS_FAILED, [SPOKEN], [DESCRIBED]),
+            ("blank text", dict(text="  "), S.PASS_EMPTY_TEXT, ["  ", SPOKEN], [FakeFinalPass.WINDOW] * 2),
+        )
+        for number, (name, changes, reason, raws, windows) in enumerate(cases, start=1):
+            with self.subTest(name):
+                self.passes = FakeFinalPass(self.clock)
+                self.manager.final_pass = self.passes
+                for key, value in changes.items():
+                    setattr(self.passes, key, value)
+                self.pipeline.raws.clear()
+                self.pipeline.windows.clear()
+                self.injector.typed.clear()
+                with self.assertLogs("quill.session", level="INFO") as logs:
+                    self.dictate(SPOKEN, action="send_polished")
+                    outcome = self.wait_outcomes(number)[-1]
+                self.assertEqual((outcome.reason, outcome.final_pass), (S.SENT_ENTER, reason))
+                self.assertEqual(len(self.passes.calls), 1)
+                self.assertEqual((self.pipeline.raws, self.pipeline.windows), (raws, windows))
+                self.assertEqual(self.injector.typed, [(self.STREAMED, CLAUDE)])
+                self.assertIn(f"final pass {reason} 1500 ms", "\n".join(logs.output))
+                self.assert_no_text_logged(logs)
+        self.assertEqual(self.injector.enters, [CLAUDE] * len(cases))
+        self.assert_released()
+
+    def test_a_streaming_final_without_text_or_with_an_error_never_asks_the_pass(self):
+        self.dictate("  ", action="send_polished")
+        self.dictate(SPOKEN, action="send_polished", error="invented")
+        outcomes = self.wait_outcomes(2)
+        self.assertEqual([o.final_pass for o in outcomes], [None, None])
+        self.assertNotIn(S.SENT_ENTER, [o.reason for o in outcomes])
+        self.assertEqual((self.passes.calls, self.injector.typed), ([], []))
+        self.assert_released()
+
+    def test_no_other_trigger_ever_asks_the_pass(self):
+        actions = ("dictation", "send_raw", "send_claude", "command", "voice")
+        for number, action in enumerate(actions, start=1):
+            with self.subTest(action):
+                self.dictate(SPOKEN, action=action)
+                outcome = self.wait_outcomes(number)[-1]
+                self.assertEqual((outcome.action, outcome.final_pass), (action, None))
+        self.assertEqual(self.passes.calls, [])
+        self.assertEqual(self.pipeline.windows, [DESCRIBED] * 3)  # dictation, send_raw, send_claude
+        self.assertEqual(len(self.command.instructions), 1)
+        self.assertEqual(len(self.voice.texts), 1)
+        self.assert_released()

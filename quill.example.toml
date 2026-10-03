@@ -305,6 +305,36 @@ build_timeout_s = 5.0
 send_key = "enter"
 focus_check = true
 
+# Final pass of mouse 5 (send_polished) into Claude Code. After the release,
+# the streaming final text is ready as today; then the whole recorded speech
+# is decoded once more by model, with beam_size (1-10), and that text goes
+# through the text pipeline, the correction and the enrichment instead.
+# Mouse 5 into any other window, mouse 4, the middle click, send_claude,
+# command mode and voice commands never run it.
+# model: "large-v3" or "large-v3-turbo". The [engine] model runs the pass on
+# the engine's own worker. The other model is the one the voice commands
+# use: Quill keeps a single copy of it, loaded after the engine model (also
+# when the voice trigger is off), and runs the pass on its worker, so a
+# voice command and a pass never decode at the same time on one model.
+# temperature_fallback: decode again at higher temperatures when the text
+# looks unreliable (slower). hints: the decoding hints of the hold (the
+# vocabulary, and in a Claude Code project its terms, those heard in the
+# hold first); false decodes without them.
+# Whenever the pass cannot give a text (model still loading or failed, no
+# speech, an error, an empty text or no result within timeout_s seconds,
+# 0.5-30) the streaming text is used, so a dictation is never lost. The log
+# line "release to typed" shows the pass milliseconds and its reason code;
+# the startup log says whether the pass is on and its model.
+# Provisional values: the best configuration of the error diagnosis
+# (docs/research/asr-errors-summary.json); false turns the pass off.
+[final_pass]
+enabled = true
+model = "large-v3"
+beam_size = 10
+temperature_fallback = false
+hints = true
+timeout_s = 3.0
+
 # Personal data. Paths are relative to the repository and must stay inside
 # the ignored local/ folder. style is a folder of writing samples:
 # <profile>.txt (for example whatsapp.txt), or default.txt for every profile

@@ -28,7 +28,11 @@ Into Claude Code, ``send_polished`` corrects with the context pack of the
 window's project (``quill.projects`` finds the project and its folder,
 ``Parts.context_packs``, a ``quill.context_pack.ContextPacks`` cached in
 ``[project_context] cache``, gives the pack) and then enriches the text into
-a structured prompt (``quill.enrich``).
+a structured prompt (``quill.enrich``). When ``[final_pass]`` is on, mouse 5
+into Claude Code decodes the released hold's audio once more
+(``quill.finalpass``) and its text replaces the streaming text; mouse 5 into
+another window and every other trigger keep the streaming text, and so does
+every pass that cannot give a text.
 When the voice trigger is bound, ``quill.voice`` runs spoken commands ("abre
 VS Code no <projeto>" opens the matching shortcut of ``[voice_commands]``
 through ``Parts.launcher``); its holds are decoded in Portuguese with the
@@ -67,6 +71,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from quill import clips as own_voice
+from quill import finalpass
 from quill import startup
 from quill.autorewrite import AutoRewriter, project_hint
 from quill.cleanup import Cleanup
@@ -74,6 +79,7 @@ from quill.command import COMMAND_TIMEOUT_S, CommandMode, CommandRewriter, is_te
 from quill.config import LOCAL_CONFIG, REPO_ROOT, Config, ConfigError, load_config
 from quill.corrections import CorrectionKey, CorrectionStore, Dictation, Learner, new_dictation_id
 from quill.edits import EditTracker, KeyTranslator, ManualEdits, RewriteUndo, UndoOutcome
+from quill.finalpass import FinalPassOutcome
 from quill.focus import ClickToFocus
 from quill.heard import HeardHints
 from quill.hooks import TriggerHooks, monotonic_ms, real_hooks
@@ -110,6 +116,10 @@ HINTS_NOT_CLAUDE_CODE = "not_claude_code"
 HINTS_NO_PROJECT = "no_project"
 HINTS_NO_PACK = "no_pack"
 HINTS_FAILED = "failed"
+# Reason code of a mouse 5 final pass not asked because the target is not Claude Code.
+PASS_NOT_CLAUDE_CODE = "not_claude_code"
+# ``TextPipeline``: describe the target window (no window was given).
+DESCRIBE = object()
 
 EXIT_OK = 0
 EXIT_FAILED = 1
@@ -308,7 +318,9 @@ class TextPipeline:
     which may take Shift+Enter as Enter, line breaks are typed as spaces and
     the rewrite keeps one paragraph (the ``vscode`` layout, same style).
     ``use_vocabulary`` swaps the words to keep and the matcher at once; a
-    call already running finishes with the ones it started with.
+    call already running finishes with the ones it started with. A call
+    given ``window`` (the mouse 5 final pass described it already) uses that
+    window instead of describing the target again.
     In the ``claude-code`` and ``vscode`` profiles ``projects``
     (``quill.projects.ProjectDetector``) names the window's project and its
     local folder; when it finds none (or is None) the project is today's
@@ -350,12 +362,16 @@ class TextPipeline:
             samples = ()
         return style_prompt(profile, samples)
 
-    def __call__(self, raw: str, target: Target) -> Processed:
+    def describe_window(self, target: Target) -> WindowInfo | None:
+        """The target window as described now; None when it cannot be read (the default profile)."""
         try:
-            info = self.describe(target)
+            return self.describe(target)
         except Exception as exc:  # noqa: BLE001 - an unreadable window gets the default profile
             log.warning("target window not described (%s)", type(exc).__name__)
-            info = None
+            return None
+
+    def __call__(self, raw: str, target: Target, window: WindowInfo | None | object = DESCRIBE) -> Processed:
+        info = self.describe_window(target) if window is DESCRIBE else window
         profile = self.profiles.select(info)
         if info is not None and info.focus is not None:
             log.info("focus check: %s (%s profile)", info.focus, profile)
@@ -452,7 +468,10 @@ class Parts:
     player: object | None = None  # alert sounds (quill.sound.WinsoundPlayer); None: silent alerts
     speaker: object | None = None  # spoken project names (quill.speech.Speaker); None: only the sound
     launcher: object | None = None  # opens voice-command shortcuts (quill.shortcuts.ShellLauncher); None: off
-    voice_model: object | None = None  # decodes the voice holds (load / transcribe / close); None: ``model`` does
+    # The one instance of the Whisper model other than ``model`` (load / transcribe / close): it decodes the voice
+    # holds and the mouse 5 final pass that use that model (``second_model``); None: ``model`` decodes the voice
+    # holds and such a pass types the streaming text.
+    voice_model: object | None = None
     processes: object | None = None  # reads a terminal's Claude Code session (quill.win32.Processes); None: titles only
     context_packs: object | None = None  # project context packs (quill.context_pack.ContextPacks); None: no pack
     # How the decoding hints of a mouse 5 session are built (tests: at once); None: on a daemon thread.
@@ -499,7 +518,6 @@ class QuillApp:
         self.vocabulary = parts.vocabulary  # the current personal vocabulary, for the voice commands
         self.voice: VoiceCommands | None = None
         self.voice_hints: VoiceHints | None = None
-        self.voice_transcriber: StreamingTranscriber | None = None
         self._voice_lock = threading.Lock()
         if config.trigger("voice").enabled and parts.launcher is not None:
             self.voice = VoiceCommands(default_parser(config.voice.shortcut_dirs, lambda: self.vocabulary,
@@ -507,9 +525,19 @@ class QuillApp:
             # Built at each press, after the vocabulary is refreshed, from the same folders.
             self.voice_hints = VoiceHints(config.voice.shortcut_dirs, lambda: self.vocabulary,
                                           **{"tokens": TokenCounter(config.voice.model), **parts.voice_hint_options})
-            if parts.voice_model is not None:
-                self.voice_transcriber = StreamingTranscriber(parts.voice_model, options_for(config.voice.model),
-                                                              hints)
+        # The second Whisper model: one instance, one worker, shared by the voice holds and the final pass.
+        other = second_model(config)
+        voice_wants = self.voice is not None and config.voice.model == other
+        pass_wants = final_pass_on(config) and config.final_pass.model == other
+        self.second_transcriber: StreamingTranscriber | None = None
+        if other is not None and parts.voice_model is not None and (voice_wants or pass_wants):
+            self.second_transcriber = StreamingTranscriber(parts.voice_model, options_for(other), hints)
+        self.voice_transcriber = self.second_transcriber if voice_wants else None
+        # Where the mouse 5 final pass decodes: the engine's worker, the second model's, or nowhere (None).
+        self.pass_transcriber: StreamingTranscriber | None = None
+        if final_pass_on(config):
+            self.pass_transcriber = self.transcriber if config.final_pass.model == config.engine_model \
+                else self.second_transcriber if pass_wants else None
         self.rewriter: AutoRewriter | None = None
         # Loads the rewrite model in the background (start, mouse 5 hold), so a correction meets it in memory.
         self.warmer: ModelWarmer | None = None
@@ -542,7 +570,8 @@ class QuillApp:
             speaker=parts.speaker if config.claude_alert.sound and config.claude_alert.speak_project else None,
             context_pack=parts.context_packs.get if parts.context_packs is not None else None,
             enter_check=self._enter_check, send_hints=self._send_hints if parts.context_packs is not None else None,
-            run_hints=parts.run_hints, clock=parts.clock,
+            run_hints=parts.run_hints, final_pass=self._final_pass if final_pass_on(config) else None,
+            clock=parts.clock,
         )
         self.alerts: AlertListener | None = None
         if config.claude_alert.enabled and parts.alert_events is not None:
@@ -582,14 +611,22 @@ class QuillApp:
             self.stop()
             raise
         log.info("Quill started (engine %s, cleanup %s, indicator %s, command mode %s, voice commands %s, voice model %s, "
-                 "automatic rewrite %s, claude alert %s)", self.config.engine_model, self.config.cleanup_mode,
-                 self.config.indicator_position, "on" if self.command else "off",
+                 "final pass %s, automatic rewrite %s, claude alert %s)", self.config.engine_model,
+                 self.config.cleanup_mode, self.config.indicator_position, "on" if self.command else "off",
                  f"on ({len(self.config.voice.shortcut_dirs)} folders)" if self.voice else "off",
-                 self.config.voice.model if self.voice_transcriber else "engine",
+                 self.config.voice.model if self.voice_transcriber else "engine", self._final_pass_status(),
                  (("on" if self.config.autorewrite.enabled else "send_polished only")
                   + f" (common-sense fixes {'on' if self.rewriter.common_sense_fixes else 'off'})")
                  if self.rewriter else "off",
                  f"on ({self._own_voice_status()})" if self.alerts is not None and self.alerts.running else "off")
+
+    def _final_pass_status(self) -> str:
+        """Whether mouse 5 into Claude Code gets the final pass, and its model."""
+        if not final_pass_on(self.config):
+            return "off"
+        if self.pass_transcriber is None:
+            return f"on ({self.config.final_pass.model}, no model instance: streaming text)"
+        return f"on ({self.config.final_pass.model})"
 
     def _own_voice_status(self) -> str:
         """Whether the alert names may play own-voice clips, and how many clips exist (counts only)."""
@@ -639,22 +676,27 @@ class QuillApp:
             self.warmer.warm("start", unless_other=True)
 
     def _load_voice_model(self) -> None:
-        """Load the voice model after the engine model, so dictation is ready first."""
-        voice = self.voice_transcriber
-        if voice is None:
+        """Load the second model (voice holds, final pass) after the engine model, so dictation is ready first."""
+        second = self.second_transcriber
+        if second is None:
             return
         with self._voice_lock:
             if self._stopping.is_set():
                 return
-            voice.start()
+            second.start()
         started = self.parts.clock()
-        while not voice.ready.wait(LOAD_WAIT_S):
+        while not second.ready.wait(LOAD_WAIT_S):
             if self._stopping.is_set():
                 return
-        if voice.load_error:
-            log.error("voice model not loaded, voice commands use the engine model: %s", voice.load_error)
+        voice, passes = self.voice_transcriber is second, self.pass_transcriber is second
+        name = "voice model" if voice else "final pass model"
+        if second.load_error:
+            fallbacks = [text for text, used in (("voice commands use the engine model", voice),
+                                                 ("mouse 5 types the streaming text", passes)) if used]
+            log.error("%s not loaded, %s: %s", name, " and ".join(fallbacks), second.load_error)
         else:
-            log.info("voice model ready in %.1f s", self.parts.clock() - started)
+            log.info("%s ready in %.1f s%s", name, self.parts.clock() - started,
+                     " (also the final pass model)" if voice and passes else "")
 
     def _warm_voice_hints(self) -> None:
         """Read the tokenizer of the voice hints now, not at the first voice press."""
@@ -697,8 +739,8 @@ class QuillApp:
 
     def _stop_voice_model(self) -> None:
         with self._voice_lock:
-            if self.voice_transcriber is not None:
-                self.voice_transcriber.stop()
+            if self.second_transcriber is not None:
+                self.second_transcriber.stop()
 
     def _stop_alerts(self) -> None:
         if self.alerts is not None:
@@ -755,8 +797,8 @@ class QuillApp:
         if vocabulary is None:
             return
         self.transcriber.vocabulary = tuple(whisper_hints(vocabulary, (), self.parts.generic_terms))
-        if self.voice_transcriber is not None:
-            self.voice_transcriber.vocabulary = self.transcriber.vocabulary
+        if self.second_transcriber is not None:
+            self.second_transcriber.vocabulary = self.transcriber.vocabulary
         self.pipeline.use_vocabulary(vocabulary)
         self.vocabulary = vocabulary
         counts = vocabulary.counts()
@@ -787,6 +829,21 @@ class QuillApp:
                                       vocabulary=self.vocabulary, generic_terms=self.parts.generic_terms)
         log.info("decoding hints: %s", reason)
         return hints
+
+    def _final_pass(self, asr: object, final: object, target: Target) -> tuple[FinalPassOutcome, WindowInfo | None]:
+        """(the text a mouse 5 hold types, the target window) once its streaming final is in (session thread).
+
+        Only a target that is Claude Code gets the pass (``quill.finalpass``, on
+        ``pass_transcriber``); any other window keeps the streaming text without
+        a pass. The window is described once here and given to the pipeline.
+        """
+        info = self.pipeline.describe_window(target)
+        if self.pipeline.profiles.select(info) != CLAUDE_CODE:
+            return FinalPassOutcome(final.text, PASS_NOT_CLAUDE_CODE), info
+        if self.pass_transcriber is None:
+            return FinalPassOutcome(final.text, finalpass.NOT_READY), info
+        return finalpass.run_session(self.pass_transcriber, asr, final, self.config.final_pass,
+                                     clock=self.parts.clock), info
 
     def _enter_check(self, target: Target | None, before: WindowInfo | None) -> str | None:
         """None when a send trigger may press Enter in ``target`` now, else a reason code (session thread).
@@ -888,6 +945,27 @@ class QuillApp:
         return result.text
 
 
+def final_pass_on(config: Config) -> bool:
+    """Mouse 5 (send_polished) is bound and ``[final_pass]`` is on."""
+    return config.final_pass.enabled and config.trigger("send_polished").enabled
+
+
+def second_model(config: Config) -> str | None:
+    """The Whisper model other than ``[engine] model`` that the voice holds or the final pass decode with.
+
+    There are two engine models, so at most one other: Quill loads one
+    instance of it, shared by both. None: only the engine model is needed.
+    """
+    wanted = set()
+    if config.trigger("voice").enabled and config.voice.model != config.engine_model:
+        wanted.add(config.voice.model)
+    if final_pass_on(config) and config.final_pass.model != config.engine_model:
+        wanted.add(config.final_pass.model)
+    if len(wanted) > 1:
+        raise ValueError("the voice commands and the final pass need two models besides the engine model")
+    return next(iter(wanted), None)
+
+
 def wants_rewriter(config: Config) -> bool:
     """The automatic rewrite is on, or the send_polished trigger (always rewritten) is bound."""
     return config.autorewrite.enabled or config.trigger("send_polished").enabled
@@ -946,8 +1024,7 @@ def real_parts(config: Config) -> Parts:
         player=WinsoundPlayer() if config.claude_alert.enabled and config.claude_alert.sound else None,
         speaker=alert_speaker(config),
         launcher=ShellLauncher() if config.trigger("voice").enabled else None,
-        voice_model=(WarmModel(Whisper(config.voice.model))
-                     if config.trigger("voice").enabled and config.voice.model != config.engine_model else None),
+        voice_model=WarmModel(Whisper(second_model(config))) if second_model(config) is not None else None,
         processes=Processes(),
         focus_probe=FocusProbe() if config.claude_code.focus_check else None,
         context_packs=(ContextPacks.from_settings(config.project_context)
@@ -1021,6 +1098,7 @@ def check_readiness(config: Config, *, models_dir: Path | None = None, venv: Pat
 
     lines.append(voice_line(config))
     lines.append(voice_model_line(config, folder))
+    lines.append(final_pass_line(config, folder))
 
     needed = config.cleanup_mode == "llm"
     if client is None:
@@ -1078,6 +1156,19 @@ def voice_model_line(config: Config, models_dir: Path) -> CheckLine:
     return CheckLine("voice model", present, f"{model}: " + (
         "files present" if present else f"files missing in models/{MODELS[model]}; voice commands use "
         f"{config.engine_model}"), required=False)
+
+
+def final_pass_line(config: Config, models_dir: Path) -> CheckLine:
+    """The model of the mouse 5 final pass: off, the engine model, or present (else the streaming text is typed)."""
+    if not final_pass_on(config):
+        return CheckLine("final pass", True, "off", required=False)
+    model = config.final_pass.model
+    if model == config.engine_model:
+        return CheckLine("final pass", True, f"{model} (the engine model)", required=False)
+    present = model_present(model, models_dir)
+    return CheckLine("final pass", present, f"{model}: " + (
+        "files present" if present else f"files missing in models/{MODELS[model]}; mouse 5 types the streaming "
+        "text"), required=False)
 
 
 def print_check(lines: Sequence[CheckLine], out: Callable[[str], None] = print) -> int:

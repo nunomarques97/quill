@@ -1,9 +1,10 @@
 """Mouse 5 measurement on the Sponsor's spoken Claude Code prompts: project context and prompt enrichment.
 
 Usage:
-    py -3.12 -m bench.prompts --dry-run [--set all|prompts|dictation] [--require]
+    py -3.12 -m bench.prompts --dry-run [--set all|prompts|dictation] [--safety] [--require]
     .venv\\Scripts\\python -m bench.prompts [--set all|prompts|dictation] [--summary PATH] [--require]
         [--timeouts bench|product] [--correction-candidates | --no-correction-candidates]
+        [--common-sense | --no-common-sense] [--variants] [--safety]
     py -3.12 -m bench.prompts --check SUMMARY
 
 Two sets are measured. ``prompts`` (``bench/dictation/guiao-prompts-pt.md``,
@@ -63,6 +64,34 @@ of the quill config), exactly as the session asks it:
   the list on or off, an ablation reported as
   ``rewrite.correction_candidates``.
 
+The new mouse 5 follows the app's correction settings: name fixes on
+(``quill.autorewrite.NAME_FIXES``) and ``[autorewrite] common_sense_fixes``
+of the quill config, which ``--common-sense``/``--no-common-sense``
+override. ``--variants`` also runs the new mouse 5 of each set, on the
+transcripts of the app's hint pass, as each correction variant
+(``VARIANTS``): ``phase8`` (``AutoRewriter(name_fixes=False)``, common
+sense off), ``names`` (name fixes only) and ``common_sense`` (name fixes
+and common-sense fixes); the variant the app's settings are is that run
+itself, not asked again. ``--safety`` runs each variant on every valid take
+of the dictation set, transcribed with today's hints, as if dictated into
+Claude Code without a project (context mode without a pack, no enrichment,
+no today's mouse 5): a safety set reported apart (``safety``), outside the
+targets. Per variant, counts only: the vocabulary and project names in the
+reference and how many the text lacks before and after the correction
+(``names_fixed``), domain-term errors, word errors and WER of the corrected
+text against the clean reference, content words lost and invented against
+the input (the rules below; a personal-vocabulary name is known, as a pack
+word), of the invented ones those the correction itself brought
+(``invented_fixes``: the ordinary words of a common-sense fix) and those
+beyond them (``invented_beyond_fixes``), content words the correction
+brought that the reference does not hold (``invented_reference``,
+independently of the guard), enrichment requested/accepted and correction
+p50/p95. ``common_sense_rule`` says from these numbers whether the
+common-sense fixes lower the word errors against name fixes only (in all,
+and in no set more) with lost, invented beyond the fixes and invented
+against the reference 0 in every set; the Phase 9 measurement runs
+``--variants --safety``.
+
 Measured, against targets that are never lowered here:
 
 - domain-term errors (prompts set): occurrences of the take's real terms in
@@ -108,13 +137,14 @@ import sys
 import time
 import unicodedata
 from collections import Counter
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from bench.dataset import (PLACEHOLDER, TERM_PLACEHOLDER, Dataset, DatasetError, Take, load_dataset, parse_script,
                            valid_term)
-from bench.metrics import percentile_nearest_rank, term_recall, write_summary
+from bench.metrics import invented_against, percentile_nearest_rank, term_recall, text_edits, write_summary
 from bench.normalize import normalize_words
 from bench.settings import REPO_ROOT, RESULTS_DIR, Settings, SettingsError, load_settings
 from quill import autorewrite, enrich
@@ -124,6 +154,7 @@ from quill.whisper import distinctive_term
 SET_NAME = "prompts"
 DICTATION = "dictation"
 SETS = (SET_NAME, DICTATION)
+SAFETY = "safety"
 SUMMARY_SCHEMA = 1
 DEFAULT_SUMMARY = REPO_ROOT / "docs" / "research" / "prompts-summary.json"
 # Targets of the Phase 6 goal. Never lowered here.
@@ -143,6 +174,12 @@ EDITOR = "Claude Code"
 PANEL_MARKER = "Visual Studio Code [Claude Code]"
 
 TOKEN = re.compile(r"[^\W_]+")
+
+# The correction variants of mouse 5 into Claude Code (--variants, --safety): (name fixes, common-sense fixes).
+PHASE8 = "phase8"  # AutoRewriter(name_fixes=False), common sense off: the Phase 8 correction
+NAMES = "names"  # name fixes only
+COMMON_SENSE = "common_sense"  # name fixes and common-sense fixes
+VARIANTS = {PHASE8: (False, False), NAMES: (True, False), COMMON_SENSE: (True, True)}
 
 
 class PromptScriptError(DatasetError):
@@ -360,17 +397,19 @@ def _content_counts(text: str) -> Counter:
 
 
 def invented_words(source: str, output: str, pack: object | None = None, project: str = "",
-                   corrected: str | None = None) -> tuple[int, int]:
+                   corrected: str | None = None, names: Iterable[str] = ()) -> tuple[int, int]:
     """(invented content words, pack words outside the context part) of ``output`` against its input ``source``.
 
     A content word beyond its count in ``source`` is invented unless it is a
-    structure word or a pack word; a number beyond its count always is. Pack
-    words beyond their count outside the context part are counted apart,
-    against ``corrected`` too when given: a misheard word the correction
-    replaced with a pack term is the dictation's, not a requirement from the
-    pack (it is measured as a domain-term fix).
+    structure word, a pack word or a word of a personal-vocabulary name in
+    ``names`` (a misheard name the correction wrote as listed, as a pack
+    term); a number beyond its count always is. Pack words beyond their
+    count outside the context part are counted apart, against ``corrected``
+    too when given: a misheard word the correction replaced with a pack term
+    is the dictation's, not a requirement from the pack (it is measured as a
+    domain-term fix).
     """
-    known = pack_vocabulary(pack, project)
+    known = pack_vocabulary(pack, project) | _name_words(names)
     before = _content_counts(source)
     extra = _content_counts(output) - before
     invented = sum(count for word, count in extra.items()
@@ -382,10 +421,41 @@ def invented_words(source: str, output: str, pack: object | None = None, project
     return invented, from_pack
 
 
+def _name_words(names: Iterable[str]) -> frozenset[str]:
+    return frozenset(fold(word) for name in names if isinstance(name, str) for word in tokens(name))
+
+
+def invented_beyond_fixes(source: str, corrected: str, output: str, pack: object | None = None, project: str = "",
+                          names: Iterable[str] = ()) -> int:
+    """Invented content words of ``output`` (the ``invented_words`` rule) beyond ``source`` and ``corrected``.
+
+    What the correction itself brought (``invented_words(source,
+    corrected)``: the ordinary words of a common-sense fix) is left to
+    ``invented_reference``, which checks it against what was said; this
+    counts everything else the output adds.
+    """
+    known = pack_vocabulary(pack, project) | _name_words(names)
+    extra = _content_counts(output) - (_content_counts(source) | _content_counts(corrected))
+    return sum(count for word, count in extra.items()
+               if is_number(word) or (word not in STRUCTURE and word not in known))
+
+
 def term_errors(reference: str, text: str, terms: Sequence[str]) -> tuple[int, int]:
     """(occurrences of ``terms`` in ``reference``, how many of them ``text`` lacks)."""
     counts = term_recall([(reference, text)], sorted(set(terms)))
     return counts.expected, counts.expected - counts.found
+
+
+def invented_reference(reference: str, source: str, corrected: str) -> int:
+    """Content words the correction brought (beyond their count in ``source``) that ``reference`` does not hold.
+
+    Computed against the clean reference, independently of the product
+    guard: a misheard word fixed to what was said brings nothing invented.
+    """
+    def content(text: str) -> list[str]:
+        return [word for word in normalize_words(text) if is_content(word)]
+
+    return invented_against(content(reference), content(source), content(corrected))
 
 
 # ---------------------------------------------------------------- mouse 5, today and new
@@ -485,6 +555,19 @@ class TakeResult:
     hints: str = ""  # the reason code of the take's decoding hints ("" with today's hints)
     hint_switches: int = 0  # hint changes the heard-term source chose from the replay's partials
     likely: int = 0  # terms the new correction's prompt listed as sounding like the dictation
+    variant: str = ""  # the correction variant of the new mouse 5 ("": the app's settings)
+    name_occurrences: int = 0  # vocabulary and project names in the reference
+    name_errors_source: int = 0  # of them, missing from mouse 5's input
+    name_errors_new: int = 0  # of them, missing from the new corrected text
+    names_prestep: int = 0  # names the deterministic pre-step wrote as listed
+    sensible: int = 0  # misheard groups the guard let common sense fix
+    kept: int = 0  # fixes typed as dictated
+    reference_words: int = 0  # words of the clean reference
+    word_errors_source: int = 0  # word edits of mouse 5's input against the clean reference
+    word_errors_new: int = 0  # word edits of the new corrected text against the clean reference
+    invented_reference: int = 0  # content words the correction brought that the reference does not hold
+    invented_fixes: int = 0  # invented content words (against the input) the correction itself brought
+    invented_beyond: int = 0  # invented content words of the output beyond the input and the corrected text
 
     @property
     def spoken(self) -> bool:
@@ -506,22 +589,28 @@ def _today_fields(result: TakeResult) -> dict:
 
 
 def run_take(take: Take, set_name: str, case: str, heard: str, asr_s: float, product: Product,
-             today_from: TakeResult | None = None, hints: str = "") -> TakeResult:
+             today_from: TakeResult | None = None, hints: str = "", *, project: str | None = None,
+             enrich_prompt: bool = True, today: bool = True, variant: str = "") -> TakeResult:
     """The take's final text through the app's text pipeline, then today's and the new mouse 5.
 
     With ``today_from`` (the take's run with today's hints), today's mouse 5
     is that run's, not asked again: only the new mouse 5 runs on ``heard``.
+    ``project`` (None: the take's own) names the simulated window's project;
+    ``enrich_prompt`` False asks no enrichment; ``today`` False (without
+    ``today_from``) asks no today's mouse 5. ``variant`` only labels the
+    result: the rewriter is used as it is set.
     """
     from quill.inject import Target
 
-    project = take_project(take)
+    project = take_project(take) if project is None else project
     info = window(project)
     product.window.info = info
     base = {"id": take.id, "set": set_name, "case": case, "reference": take.clean, "heard": heard, "asr_s": asr_s,
-            "hints": hints}
+            "hints": hints, "variant": variant}
     processed = product.pipeline(heard, Target(0, 0)) if heard.strip() else None
     if processed is None or not processed.text.strip():
-        today_fields = _today_fields(today_from) if today_from is not None else {"today_reason": NO_SPEECH}
+        today_fields = (_today_fields(today_from) if today_from is not None
+                        else {"today_reason": NO_SPEECH if today else ""})
         return TakeResult(**base, **today_fields, reason=NO_SPEECH)
     source = processed.text
     audio_s = take.duration_s
@@ -529,9 +618,9 @@ def run_take(take: Take, set_name: str, case: str, heard: str, asr_s: float, pro
     rewriter = product.rewriter
     if product.hold_start is not None:
         product.hold_start()  # with no hold time: the model call follows at once
-    if today_from is None:
-        today = rewriter.rewrite(source, audio_s=audio_s, profile=profile, keep=processed.keep,
-                                 project=autorewrite.project_hint(info, product.names), force=True, context=False)
+    if today_from is None and today:
+        today_run = rewriter.rewrite(source, audio_s=audio_s, profile=profile, keep=processed.keep,
+                                     project=autorewrite.project_hint(info, product.names), force=True, context=False)
     folder = processed.project_folder
     pack, pack_reason, pack_s = None, "", 0.0
     if folder is not None and product.packs is not None:
@@ -542,19 +631,27 @@ def run_take(take: Take, set_name: str, case: str, heard: str, asr_s: float, pro
     rewriter.enricher = capture
     try:
         new = rewriter.rewrite(source, audio_s=audio_s, profile=profile, keep=processed.keep,
-                               project=processed.project, force=True, pack=pack, enrich_prompt=True, context=True)
+                               project=processed.project, force=True, pack=pack, enrich_prompt=enrich_prompt,
+                               context=True)
     finally:
         rewriter.enricher = capture.enricher
-    corrected = capture.text if capture.text is not None else (source if not new.corrected else new.text)
+    # The text before enrichment: the correction's, or on every other path (refused, timed out) the dictation
+    # with the name pre-step's names, as mouse 5 types it.
+    corrected = capture.text if capture.text is not None else new.text
     occurrences, pipeline_errors = term_errors(take.clean, source, take.terms)
     if today_from is not None:
         today_fields = _today_fields(today_from)
+    elif today:
+        today_fields = {"today": today_run.text, "today_reason": today_run.reason,
+                        "term_errors_today": term_errors(take.clean, today_run.text, take.terms)[1],
+                        "lost_today": lost_words(take.clean, source, today_run.text),
+                        "invented_today": invented_words(source, today_run.text)[0], "today_s": today_run.seconds}
     else:
-        today_fields = {"today": today.text, "today_reason": today.reason,
-                        "term_errors_today": term_errors(take.clean, today.text, take.terms)[1],
-                        "lost_today": lost_words(take.clean, source, today.text),
-                        "invented_today": invented_words(source, today.text)[0], "today_s": today.seconds}
-    invented_new, from_pack = invented_words(source, new.text, pack, processed.project, corrected)
+        today_fields = {}
+    names = (*product.names, *take.project_names)
+    invented_new, from_pack = invented_words(source, new.text, pack, processed.project, corrected, product.names)
+    name_occurrences, name_errors_source = term_errors(take.clean, source, names)
+    source_edits, new_edits = text_edits(take.clean, source), text_edits(take.clean, corrected)
     return TakeResult(
         **base, **today_fields, source=source, corrected=corrected, final=new.text,
         project_found=folder is not None, pack=pack_reason, pack_found=pack is not None,
@@ -565,6 +662,13 @@ def run_take(take: Take, set_name: str, case: str, heard: str, asr_s: float, pro
         invented_new=invented_new, pack_outside_context=from_pack,
         pack_s=pack_s, correction_s=new.seconds, enrich_s=new.enrich_seconds,
         enrich_tidied=getattr(capture.result, "tidied", 0) or 0, likely=new.likely,
+        name_occurrences=name_occurrences, name_errors_source=name_errors_source,
+        name_errors_new=term_errors(take.clean, corrected, names)[1], names_prestep=getattr(new, "names", 0),
+        sensible=getattr(new, "sensible", 0), kept=getattr(new, "kept", 0),
+        reference_words=source_edits.reference_words, word_errors_source=source_edits.errors,
+        word_errors_new=new_edits.errors, invented_reference=invented_reference(take.clean, source, corrected),
+        invented_fixes=invented_words(source, corrected, pack, processed.project, names=product.names)[0],
+        invented_beyond=invented_beyond_fixes(source, corrected, new.text, pack, processed.project, product.names),
     )
 
 
@@ -634,6 +738,66 @@ def measure_after(set_name: str, takes: Sequence[Take], cases: dict[str, str],
     return results
 
 
+@contextmanager
+def rewriter_variant(rewriter: object, variant: str) -> Iterator[None]:
+    """The rewriter set as the correction ``variant`` (``VARIANTS``); its own settings come back afterwards."""
+    name_fixes, common_sense = VARIANTS[variant]
+    saved = (getattr(rewriter, "name_fixes", autorewrite.NAME_FIXES), getattr(rewriter, "common_sense_fixes", False))
+    rewriter.name_fixes, rewriter.common_sense_fixes = name_fixes, common_sense
+    try:
+        yield
+    finally:
+        rewriter.name_fixes, rewriter.common_sense_fixes = saved
+
+
+def app_variant(rewriter: object) -> str | None:
+    """The correction variant the rewriter is set as (the app's settings or the override); None: none of them."""
+    state = (bool(getattr(rewriter, "name_fixes", autorewrite.NAME_FIXES)),
+             bool(getattr(rewriter, "common_sense_fixes", False)))
+    return next((name for name, value in VARIANTS.items() if value == state), None)
+
+
+def measure_variants(set_name: str, takes: Sequence[Take], cases: dict[str, str],
+                     transcripts: Sequence[tuple[str, float]], reasons: Sequence[str], after: Sequence[TakeResult],
+                     product: Product) -> dict[str, list[TakeResult]]:
+    """The new mouse 5 of each correction variant on the transcripts of the app's hint pass (``after``'s).
+
+    The variant the rewriter is set as is the ``after`` run itself; each
+    other one asks the new mouse 5 again (today's mouse 5 stays ``after``'s).
+    """
+    from dataclasses import replace
+
+    main = app_variant(product.rewriter)
+    runs: dict[str, list[TakeResult]] = {}
+    for variant in VARIANTS:
+        if variant == main:
+            runs[variant] = [replace(result, variant=variant) for result in after]
+            continue
+        with rewriter_variant(product.rewriter, variant):
+            runs[variant] = [run_take(take, set_name, cases.get(take.id, take.case), heard, asr_s, product,
+                                      today_from=earlier, hints=reason, variant=variant)
+                             for take, (heard, asr_s), reason, earlier in zip(takes, transcripts, reasons, after,
+                                                                              strict=True)]
+    return runs
+
+
+def measure_safety(takes: Sequence[Take], transcripts: Sequence[tuple[str, float]],
+                   product: Product) -> dict[str, list[TakeResult]]:
+    """Each correction variant on every dictation take as if dictated into Claude Code without a project.
+
+    Context mode without a project or pack, no enrichment and no today's
+    mouse 5: a safety set for what the corrections change in ordinary
+    dictation.
+    """
+    runs: dict[str, list[TakeResult]] = {}
+    for variant in VARIANTS:
+        with rewriter_variant(product.rewriter, variant):
+            runs[variant] = [run_take(take, SAFETY, take.case, heard, asr_s, product, project="", enrich_prompt=False,
+                                      today=False, variant=variant)
+                             for take, (heard, asr_s) in zip(takes, transcripts, strict=True)]
+    return runs
+
+
 def model_state(product: Product) -> bool | None:
     """Whether the model is in memory now; None when unknown or unreadable (read-only)."""
     if product.model_loaded is None:
@@ -663,6 +827,103 @@ def _seconds(values: Sequence[float], percent: float) -> float | None:
 def dataset_counts(dataset: Dataset, takes: int | None = None) -> dict:
     return {"script_rows": dataset.script_rows, "recorded": len(dataset.takes) if takes is None else takes,
             "pending": len(dataset.pending), "invalid": len(dataset.invalid)}
+
+
+def _ratio(errors: int, words: int) -> float | None:
+    return round(errors / words, 4) if words else None
+
+
+def reference_block(spoken: Sequence[TakeResult]) -> dict:
+    """Names, word errors and invented words of the new corrected text against the clean reference; counts only.
+
+    ``source`` is mouse 5's input, ``corrected`` the text after the
+    correction (before enrichment); ``names_fixed`` is source minus corrected.
+    """
+    words = sum(r.reference_words for r in spoken)
+    source = sum(r.word_errors_source for r in spoken)
+    corrected = sum(r.word_errors_new for r in spoken)
+    names_source = sum(r.name_errors_source for r in spoken)
+    names_new = sum(r.name_errors_new for r in spoken)
+    return {"name_occurrences": sum(r.name_occurrences for r in spoken),
+            "name_errors": {"source": names_source, "corrected": names_new},
+            "names_fixed": names_source - names_new,
+            "names_prestep": sum(r.names_prestep for r in spoken),
+            "common_sense_fixes": sum(r.sensible for r in spoken),
+            "kept_as_dictated": sum(r.kept for r in spoken),
+            "reference_words": words,
+            "word_errors": {"source": source, "corrected": corrected},
+            "wer": {"source": _ratio(source, words), "corrected": _ratio(corrected, words)},
+            "invented_reference": sum(r.invented_reference for r in spoken)}
+
+
+def variant_block(results: Sequence[TakeResult], terms: bool = False) -> dict:
+    """One correction variant of a set: counts, reasons and correction timings; never text, names or terms."""
+    spoken = [r for r in results if r.spoken]
+    called = [r for r in spoken if r.enrich_called]
+    refusals = Counter(r.detail for r in spoken if r.reason == autorewrite.REFUSED)
+    return {
+        "takes": len(results),
+        "no_speech": len(results) - len(spoken),
+        "term_errors": {"pipeline": sum(r.term_errors_pipeline for r in spoken),
+                        "new": sum(r.term_errors_new for r in spoken)} if terms else None,
+        **reference_block(spoken),
+        "lost": sum(r.lost_new for r in spoken),
+        "invented": sum(r.invented_new for r in spoken),
+        "invented_fixes": sum(r.invented_fixes for r in spoken),
+        "invented_beyond_fixes": sum(r.invented_beyond for r in spoken),
+        "pack_outside_context": sum(r.pack_outside_context for r in spoken),
+        "enrichment_requests": len(called),
+        "enriched": sum(r.enrichment == enrich.ENRICHED for r in spoken),
+        "enrichment_refused": sum(r.enrichment == enrich.REFUSED for r in spoken),
+        "reasons": {"correction": dict(sorted(Counter(r.reason for r in spoken).items())),
+                    "correction_refusals": dict(sorted(refusals.items()))},
+        "latency": {"correction_p50_s": _seconds([r.correction_s for r in spoken], 50),
+                    "correction_p95_s": _seconds([r.correction_s for r in spoken], 95),
+                    "total_p50_s": _seconds([r.total_s for r in spoken], 50),
+                    "total_p95_s": _seconds([r.total_s for r in spoken], 95)},
+    }
+
+
+def variants_block(runs: dict[str, Sequence[TakeResult]], terms: bool = False) -> dict:
+    return {name: variant_block(results, terms) for name, results in runs.items()}
+
+
+def safety_block(runs: dict[str, Sequence[TakeResult]], dataset: dict) -> dict:
+    """The safety set: every dictation take into Claude Code without a project, per variant; counts only."""
+    return {"status": "measured", "dataset": dataset, "takes": len(next(iter(runs.values()), ())),
+            "enrichment": False, "variants": variants_block(runs)}
+
+
+def common_sense_rule(blocks: dict[str, dict]) -> dict | None:
+    """Whether the common-sense fixes may ship on, from each set's variants (None: no variants measured).
+
+    Against name fixes only: fewer reference word errors in all and none
+    more in any set, with content words lost 0, invented against the input
+    beyond the correction's own fixes 0 (``invented_beyond_fixes``) and
+    invented against the reference 0 in every set. A common-sense fix always
+    brings words the input lacks (``invented_fixes``, reported); whether
+    they are what was said is ``invented_reference``. Computed from the
+    numbers only; the decision itself stays with the run that ships it.
+    """
+    measured = {name: block["variants"] for name, block in blocks.items()
+                if isinstance(block, dict) and isinstance(block.get("variants"), dict)
+                and NAMES in block["variants"] and COMMON_SENSE in block["variants"]}
+    if not measured:
+        return None
+    sets = {}
+    for name, variants in measured.items():
+        off, on = variants[NAMES], variants[COMMON_SENSE]
+        sets[name] = {"word_errors_off": off["word_errors"]["corrected"],
+                      "word_errors_on": on["word_errors"]["corrected"], "lost": on["lost"],
+                      "invented_beyond_fixes": on["invented_beyond_fixes"], "invented_fixes": on["invented_fixes"],
+                      "invented_reference": on["invented_reference"]}
+    off_total = sum(entry["word_errors_off"] for entry in sets.values())
+    on_total = sum(entry["word_errors_on"] for entry in sets.values())
+    met = on_total < off_total and all(
+        entry["word_errors_on"] <= entry["word_errors_off"] and entry["lost"] == 0
+        and entry["invented_beyond_fixes"] == 0 and entry["invented_reference"] == 0 for entry in sets.values())
+    return {"compared": [NAMES, COMMON_SENSE], "word_errors": {"off": off_total, "on": on_total}, "sets": sets,
+            "met": met}
 
 
 def likely_block(spoken: Sequence[TakeResult]) -> dict:
@@ -700,6 +961,7 @@ def set_block(results: Sequence[TakeResult], dataset: dict, product_timeouts: di
         "tidied": {"replies": sum(r.enrich_tidied > 0 for r in called),
                    "enriched": sum(r.enrich_tidied > 0 and r.enrichment == enrich.ENRICHED for r in called)},
         "likely_terms": likely_block(spoken),
+        "against_reference": reference_block(spoken),
         "reasons": {
             "today": dict(sorted(Counter(r.today_reason for r in spoken).items())),
             "correction": dict(sorted(Counter(r.reason for r in spoken).items())),
@@ -826,11 +1088,16 @@ def check_targets(summary: dict) -> list[tuple[bool, str]]:
     return lines
 
 
-def build_summary(blocks: dict[str, dict], engine: dict, rewrite: dict) -> dict:
+def build_summary(blocks: dict[str, dict], engine: dict, rewrite: dict, safety: dict | None = None) -> dict:
     summary: dict = {"schema": SUMMARY_SCHEMA, "kind": "mouse5_prompts",
                      "status": "measured" if any(b.get("status") == "measured" for b in blocks.values())
                      else "pending_recordings",
                      "targets": targets(), "sets": blocks, "engine": engine, "rewrite": rewrite}
+    if safety is not None:
+        summary[SAFETY] = safety
+    rule = common_sense_rule({**blocks, **({SAFETY: safety} if safety is not None else {})})
+    if rule is not None:
+        summary["common_sense_rule"] = rule
     checks = check_targets(summary)
     names = ("complete", "term_errors", "lost", "invented", "pack_outside_context")
     summary["meets_targets"] = {name: met for name, (met, _) in zip(names, checks)}
@@ -865,16 +1132,23 @@ def _rows(results: Sequence[TakeResult]) -> list[dict]:
              "lost_today": r.lost_today, "lost_new": r.lost_new, "invented_today": r.invented_today,
              "invented_new": r.invented_new, "pack_outside_context": r.pack_outside_context,
              "asr_s": round(r.asr_s, 3), "today_s": round(r.today_s, 3), "pack_s": round(r.pack_s, 3),
-             "correction_s": round(r.correction_s, 3), "enrich_s": round(r.enrich_s, 3)} for r in results]
+             "correction_s": round(r.correction_s, 3), "enrich_s": round(r.enrich_s, 3), "variant": r.variant,
+             "name_occurrences": r.name_occurrences, "name_errors_source": r.name_errors_source,
+             "name_errors_new": r.name_errors_new, "names_prestep": r.names_prestep, "sensible": r.sensible,
+             "kept": r.kept, "reference_words": r.reference_words, "word_errors_source": r.word_errors_source,
+             "word_errors_new": r.word_errors_new, "invented_reference": r.invented_reference,
+             "invented_fixes": r.invented_fixes, "invented_beyond": r.invented_beyond} for r in results]
 
 
 def write_private(run_dir: Path, results: Sequence[TakeResult], results_dir: Path = RESULTS_DIR,
-                  before: Sequence[TakeResult] = (), today: Sequence[TakeResult] = ()) -> tuple[Path, Path]:
+                  before: Sequence[TakeResult] = (), today: Sequence[TakeResult] = (),
+                  extra: dict[str, Sequence[TakeResult]] | None = None) -> tuple[Path, Path]:
     """Per-take JSON and the before/after enrichment examples, only under bench/results/.
 
     ``before`` (the runs with the Phase 7 project hints) go to
-    ``takes-before.json`` and ``today`` (the runs with today's decoding hints)
-    to ``takes-today.json``.
+    ``takes-before.json``, ``today`` (the runs with today's decoding hints)
+    to ``takes-today.json`` and each of ``extra`` (the correction variants
+    and the safety set) to ``takes-<key>.json``.
     """
     run_dir = Path(run_dir)
     if not _inside(run_dir / "takes.json", results_dir):
@@ -882,7 +1156,9 @@ def write_private(run_dir: Path, results: Sequence[TakeResult], results_dir: Pat
     run_dir.mkdir(parents=True, exist_ok=True)
     takes_path = run_dir / "takes.json"
     takes_path.write_text(json.dumps(_rows(results), ensure_ascii=False, indent=2), encoding="utf-8")
-    for name, rows in (("takes-before.json", before), ("takes-today.json", today)):
+    named = [("takes-before.json", before), ("takes-today.json", today)]
+    named += [(f"takes-{key}.json", rows) for key, rows in (extra or {}).items()]
+    for name, rows in named:
         if rows:
             (run_dir / name).write_text(json.dumps(_rows(rows), ensure_ascii=False, indent=2), encoding="utf-8")
     heard_today = {r.id: r.heard for r in today}
@@ -978,7 +1254,8 @@ def default_streamer(hints: Sequence[str]) -> tuple[Streamer, dict]:
 
 
 def default_product(vocabulary: object, generic_terms: Sequence[str], product_timeouts: bool = False,
-                    correction_candidates: bool = autorewrite.LIKELY_TERMS) -> Product:
+                    correction_candidates: bool = autorewrite.LIKELY_TERMS,
+                    common_sense: bool | None = None) -> Product:
     """The app's text pipeline, project folders, context packs and rewriter from its config, warmed up.
 
     The rewriter gets ``BENCH_TIMEOUT_S`` for both calls; the local model is
@@ -988,8 +1265,10 @@ def default_product(vocabulary: object, generic_terms: Sequence[str], product_ti
     (no warm-up turn here), so a first call may meet a model that is not
     loaded. ``correction_candidates`` lists the terms that sound like the
     dictation first in the correction prompt (``AutoRewriter(likely_terms=
-    ...)``; the app's default when not given). Raises SettingsError when
-    Ollama cannot answer.
+    ...)``; the app's default when not given). ``common_sense`` overrides
+    ``[autorewrite] common_sense_fixes`` (None: the config's). As in the app,
+    the rewriter's name fixes read the personal vocabulary names. Raises
+    SettingsError when Ollama cannot answer.
     """
     from dataclasses import replace
 
@@ -1012,14 +1291,16 @@ def default_product(vocabulary: object, generic_terms: Sequence[str], product_ti
     except OllamaError as exc:
         raise SettingsError(f"prompts: Ollama unavailable: {' '.join(str(exc).split())[:160]}") from None
     warmer = None
+    names = tuple(entry.text for entry in getattr(vocabulary, "names", ()))
+    switches = {"likely_terms": correction_candidates, "names": lambda: names, "common_sense_fixes": common_sense}
     if product_timeouts:
         # As the app: the warm-up at each mouse 5 hold and the bounded wait before a correction.
         warmer = ModelWarmer(client, config.ollama_model)
         rewriter = autorewrite.AutoRewriter(client, config.ollama_model, config.autorewrite, warmer=warmer,
-                                            likely_terms=correction_candidates)
+                                            **switches)
     else:
         settings = replace(config.autorewrite, timeout_s=BENCH_TIMEOUT_S, enrich_timeout_s=BENCH_TIMEOUT_S)
-        rewriter = autorewrite.AutoRewriter(client, config.ollama_model, settings, likely_terms=correction_candidates)
+        rewriter = autorewrite.AutoRewriter(client, config.ollama_model, settings, **switches)
     holder = Window()
     folders = ProjectFolders(config.project_context.folders, config.voice.shortcut_dirs)
     pipeline = TextPipeline(config, vocabulary=vocabulary, generic_terms=generic_terms, describe=holder.describe,
@@ -1033,7 +1314,6 @@ def default_product(vocabulary: object, generic_terms: Sequence[str], product_ti
             "timeouts": "product" if product_timeouts else "bench", "cleanup": config.cleanup_mode}
     if product_timeouts:
         info.update(keep_alive=config.autorewrite.keep_alive, load_wait_s=config.autorewrite.load_wait_s)
-    names = tuple(entry.text for entry in getattr(vocabulary, "names", ()))
     return Product(pipeline, holder, rewriter, names, packs.lookup, info,
                    hold_start=(lambda: warmer.warm("mouse 5 hold")) if warmer is not None else None,
                    model_loaded=lambda: config.ollama_model in client.loaded(),
@@ -1125,9 +1405,10 @@ class Loaded:
     dictation: Dataset | None = None
     dictation_takes: tuple[Take, ...] = field(default=(), repr=False)
     dictation_rows: int = 0
+    safety_takes: tuple[Take, ...] = field(default=(), repr=False)  # every valid dictation take (--safety)
 
 
-def load_sets(settings: Settings, chosen: Sequence[str]) -> Loaded:
+def load_sets(settings: Settings, chosen: Sequence[str], safety: bool = False) -> Loaded:
     loaded = Loaded()
     if SET_NAME in chosen:
         prompts = settings.for_set(SET_NAME)
@@ -1140,6 +1421,10 @@ def load_sets(settings: Settings, chosen: Sequence[str]) -> Loaded:
         from bench.dataset import load_script
 
         loaded.dictation_rows = sum(row.style == CLAUDE_CODE for row in load_script(dictation))
+    if safety:
+        if loaded.dictation is None:
+            loaded.dictation = load_dataset(settings.for_set(DICTATION))
+        loaded.safety_takes = tuple(loaded.dictation.takes)
     return loaded
 
 
@@ -1159,10 +1444,10 @@ def _fixture_lines(check: Fixture) -> list[str]:
 
 
 def dry_run(settings: Settings, chosen: Sequence[str], out: Callable[[str], None] = print,
-            fixture: Callable[..., Fixture] = default_fixture) -> tuple[int, bool]:
+            fixture: Callable[..., Fixture] = default_fixture, safety: bool = False) -> tuple[int, bool]:
     """Counts only; opens no audio, model, microphone or Ollama. Returns (exit code, prompts complete)."""
     try:
-        loaded = load_sets(settings, chosen)
+        loaded = load_sets(settings, chosen, safety)
     except DatasetError as exc:
         out(f"error: {exc}")
         return 2, False
@@ -1191,9 +1476,12 @@ def dry_run(settings: Settings, chosen: Sequence[str], out: Callable[[str], None
                     out(line)
             except Exception as exc:  # noqa: BLE001 - the dry run reports the local config problem and goes on
                 out(f"fixture: not checked ({type(exc).__name__})")
-    if loaded.dictation is not None:
+    if loaded.dictation is not None and DICTATION in chosen:
         out(f"dictation claude-code takes: {len(loaded.dictation_takes)} recorded of {loaded.dictation_rows} "
             "script rows")
+    if safety:
+        out(f"safety set: {len(loaded.safety_takes)} valid dictation takes, each correction variant into Claude Code "
+            "without a project")
     return 0, done
 
 
@@ -1225,6 +1513,31 @@ def pass_line(view: dict) -> str:
               f"{view['enriched']}, refused {view.get('enrichment_refused', '?')}; p50/p95 s: transcription "
               f"{pair('transcription')}, correction {pair('correction')}, enrichment {pair('enrichment')}, mouse 5 "
               f"{pair('total')}")
+
+
+def variant_line(name: str, view: dict) -> str:
+    """One correction variant's counts and correction p50/p95 seconds (``variant_block`` shape) on one line."""
+    errors = view.get("term_errors")
+    names, words, wer = view["name_errors"], view["word_errors"], view["wer"]
+    latency = view.get("latency") or {}
+    return (f"{name}: names fixed {view['names_fixed']} of {view['name_occurrences']} (missing {names['source']} -> "
+            f"{names['corrected']}; pre-step {view['names_prestep']}); "
+            + (f"domain-term errors {errors['new']}; " if errors else "")
+            + f"word errors {words['source']} -> {words['corrected']} of {view['reference_words']} (WER "
+              f"{_pct(wer['source'])} -> {_pct(wer['corrected'])}); lost {view['lost']}, invented {view['invented']} "
+              f"(by the fixes {view['invented_fixes']}, beyond them {view['invented_beyond_fixes']}), invented vs "
+              f"reference {view['invented_reference']}; common-sense fixes {view['common_sense_fixes']}; "
+              f"enrichment requested {view['enrichment_requests']}, accepted {view['enriched']}; correction p50/p95 s "
+              f"{_pct(latency.get('correction_p50_s'))} / {_pct(latency.get('correction_p95_s'))}")
+
+
+def _variant_lines(block: dict, indent: str = "  ") -> list[str]:
+    variants = block.get("variants")
+    if not isinstance(variants, dict):
+        return []
+    app = block.get("variant_app")
+    return [f"{indent}variant {variant_line(name, view)}" + (" (the app's settings)" if name == app else "")
+            for name, view in variants.items()]
 
 
 def report_lines(summary: dict) -> list[str]:
@@ -1270,6 +1583,20 @@ def report_lines(summary: dict) -> list[str]:
         if over.get("correction") is not None:
             lines.append(f"  over the product timeout: correction {over['correction']} of "
                          f"{over.get('correction_calls', '?')} calls, enrichment {over.get('enrichment')}")
+        lines += _variant_lines(block)
+    safety = summary.get(SAFETY)
+    if isinstance(safety, dict):
+        lines.append(f"safety: {safety['takes']} dictation takes into Claude Code without a project, no enrichment")
+        lines += _variant_lines(safety)
+    rule = summary.get("common_sense_rule")
+    if isinstance(rule, dict):
+        lines.append(f"common-sense rule: {'met' if rule['met'] else 'NOT met'} (word errors with name fixes only "
+                     f"{rule['word_errors']['off']}, with common sense {rule['word_errors']['on']}; lost, invented "
+                     "beyond the fixes and invented vs reference must be 0 in every set)")
+    rewrite = summary.get("rewrite") or {}
+    if isinstance(rewrite.get("common_sense_fixes"), bool):
+        lines.append(f"correction settings: name fixes {'on' if rewrite.get('name_fixes') else 'off'}, common-sense "
+                     f"fixes {'on' if rewrite['common_sense_fixes'] else 'off'}")
     candidates = (summary.get("rewrite") or {}).get("correction_candidates")
     if isinstance(candidates, bool) and candidates is not autorewrite.LIKELY_TERMS:
         lines.append(f"correction candidates: {'on' if candidates else 'off'} (ablation)")
@@ -1320,6 +1647,18 @@ def main(
                                  "prompt (the app does not)")
     candidates.add_argument("--no-correction-candidates", dest="correction_candidates", action="store_const",
                             const=False, help="leave them out (the app's default)")
+    common = parser.add_mutually_exclusive_group()
+    common.add_argument("--common-sense", dest="common_sense", action="store_const", const=True, default=None,
+                        help="the main run fixes short misheard groups with ordinary words (overrides "
+                             "[autorewrite] common_sense_fixes)")
+    common.add_argument("--no-common-sense", dest="common_sense", action="store_const", const=False,
+                        help="the main run keeps the terms-only rule (overrides [autorewrite] common_sense_fixes)")
+    parser.add_argument("--variants", action="store_true",
+                        help="also run the Phase 8, names-only and common-sense corrections on the transcripts of "
+                             "the app's hint pass")
+    parser.add_argument("--safety", action="store_true",
+                        help="also run each correction variant on every valid dictation take, into Claude Code "
+                             "without a project (no enrichment)")
     args = parser.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -1339,12 +1678,12 @@ def main(
     try:
         settings = load_settings(args.config)
         if args.dry_run:
-            code, done = dry_run(settings, chosen, out, fixture)
+            code, done = dry_run(settings, chosen, out, fixture, safety=args.safety)
             if code == 0 and args.require and not done:
                 out("NOT met: the prompts set has missing takes (py -3.12 -m bench.record --set prompts)")
                 return 1
             return code
-        loaded = load_sets(settings, chosen)
+        loaded = load_sets(settings, chosen, safety=args.safety)
         vocabulary = load_vocabulary(args.vocabulary)
     except (SettingsError, DatasetError, VocabularyError) as exc:
         out(f"error: {exc}")
@@ -1358,13 +1697,13 @@ def main(
             work.append((SET_NAME, loaded.prompts.takes, {row.id: row.case for row in loaded.rows}))
         else:
             blocks[SET_NAME] = pending_block(counts)
-    if loaded.dictation is not None:
+    if loaded.dictation is not None and DICTATION in chosen:
         if loaded.dictation_takes:
             work.append((DICTATION, loaded.dictation_takes, {}))
         else:
             blocks[DICTATION] = pending_block({"script_rows": loaded.dictation_rows, "recorded": 0,
                                                "pending": loaded.dictation_rows, "invalid": 0})
-    if not work:
+    if not work and not loaded.safety_takes:
         out("error: no recorded takes to measure (py -3.12 -m bench.record --set prompts)")
         return 2
 
@@ -1377,6 +1716,8 @@ def main(
         options["product_timeouts"] = True
     if args.correction_candidates is not None:
         options["correction_candidates"] = args.correction_candidates
+    if args.common_sense is not None:
+        options["common_sense"] = args.common_sense
     try:
         product = product_factory(vocabulary, generic, **options)
     except SettingsError as exc:
@@ -1389,6 +1730,7 @@ def main(
     switches: dict[str, list[int]] = {}
     sources: dict[str, int] = {}
     reasons: dict[str, list[str]] = {}
+    safety: list[tuple[str, float]] = []  # every dictation take with today's hints (--safety)
     project_chars: list[int] = []
     project_words: set[str] = set()  # the project hints' words: the pack's terms are real project terms
 
@@ -1403,9 +1745,17 @@ def main(
 
     try:
         streamer, stream_options = streamer_factory(hints)
-        streamer(work[0][1][:1])  # warm-up: loads the model and fills the caches
+        streamer((work[0][1] if work else loaded.safety_takes)[:1])  # warm-up: loads the model and fills the caches
         for name, takes, _ in work:
             transcripts[name] = split_streamed(streamer(takes))[0]
+        if loaded.safety_takes:
+            # Into Claude Code without a project the app gives today's hints: a take already heard so is reused.
+            known = {take.id: pair for name, takes, _ in work if name == DICTATION
+                     for take, pair in zip(takes, transcripts[name], strict=True)}
+            missing = [take for take in loaded.safety_takes if take.id not in known]
+            known.update(zip((take.id for take in missing),
+                             split_streamed(streamer(missing))[0] if missing else [], strict=True))
+            safety = [known[take.id] for take in loaded.safety_takes]
         for name, takes, _ in work:
             per_take = take_hints(takes, product)
             reasons[name] = [reason for _, reason in per_take]
@@ -1427,6 +1777,7 @@ def main(
     results: list[TakeResult] = []  # after: the heard-term hints
     previous: list[TakeResult] = []  # before: the Phase 7 project hints
     earlier: list[TakeResult] = []  # today's hints
+    extra: dict[str, list[TakeResult]] = {}  # the correction variants and the safety set, by output name
     loaded_before = model_state(product)
     for name, takes, cases in work:
         today = measure(name, takes, cases, transcripts[name], product)
@@ -1444,6 +1795,18 @@ def main(
         blocks[name]["relevance_hints"] = before_block(before, terms=name == SET_NAME)
         blocks[name]["today_hints"] = before_block(today, terms=name == SET_NAME)
         blocks[name]["heard_hints"] = heard_block(after, before, sources[name])
+        if args.variants:
+            runs = measure_variants(name, takes, cases, heard[name], reasons[name], after, product)
+            blocks[name]["variants"] = variants_block(runs, terms=name == SET_NAME)
+            blocks[name]["variant_app"] = app_variant(product.rewriter)
+            for variant, rows in runs.items():
+                extra.setdefault(variant, []).extend(rows)
+    safety_summary = None
+    if loaded.safety_takes:
+        runs = measure_safety(loaded.safety_takes, safety, product)
+        safety_summary = safety_block(runs, dataset_counts(loaded.dictation))
+        safety_summary["variant_app"] = app_variant(product.rewriter)
+        extra.update({f"{SAFETY}-{variant}": rows for variant, rows in runs.items()})
     ordered = {name: blocks[name] for name in SETS if name in blocks}
     engine = {**stream_options, "hints": {"count": len(hints), "chars": sum(len(h) for h in hints)},
               "project_hints": {"takes": len(project_chars),
@@ -1453,10 +1816,12 @@ def main(
                if key in product.info}
     rewrite["correction_candidates"] = (autorewrite.LIKELY_TERMS if args.correction_candidates is None
                                         else args.correction_candidates)
+    rewrite["name_fixes"] = bool(getattr(product.rewriter, "name_fixes", autorewrite.NAME_FIXES))
+    rewrite["common_sense_fixes"] = bool(getattr(product.rewriter, "common_sense_fixes", False))
     rewrite["first_call"] = first_call(earlier, loaded_before)
-    summary = build_summary(ordered, engine, rewrite)
+    summary = build_summary(ordered, engine, rewrite, safety_summary)
 
-    texts = private_texts([*results, *previous, *earlier])
+    texts = private_texts([*results, *previous, *earlier, *(r for rows in extra.values() for r in rows)])
     names = [entry.text for entry in vocabulary.names]
     for dataset in (loaded.prompts, loaded.dictation):
         if dataset is not None:
@@ -1474,7 +1839,7 @@ def main(
     names += sorted(word for word in project_words if distinctive_term(word))
     run_dir = Path(results_dir) / "prompts" / time.strftime("%Y%m%d-%H%M%S")
     try:
-        write_private(run_dir, results, results_dir, before=previous, today=earlier)
+        write_private(run_dir, results, results_dir, before=previous, today=earlier, extra=extra)
         write_summary(run_dir / "summary.json", summary, texts, names)
         write_summary(Path(args.summary), summary, texts, names)
     except ValueError as exc:

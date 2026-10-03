@@ -94,8 +94,13 @@ class ScriptedModel:
         return SimpleNamespace(content=text)
 
 
-def make_product(root, model, packs=PACKS, projects=PROJECTS, likely_terms=autorewrite.LIKELY_TERMS):
-    """The app's text pipeline, project detection and rewriter with invented folders and packs."""
+def make_product(root, model, packs=PACKS, projects=PROJECTS, likely_terms=autorewrite.LIKELY_TERMS, names=(),
+                 common_sense=None):
+    """The app's text pipeline, project detection and rewriter with invented folders and packs.
+
+    ``names`` are the personal-vocabulary names the rewriter's name fixes read; ``common_sense`` overrides the
+    example config's common-sense fixes (None: the config's, off).
+    """
     config = load_config(None, EXAMPLE_CONFIG)
     folders = {}
     for name in projects.values():
@@ -107,7 +112,8 @@ def make_product(root, model, packs=PACKS, projects=PROJECTS, likely_terms=autor
     pipeline = TextPipeline(config, vocabulary=_vocabulary(),
                             generic_terms=(), describe=holder.describe, projects=detector)
     settings = replace(config.autorewrite, timeout_s=P.BENCH_TIMEOUT_S, enrich_timeout_s=P.BENCH_TIMEOUT_S)
-    rewriter = autorewrite.AutoRewriter(model, "fake-model", settings, likely_terms=likely_terms)
+    rewriter = autorewrite.AutoRewriter(model, "fake-model", settings, likely_terms=likely_terms,
+                                        names=lambda: names, common_sense_fixes=common_sense)
     by_folder = {str(folder): packs.get(name) for name, folder in folders.items()}
 
     def lookup(folder):
@@ -118,7 +124,7 @@ def make_product(root, model, packs=PACKS, projects=PROJECTS, likely_terms=autor
             "enrich_timeout_s": config.autorewrite.enrich_timeout_s, "bench_timeout_s": P.BENCH_TIMEOUT_S,
             "cleanup": config.cleanup_mode}
     hints_for = P.app_hints(pipeline, lambda folder: by_folder.get(str(folder)), _vocabulary(), ())
-    return P.Product(pipeline, holder, rewriter, (), lookup, info, hints_for=hints_for)
+    return P.Product(pipeline, holder, rewriter, tuple(names), lookup, info, hints_for=hints_for)
 
 
 def _vocabulary():
@@ -1108,6 +1114,364 @@ class ProductTimeoutsTest(Case):
         product = SimpleNamespace(model_loaded=mock.Mock(side_effect=OSError("down")))
         self.assertIsNone(P.model_state(product))
         self.assertIsNone(P.first_call([], True))
+
+
+# ---------------------------------------------------------------- Phase 9: correction variants and the safety set
+
+
+VOCABULARY_NAME = "verja"  # an invented lower-case vocabulary name; the engine writes it "Verza"
+# Generic misheard groups (what was said, what the engine wrote): fixed only by common sense.
+COMMON_GROUPS = {"tu decides": "tudo cedo", "modelo local": "museu local"}
+
+VARIANT_SCRIPT = """# Invented prompts script with a vocabulary name and a misheard group
+
+| id | caso | frase | intenção | projeto | termos | estilo |
+|----|------|-------|----------|---------|--------|--------|
+| pp-01 | termo | Abre no <projeto-1> o repositório do verja e corre os testes do <termo-1> antes de publicar. | pedir | <projeto-1> | <termo-1> | claude-code |
+| pp-02 | termo | Olha, tu decides no <projeto-2> qual é a melhor opção para o <termo-2> de testes. | perguntar | <projeto-2> | <termo-2> | claude-code |
+| pp-03 | restrição | Revê a documentação do <termo-1> no <projeto-1> sem tocares nos ficheiros de configuração. | perguntar | <projeto-1> | <termo-1> | claude-code |
+"""
+
+
+def misheard(text):
+    """``text`` as the fake engine writes it: its terms, the vocabulary name and the common groups misheard."""
+    for term, wrong in MISHEARD.items():
+        text = re.sub(rf"\b{term}\b", wrong, text)
+    text = re.sub(rf"\b{VOCABULARY_NAME}\b", "Verza", text)
+    for said, wrong in COMMON_GROUPS.items():
+        text = text.replace(said, wrong)
+    return text
+
+
+class SenseModel(ScriptedModel):
+    """The local model: fixes the pack's terms as ScriptedModel, and a misheard group only under the common-sense
+    rule. It never fixes a name itself: only the rewriter's name pre-step does."""
+
+    def chat(self, model, system, user, max_tokens=None, history=(), timeout_s=None):
+        reply = super().chat(model, system, user, max_tokens, history, timeout_s)
+        if self.calls[-1].enrich:
+            return reply
+        self.calls[-1].system = system
+        text = reply.content
+        if autorewrite.COMMON_SENSE_RULE in system:
+            for said, wrong in COMMON_GROUPS.items():
+                text = text.replace(wrong, said)
+        return SimpleNamespace(content=text)
+
+
+class VariantsCase(Case):
+    script = VARIANT_SCRIPT
+
+    def run_main(self, *args, model=None, load=None):
+        model = model or SenseModel()
+        asked = []
+
+        def factory(vocab, generic, **options):
+            asked.append(options)
+            return make_product(self.root, model, names=(VOCABULARY_NAME,), common_sense=options.get("common_sense"))
+
+        streamer = FakeStreamer({**{row.id: misheard(spoken(row)) for row in self.rows()}, **self.extra_heard()})
+        summary = self.results / "committed-summary.json"
+        vocabulary = self.root / "vocabulary.toml"
+        vocabulary.write_text("", encoding="utf-8")
+        lines = []
+        patch = mock.patch.object(P, "load_sets", load) if load is not None else contextlib.nullcontext()
+        with patch, mock.patch("bench.audio_mme.WinMM", side_effect=AssertionError("the microphone was opened")):
+            code = P.main(["--config", str(self.config), "--summary", str(summary), "--vocabulary", str(vocabulary),
+                           "--set", "prompts", *args], product_factory=factory, streamer_factory=streamer.factory,
+                          results_dir=self.results, out=lines.append)
+        data = json.loads(summary.read_text(encoding="utf-8")) if summary.exists() else None
+        return code, data, lines, model, asked, streamer
+
+    def extra_heard(self):
+        return {}
+
+    def run_dir(self):
+        return next((self.results / "prompts").iterdir())
+
+
+class VariantsTest(VariantsCase):
+    """--variants: the Phase 8, names-only and common-sense corrections on the transcripts of the app's hint pass."""
+
+    def test_each_variant_on_the_same_transcripts(self):
+        self.record()
+        code, summary, lines, model, asked, streamer = self.run_main("--variants")
+        self.assertEqual((code, asked), (0, [{}]))
+        block = summary["sets"]["prompts"]
+        variants = block["variants"]
+        self.assertEqual(list(variants), [P.PHASE8, P.NAMES, P.COMMON_SENSE])
+        # The app's settings (example config): name fixes on, common sense off; that variant is the main run.
+        self.assertEqual(block["variant_app"], P.NAMES)
+        self.assertEqual((summary["rewrite"]["name_fixes"], summary["rewrite"]["common_sense_fixes"]), (True, False))
+        # The vocabulary name once and the project name in each take: the Phase 8 correction keeps the name wrong.
+        self.assertEqual([variants[v]["name_occurrences"] for v in variants], [4, 4, 4])
+        self.assertEqual([variants[v]["name_errors"] for v in variants],
+                         [{"source": 1, "corrected": 1}, {"source": 1, "corrected": 0}, {"source": 1, "corrected": 0}])
+        self.assertEqual([variants[v]["names_fixed"] for v in variants], [0, 1, 1])
+        self.assertEqual([variants[v]["names_prestep"] for v in variants], [0, 1, 1])
+        self.assertEqual([variants[v]["term_errors"] for v in variants], [{"pipeline": 3, "new": 0}] * 3)
+        # Only common sense fixes the misheard group: fewer word errors against the reference, nothing invented.
+        source = variants[P.PHASE8]["word_errors"]["source"]
+        corrected = [variants[v]["word_errors"]["corrected"] for v in variants]
+        self.assertEqual(source, 7)  # the name, two misheard groups of the terms, the misheard group of two words
+        self.assertEqual(corrected, [3, 2, 0])
+        self.assertEqual([variants[v]["common_sense_fixes"] for v in variants], [0, 0, 1])
+        # The ordinary word the common-sense fix brought is the one the reference holds; nothing beyond it.
+        self.assertEqual([variants[v]["invented_fixes"] for v in variants], [0, 0, 1])
+        self.assertLess(variants[P.COMMON_SENSE]["wer"]["corrected"], variants[P.NAMES]["wer"]["corrected"])
+        for name, view in variants.items():
+            with self.subTest(name):
+                self.assertEqual((view["lost"], view["invented_beyond_fixes"], view["invented_reference"],
+                                  view["pack_outside_context"]), (0, 0, 0, 0))
+                self.assertEqual(view["invented"], view["invented_fixes"])
+                self.assertEqual((view["takes"], view["enrichment_requests"], view["enriched"]), (3, 3, 3))
+                self.assertIsNotNone(view["latency"]["correction_p95_s"])
+        # The main block carries the same reference counts as its variant.
+        self.assertEqual(block["against_reference"]["word_errors"], variants[P.NAMES]["word_errors"])
+        self.assertEqual(block["against_reference"]["names_fixed"], 1)
+        self.assertEqual(summary["common_sense_rule"]["met"], True)
+        self.assertEqual(summary["common_sense_rule"]["word_errors"], {"off": 2, "on": 0})
+        self.assertEqual(summary["meets_targets"]["lost"], True)
+        # The names variant is the main run, not asked again: the Phase 8 and common-sense ones ask once per take.
+        context = [call for call in model.calls if not call.enrich and "<project_terms>" in call.user]
+        self.assertEqual(len(context), 9)
+        self.assertEqual(sum(autorewrite.NAME_RULE in call.system for call in context), 6)
+        self.assertEqual(sum(autorewrite.COMMON_SENSE_RULE in call.system for call in context), 3)
+        # Each variant runs on the heard pass's transcripts (the streamer replays nothing more).
+        self.assertEqual(len(streamer.calls), 4)
+        # Counts only in the summary and the report; per-take text under results/.
+        serialized = json.dumps(summary).casefold()
+        report = "\n".join(lines).casefold()
+        for secret in ("verja", "verza", "tudo cedo", "decides", "kwartz", "quartz", "nimbus", "orchard"):
+            self.assertNotIn(secret, serialized)
+            self.assertNotIn(secret, report)
+        self.assertTrue(any(line.startswith("  variant names: names fixed 1 of 4") and
+                            line.endswith("(the app's settings)") for line in lines))
+        self.assertIn("correction settings: name fixes on, common-sense fixes off", lines)
+        self.assertTrue(any(line.startswith("common-sense rule: met") for line in lines))
+        run = self.run_dir()
+        phase8 = json.loads((run / "takes-phase8.json").read_text(encoding="utf-8"))
+        sense = json.loads((run / "takes-common_sense.json").read_text(encoding="utf-8"))
+        self.assertIn("Verza", phase8[0]["corrected"])
+        self.assertIn("tu decides", sense[1]["corrected"])
+        self.assertEqual([t["variant"] for t in sense], [P.COMMON_SENSE] * 3)
+        self.assertNotIn("safety", summary)
+
+    def test_without_the_option_no_variant_runs(self):
+        self.record()
+        code, summary, lines, model, _, _ = self.run_main()
+        self.assertEqual(code, 0)
+        self.assertNotIn("variants", summary["sets"]["prompts"])
+        self.assertNotIn("common_sense_rule", summary)
+        self.assertEqual(len([call for call in model.calls if not call.enrich]), 6)
+        self.assertFalse(any((self.run_dir() / f"takes-{v}.json").exists() for v in P.VARIANTS))
+        # The main run still fixes the name with the app's settings and reports it against the reference.
+        self.assertEqual(summary["sets"]["prompts"]["against_reference"]["names_fixed"], 1)
+
+    def test_common_sense_overrides_the_main_run(self):
+        self.record()
+        code, summary, lines, model, asked, _ = self.run_main("--common-sense", "--variants")
+        self.assertEqual((code, asked), (0, [{"common_sense": True}]))
+        block = summary["sets"]["prompts"]
+        self.assertEqual(block["variant_app"], P.COMMON_SENSE)
+        self.assertIs(summary["rewrite"]["common_sense_fixes"], True)
+        self.assertEqual(block["against_reference"]["common_sense_fixes"], 1)
+        self.assertEqual(block["against_reference"]["word_errors"], block["variants"][P.COMMON_SENSE]["word_errors"])
+        # The main run is the common-sense variant: the other two ask again.
+        context = [call for call in model.calls if not call.enrich and "<project_terms>" in call.user]
+        self.assertEqual(sum(autorewrite.COMMON_SENSE_RULE in call.system for call in context), 3)
+        self.assertEqual(len(context), 9)
+        self.assertIn("correction settings: name fixes on, common-sense fixes on", lines)
+
+    def test_no_common_sense_is_the_config_default(self):
+        self.record()
+        code, summary, _, model, asked, _ = self.run_main("--no-common-sense")
+        self.assertEqual((code, asked), (0, [{"common_sense": False}]))
+        self.assertIs(summary["rewrite"]["common_sense_fixes"], False)
+        self.assertFalse(any(autorewrite.COMMON_SENSE_RULE in getattr(call, "system", "") for call in model.calls))
+
+    def test_both_common_sense_switches_are_refused(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+            P.main(["--common-sense", "--no-common-sense"], out=lambda line: None)
+        self.assertEqual(raised.exception.code, 2)
+
+    def test_the_rewriter_gets_its_own_settings_back(self):
+        product = make_product(self.root, SenseModel(), names=(VOCABULARY_NAME,))
+        rewriter = product.rewriter
+        self.assertEqual(P.app_variant(rewriter), P.NAMES)
+        for variant, state in P.VARIANTS.items():
+            with self.subTest(variant), P.rewriter_variant(rewriter, variant):
+                self.assertEqual((rewriter.name_fixes, rewriter.common_sense_fixes), state)
+                self.assertEqual(P.app_variant(rewriter), variant)
+        with self.assertRaises(RuntimeError), P.rewriter_variant(rewriter, P.PHASE8):
+            raise RuntimeError("a failed take")
+        self.assertEqual((rewriter.name_fixes, rewriter.common_sense_fixes), (True, False))
+        rewriter.name_fixes, rewriter.common_sense_fixes = False, True
+        self.assertIsNone(P.app_variant(rewriter))
+
+
+class SafetyTest(VariantsCase):
+    """--safety: every valid dictation take, each correction variant, into Claude Code without a project."""
+
+    DICTATION = (("dt-01", "Quero usar o modelo local para corrigir o texto ditado amanhã.", CLAUDE_CODE),
+                 ("dt-02", "Olá, amanhã falamos com calma sobre isto e o verja.", "default"),
+                 ("dt-03", "Diz ao nimbus-deck que o painel fica para amanhã.", "default"))
+
+    def takes(self):
+        return tuple(Take(take_id, 3.0, "dictation", "", "", Path(f"{take_id}.wav"), text, ("nimbus-deck",), style)
+                     for take_id, text, style in self.DICTATION)
+
+    def extra_heard(self):
+        heard = {take_id: misheard(text) for take_id, text, _ in self.DICTATION}
+        heard["dt-03"] = " "  # no speech
+        return heard
+
+    def load(self):
+        real = P.load_sets
+        takes = self.takes()
+        dataset = SimpleNamespace(takes=takes, script_rows=4, pending=("dt-04",), invalid=(),
+                                  names=frozenset({"nimbus-deck"}), reference_texts=lambda: [t.clean for t in takes])
+
+        def load_sets(settings, chosen, safety=False):
+            loaded = real(settings, chosen)
+            if safety:
+                loaded.dictation, loaded.safety_takes = dataset, takes
+            return loaded
+
+        return load_sets
+
+    def test_every_take_with_each_variant_counts_only(self):
+        self.record()
+        code, summary, lines, model, _, streamer = self.run_main("--safety", load=self.load())
+        self.assertEqual(code, 0)
+        safety = summary["safety"]
+        self.assertEqual((safety["status"], safety["takes"], safety["enrichment"]), ("measured", 3, False))
+        self.assertEqual(safety["dataset"], {"script_rows": 4, "recorded": 3, "pending": 1, "invalid": 0})
+        self.assertEqual(safety["variant_app"], P.NAMES)
+        variants = safety["variants"]
+        self.assertEqual(list(variants), [P.PHASE8, P.NAMES, P.COMMON_SENSE])
+        for name, view in variants.items():
+            with self.subTest(name):
+                self.assertEqual((view["takes"], view["no_speech"]), (3, 1))
+                self.assertIsNone(view["term_errors"])
+                self.assertEqual((view["enrichment_requests"], view["enriched"]), (0, 0))
+                self.assertEqual((view["lost"], view["invented_beyond_fixes"], view["invented_reference"]),
+                                 (0, 0, 0))
+        # The vocabulary name in dt-02 is fixed by the name pre-step without a project; the group by common sense.
+        self.assertEqual([variants[v]["names_fixed"] for v in variants], [0, 1, 1])
+        self.assertEqual([variants[v]["common_sense_fixes"] for v in variants], [0, 0, 1])
+        words = [variants[v]["word_errors"]["corrected"] for v in variants]
+        self.assertEqual(words, [2, 1, 0])
+        self.assertEqual([variants[v]["invented_fixes"] for v in variants], [0, 0, 1])
+        # The safety set counts in the rule but never in the targets.
+        self.assertEqual(set(summary["common_sense_rule"]["sets"]), {"safety"})
+        self.assertTrue(summary["common_sense_rule"]["met"])
+        self.assertEqual(set(summary["meets_targets"]), {"complete", "term_errors", "lost", "invented",
+                                                        "pack_outside_context", "all"})
+        # Transcribed with today's hints (no project) and never enriched; no today's mouse 5 for the safety set.
+        self.assertIn((["dt-01", "dt-02", "dt-03"], None), streamer.calls)
+        safety_calls = [call for call in model.calls if "Quero usar" in call.user or "Olá" in call.user]
+        self.assertEqual(len(safety_calls), 6)  # two spoken takes, three variants, the correction only
+        self.assertTrue(all(not call.enrich and "<project_terms>" not in call.user for call in safety_calls))
+        serialized = json.dumps(summary).casefold()
+        report = "\n".join(lines).casefold()
+        for secret in ("museu", "modelo local", "verja", "verza", "nimbus", "amanhã"):
+            self.assertNotIn(secret, serialized)
+            self.assertNotIn(secret, report)
+        self.assertIn("safety: 3 dictation takes into Claude Code without a project, no enrichment", lines)
+        run = self.run_dir()
+        rows = json.loads((run / "takes-safety-common_sense.json").read_text(encoding="utf-8"))
+        self.assertIn("modelo local", rows[0]["corrected"])
+        self.assertTrue(all(row["set"] == P.SAFETY and row["today_reason"] == "" for row in rows))
+
+    def test_a_summary_leaking_safety_text_is_refused(self):
+        self.record()
+        product = []
+
+        def factory(vocab, generic, **options):
+            product.append(make_product(self.root, SenseModel(), names=(VOCABULARY_NAME,)))
+            product[-1].info["model"] = "o museu local"  # spoken text of a safety take in an aggregate field
+            return product[-1]
+
+        summary = self.results / "committed-summary.json"
+        vocabulary = self.root / "vocabulary.toml"
+        vocabulary.write_text("", encoding="utf-8")
+        lines = []
+        streamer = FakeStreamer({**{row.id: misheard(spoken(row)) for row in self.rows()}, **self.extra_heard()})
+        with mock.patch.object(P, "load_sets", self.load()):
+            code = P.main(["--config", str(self.config), "--summary", str(summary), "--vocabulary", str(vocabulary),
+                           "--set", "prompts", "--safety"], product_factory=factory, streamer_factory=streamer.factory,
+                          results_dir=self.results, out=lines.append)
+        self.assertEqual(code, 1)
+        self.assertFalse(summary.exists())
+        self.assertIn("not written", lines[-1])
+
+    def test_dry_run_counts_the_safety_set_without_gpu_microphone_or_ollama(self):
+        lines = []
+        forbidden = mock.Mock(side_effect=AssertionError("the dry run loaded a model or Ollama"))
+        with mock.patch.object(P, "load_sets", self.load()), \
+                mock.patch("bench.audio_mme.WinMM", side_effect=AssertionError("the dry run opened the microphone")):
+            code = P.main(["--dry-run", "--config", str(self.config), "--set", "prompts", "--safety"],
+                          out=lines.append, product_factory=forbidden, streamer_factory=forbidden,
+                          fixture=lambda rows, projects, terms: P.Fixture(2, 2, 2, 2, 2, True))
+        self.assertEqual(code, 0)
+        self.assertIn("safety set: 3 valid dictation takes, each correction variant into Claude Code without a project",
+                      lines)
+        self.assertFalse(any("Quero" in line or "verja" in line for line in lines))
+
+
+class ReferenceCountsTest(unittest.TestCase):
+    """Word errors and invented words against the clean reference, independently of the product guard."""
+
+    def test_invented_against_the_reference(self):
+        reference = "Olha, tu decides qual é a melhor opção para o ficheiro de testes."
+        heard = "Olha, tudo cedo qual é a melhor opção para o ficheiro de testes."
+        self.assertEqual(P.invented_reference(reference, heard, reference), 0)  # a fix to what was said
+        self.assertEqual(P.invented_reference(reference, heard, heard), 0)  # nothing brought
+        # A sound-close fix the reference does not hold is invented, whatever the guard said.
+        self.assertEqual(P.invented_reference(reference, heard, heard.replace("tudo cedo", "tudo certo")), 1)
+        # Function words never count; a number always does; reordering brings nothing.
+        self.assertEqual(P.invented_reference(reference, heard, heard.replace("Olha,", "Olha, a")), 0)
+        self.assertEqual(P.invented_reference(reference, heard, heard + " 3"), 1)
+        self.assertEqual(P.invented_reference(reference, heard, "Testes de ficheiro o para opção melhor a é qual "
+                                                                "cedo tudo, olha."), 0)
+
+    def test_invented_against_the_input_with_names_and_beyond_the_fixes(self):
+        heard = "Abre o repositório do Verza e corre os testes do museu local."
+        fixed = "Abre o repositório do verja e corre os testes do modelo local."
+        # A vocabulary name written as listed is known, as a pack term; an ordinary word is invented by this rule.
+        self.assertEqual(P.invented_words(heard, fixed)[0], 2)
+        self.assertEqual(P.invented_words(heard, fixed, names=("verja",))[0], 1)
+        # Beyond the correction's own words: only what the output adds to them.
+        self.assertEqual(P.invented_beyond_fixes(heard, fixed, fixed, names=("verja",)), 0)
+        self.assertEqual(P.invented_beyond_fixes(heard, fixed, "Pedido: " + fixed, names=("verja",)), 0)
+        self.assertEqual(P.invented_beyond_fixes(heard, fixed, fixed + " Usa Docker.", names=("verja",)), 2)
+        self.assertEqual(P.invented_beyond_fixes(heard, heard, heard + " Em 3 dias."), 2)
+
+    def test_metric_helpers(self):
+        from bench.metrics import invented_against, text_edits
+
+        self.assertEqual(invented_against(["a", "b", "b"], ["a", "b", "x"], ["a", "b", "b"]), 0)
+        self.assertEqual(invented_against(["a", "b"], ["a", "x"], ["a", "y"]), 1)
+        self.assertEqual(invented_against(["a"], ["a", "a"], ["a", "a"]), 0)
+        counts = text_edits("Tu decides, já.", "tudo cedo já")
+        self.assertEqual((counts.errors, counts.reference_words), (2, 3))
+
+    def test_the_rule_needs_fewer_word_errors_and_zero_lost_and_invented_everywhere(self):
+        def block(off, on, lost=0, invented_beyond_fixes=0, invented_reference=0):
+            view = {"word_errors": {"corrected": off}, "lost": 0, "invented_beyond_fixes": 0, "invented_fixes": 0,
+                    "invented_reference": 0}
+            return {"variants": {P.NAMES: view, P.COMMON_SENSE: {
+                "word_errors": {"corrected": on}, "lost": lost, "invented_beyond_fixes": invented_beyond_fixes,
+                "invented_fixes": 2, "invented_reference": invented_reference}}}
+
+        self.assertIsNone(P.common_sense_rule({"prompts": {"status": "measured"}}))
+        self.assertTrue(P.common_sense_rule({"prompts": block(5, 3), "safety": block(2, 2)})["met"])
+        self.assertFalse(P.common_sense_rule({"prompts": block(5, 5)})["met"])  # no fewer errors
+        self.assertFalse(P.common_sense_rule({"prompts": block(5, 2), "safety": block(2, 3)})["met"])  # one set worse
+        for bad in ({"lost": 1}, {"invented_beyond_fixes": 1}, {"invented_reference": 1}):
+            with self.subTest(**bad):
+                self.assertFalse(P.common_sense_rule({"prompts": block(5, 2), "safety": block(2, 2, **bad)})["met"])
 
 
 if __name__ == "__main__":

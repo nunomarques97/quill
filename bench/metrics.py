@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -52,6 +53,24 @@ def word_edits(reference: Sequence[str], hypothesis: Sequence[str]) -> EditCount
         previous = current
     _, subs, dels, ins = previous[cols]
     return EditCounts(subs, dels, ins, rows)
+
+
+def text_edits(reference: str, hypothesis: str) -> EditCounts:
+    """Word edits of ``hypothesis`` against ``reference``, both normalized."""
+    return word_edits(normalize_words(reference), normalize_words(hypothesis))
+
+
+def invented_against(reference: Sequence[str], source: Sequence[str], output: Sequence[str]) -> int:
+    """Words ``output`` brought beyond their count in ``source`` that ``reference`` does not hold that often.
+
+    Counted as multisets, so reordering brings nothing: a word ``output`` has
+    more often than ``source`` was brought by a fix, and it is invented unless
+    ``reference`` has it more often than ``source`` by at least as many.
+    """
+    source_counts = Counter(source)
+    brought = Counter(output) - source_counts
+    expected = Counter(reference) - source_counts
+    return sum((brought - expected).values())
 
 
 def corpus_wer(pairs: Iterable[tuple[str, str]]) -> float | None:

@@ -46,6 +46,18 @@ gets its project's hints once its window is known): later windows use them,
 speculative finals decoded with the earlier hints are forgotten, and a
 partial or speculative final still running with them is dropped.
 
+``open`` and ``set_hints`` also take a *hint source* instead of hints: a
+callable from the text heard so far to ``SessionHints`` (None: the
+vocabulary hints), such as ``quill.heard.HeardHints`` for mouse 5 into Claude
+Code. The session is decoded with what it returns for the text heard when it
+is given, and after each partial (on the worker thread, outside the lock) it
+asks again with the committed and tentative words; the hints switch, as with
+``set_hints``, only when the source chooses different ones
+(``FinalResult.hint_switches`` counts these switches). A switch chosen from a
+partial shown before the release still applies to the final; partials that
+complete after the release are dropped and ask nothing. A source that raises
+or returns anything else leaves the session's hints as they are.
+
 All session state is protected by one lock; the model runs outside it.
 Nothing here logs or stores text or audio.
 """
@@ -352,6 +364,7 @@ class FinalResult:
     waited_s: float
     compute_s: float
     latency_s: float
+    hint_switches: int = 0  # hint changes chosen by the session's hint source from partials
 
     @property
     def ok(self) -> bool:
@@ -379,6 +392,27 @@ class FinalHandle:
         return self._result
 
 
+# ---------------------------------------------------------------- hint sources
+
+HintSource = Callable[[str], "SessionHints | None"]
+
+
+def is_hint_source(hints: object) -> bool:
+    """Whether ``hints`` is a hint source (heard text -> hints) rather than ``SessionHints`` or None."""
+    return callable(hints) and not isinstance(hints, SessionHints)
+
+
+def _choose(source: HintSource, heard: str) -> tuple[bool, SessionHints | None]:
+    """(True, the source's hints for ``heard``), or (False, None) when it raises or returns anything else."""
+    try:
+        hints = source(heard)
+    except Exception:  # noqa: BLE001 - the session keeps the hints it has
+        return False, None
+    if hints is not None and not isinstance(hints, SessionHints):
+        return False, None
+    return True, hints
+
+
 # ---------------------------------------------------------------- jobs
 
 PARTIAL, SPECULATIVE, FINAL = "partial", "speculative", "final"
@@ -397,11 +431,14 @@ class Session:
     """The audio of one hold. Created by ``StreamingTranscriber.open``."""
 
     def __init__(self, owner: "StreamingTranscriber", number: int, on_partial: Callable[[Partial], None] | None,
-                 hints: SessionHints | None = None) -> None:
+                 hints: SessionHints | None = None, source: HintSource | None = None) -> None:
         self.owner = owner
         self.number = number
         self.on_partial = on_partial
         self.hints = hints
+        self.hint_source = source
+        self.hint_switches = 0
+        self._heard = ""  # committed and tentative words of the last partial shown
         options = owner.options
         self._pcm = bytearray()
         self._vad = SpeechDetector(options.min_speech_rms, options.floor_ratio)
@@ -457,20 +494,49 @@ class Session:
                 self._pending_spec = _Job(SPECULATIVE, self, end, speech_end)
                 owner._cond.notify_all()
 
-    def set_hints(self, hints: SessionHints | None) -> bool:
+    def set_hints(self, hints: SessionHints | HintSource | None) -> bool:
         """Decode the later windows with ``hints`` (None: the vocabulary hints); False once released or closed.
 
         Speculative finals decoded with the earlier hints are forgotten, so the
         final decodes its audio again, and the next pause asks for a new one.
+        A hint source is asked at once with the words heard so far (outside
+        the lock) and again after each partial; the hints switch only when it
+        chooses different ones, and stay as they are when it fails.
         """
+        if is_hint_source(hints):
+            with self.owner._cond:
+                if self.released or self.closed:
+                    return False
+                heard = self._heard
+            ok, chosen = _choose(hints, heard)
+            with self.owner._cond:
+                if self.released or self.closed:
+                    return False
+                self.hint_source = hints
+                if ok:
+                    self._switch(chosen)
+                return True
         with self.owner._cond:
             if self.released or self.closed:
                 return False
+            self.hint_source = None
             self.hints = hints
-            self._hints_version += 1
-            self._spec_results.clear()
-            self._spec_speech_end = -1
+            self._forget_hints()
             return True
+
+    def _switch(self, hints: SessionHints | None) -> bool:
+        """Decode with ``hints`` from now on when they differ from the current ones (lock held)."""
+        if hints == self.hints:
+            return False
+        self.hints = hints
+        self._forget_hints()
+        return True
+
+    def _forget_hints(self) -> None:
+        """Jobs planned and speculative finals decoded with the earlier hints are not used (lock held)."""
+        self._hints_version += 1
+        self._spec_results.clear()
+        self._spec_speech_end = -1
 
     def release(self) -> FinalHandle:
         """Stop feeding and ask for the final text; the handle resolves exactly once."""
@@ -627,11 +693,19 @@ class StreamingTranscriber:
         if close_model and exited and hasattr(self.model, "close"):
             self.model.close()
 
-    def open(self, on_partial: Callable[[Partial], None] | None = None, hints: SessionHints | None = None) -> Session:
-        """A new session; with ``hints`` its decodes use them instead of the vocabulary hints."""
+    def open(self, on_partial: Callable[[Partial], None] | None = None,
+             hints: SessionHints | HintSource | None = None) -> Session:
+        """A new session; with ``hints`` its decodes use them instead of the vocabulary hints.
+
+        A hint source is asked at once with nothing heard (a failure: the
+        vocabulary hints) and again after each partial.
+        """
+        source = hints if is_hint_source(hints) else None
+        if source is not None:
+            hints = _choose(source, "")[1]
         with self._cond:
             self._numbers += 1
-            session = Session(self, self._numbers, on_partial, hints)
+            session = Session(self, self._numbers, on_partial, hints, source)
             self._sessions.append(session)
             return session
 
@@ -690,6 +764,7 @@ class StreamingTranscriber:
             waited_s=max(0.0, started - session._release_time),
             compute_s=compute,
             latency_s=max(0.0, now - session._release_time),
+            hint_switches=session.hint_switches,
         )
 
     def _fail(self, session: Session, reason: str) -> None:
@@ -865,8 +940,28 @@ class StreamingTranscriber:
                     session.partials += 1
                     partial = session._emit(session._stable.text, tentative, key[1], False)
             callback = session.on_partial
+            source = session.hint_source if partial is not None else None
+            if partial is not None:
+                session._heard = partial.text
         if callback is not None and partial is not None:
             try:
                 callback(partial)
             except Exception:
                 pass  # a display failure must not stop transcription
+        if source is not None:
+            self._follow_heard(session, source, partial.text)
+
+    def _follow_heard(self, session: Session, source: HintSource, heard: str) -> None:
+        """Hints chosen by the session's hint source for the words of a partial shown (worker thread).
+
+        Also after a release that came while it ran: the final, queued behind
+        this job, then decodes with them.
+        """
+        ok, chosen = _choose(source, heard)
+        if not ok:
+            return
+        with self._cond:
+            if session.closed or session.hint_source is not source:
+                return
+            if session._switch(chosen):
+                session.hint_switches += 1

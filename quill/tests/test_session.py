@@ -2123,6 +2123,28 @@ class SendHintsTest(SessionCase):
         self.assertIn("session 1: project hints applied", "\n".join(logs.output))
         self.assertNotIn("inventado", "\n".join(logs.output))
 
+    def test_a_hint_source_is_given_as_it_is_and_only_its_switch_count_is_logged(self):
+        def source(heard):  # a hint source (heard text -> hints), as quill.heard.HeardHints
+            return self.HINTS
+
+        self.reply = source
+        with self.assertLogs("quill", level="INFO") as logs:
+            self.press("send_polished", "xbutton2")
+            self.run_jobs()
+            asr = self.transcriber.sessions[-1]
+            self.assertIs(asr.hints, source)
+            self.captures.made[-1].push(PCM)
+            self.release("send_polished", "xbutton2")
+            asr.handle.result = SimpleNamespace(text="frase curta", error=None, ok=True, hint_switches=2)
+            asr.handle.event.set()
+            outcome = self.wait_outcomes(1)[-1]
+        self.assertEqual((outcome.action, outcome.reason), ("send_polished", S.NOT_CLAUDE))
+        text = "\n".join(logs.output)
+        self.assertIn("session 1: project hints applied", text)
+        self.assertIn("session 1: heard-term hints switched 2 times", text)
+        for private in ("inventado", "frase", "curta"):
+            self.assertNotIn(private, text)
+
     def test_other_triggers_never_ask(self):
         for action in ("dictation", "send_claude", "send_raw"):
             with self.subTest(action):

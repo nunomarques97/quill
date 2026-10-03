@@ -52,8 +52,10 @@ or the reason). Its transcription is opened with the ``voice_hints()`` of
 that press (``quill.voice.VoiceHints``: Portuguese, the command prompt and
 the project names). A mouse 5 session starts with the vocabulary hints and,
 once click-to-focus has named its window, gets ``send_hints(target)`` on
-another thread (in Claude Code: the project name and its pack terms) for
-the audio decoded after that, until its release. Every other session keeps
+another thread (in Claude Code: a hint source, ``quill.heard.HeardHints``,
+with the project name and its pack terms, those that sound like words
+already heard first) for the audio decoded after that, until its release;
+the number of hint switches is logged, never the hints. Every other session keeps
 the transcriber's vocabulary hints. Hints that cannot be built never stop
 the capture.
 
@@ -424,8 +426,9 @@ class SessionManager:
     thread (None: a daemon ``threading.Timer``); it brings back the pending
     session's words after the "Aguarde" notice. ``send_hints(target)``
     returns the decoding hints of a mouse 5 session once click-to-focus has
-    named its window (``quill.whisper.SessionHints``: the project's terms in
-    Claude Code; None: the vocabulary hints); it runs through
+    named its window (``quill.whisper.SessionHints`` or a hint source such as
+    ``quill.heard.HeardHints``: the project's terms in Claude Code; None: the
+    vocabulary hints); it runs through
     ``run_hints(job)`` (None: a daemon thread), never on the hook or session
     thread, and hints that arrive after the release are not used.
     """
@@ -870,6 +873,9 @@ class SessionManager:
                 log.warning("session %d: engine failed (%s)", hold.number, result.error)
                 self._fail(hold, ENGINE_ERROR)
                 return
+            switches = getattr(result, "hint_switches", 0)
+            if isinstance(switches, int) and switches > 0:
+                log.info("session %d: heard-term hints switched %d times", hold.number, switches)
             if hold.action == COMMAND_ACTION:
                 self._finalize_command(hold, result.text, engine_at)
                 return

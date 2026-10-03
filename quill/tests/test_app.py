@@ -1682,6 +1682,33 @@ class PolishAppTest(RewriteCase):
         for private in ("invented", "carteira", "saldo", str(self.project), self.HUB_TITLE, "Code.exe"):
             self.assertNotIn(private.casefold(), text.casefold())
 
+    def test_a_heard_pack_term_moves_ahead_in_the_hints_of_the_final(self):
+        self.packs.pack = SimpleNamespace(summary="Projeto de carteira digital.", terms=("carteira", "saldo", "w10-w11"))
+        self.in_the_panel()
+        self.start()
+        with self.assertLogs("quill", level="INFO") as logs:
+            clicks, made, done = len(self.api.mouse_calls), len(self.captures.made), len(self.app.sessions.outcomes)
+            self.assertEqual(self.button(True, XBUTTON2), 1)
+            wait_for(lambda: len(self.captures.made) > made, "the capture to start")
+            wait_for(lambda: len(self.api.mouse_calls) > clicks, "the click to focus")
+            hold = self.app.sessions._active
+            wait_for(lambda: getattr(hold.asr, "hints", None) is not None, "the project hints")
+            self.captures.made[-1].push(speech(WORDS))  # "w10 w11" sounds like the pack term
+            wait_for(lambda: hold.asr.hint_switches == 1, "the heard-term switch")
+            self.assertEqual(self.button(False, XBUTTON2), 1)
+            self.outcomes(done + 1)
+        self.assertEqual(self.app.sessions.outcomes[-1].reason, S.SENT_ENTER)
+        prompts = self.prompts()
+        self.assertEqual(prompts[0], "Vocabulário: invented, w10-w11, carteira, saldo.")  # nothing heard yet
+        self.assertEqual(prompts[-1], "Vocabulário: w10-w11, invented, carteira, saldo.")  # the final
+        self.assertEqual(self.model.calls[-1].options.hotwords, "w10-w11 invented carteira saldo")
+        text = "\n".join(logs.output)
+        self.assertIn("decoding hints: project_hints", text)
+        self.assertIn("project hints applied", text)
+        self.assertIn("heard-term hints switched 1 times", text)
+        for private in ("w10", "w11", "invented", "carteira", "saldo", str(self.project), self.HUB_TITLE, "Code.exe"):
+            self.assertNotIn(private.casefold(), text.casefold())
+
     def test_the_next_dictation_after_project_hints_gets_todays_hints_again(self):
         self.in_the_panel()
         self.start()
@@ -2225,6 +2252,23 @@ class ProjectHintsTest(unittest.TestCase):
         self.assertLess(len(listed) - len(project_part), len(today))
         self.assertEqual(hints.hotwords, join_vocabulary(listed, separator=" "))
         self.assertIsNone(hints.language)
+
+    def test_claude_code_gets_a_heard_term_source(self):
+        from quill.heard import HeardHints
+        from quill.whisper import HINTS_PREFIX, PROJECT_HINT_MAX_CHARS
+
+        source, reason = self.hints()
+        self.assertEqual(reason, A.PROJECT_HINTS)
+        self.assertIsInstance(source, HeardHints)
+        self.assertEqual(source(""), source.initial)  # nothing heard: the hints above
+        with self.assertNoLogs("quill", level="DEBUG"):
+            hints = source("e o invoyce do ledgerli")  # both heard exactly: pack order
+        listed = hints.prompt[len(HINTS_PREFIX):-1].split(", ")
+        self.assertEqual(listed[:7], ["Ana Lima", "nimbus-deck", "Ledgerly", "invoice", "orchard", "hand-off", "ledger"])
+        self.assertLessEqual(len(", ".join(listed[2:listed.index("generic00")])), PROJECT_HINT_MAX_CHARS)
+        self.assertLessEqual(len(", ".join(listed)), V.HINT_MAX_CHARS)
+        self.assertNotEqual(self.hints()[0], None)  # one source per session: a new one each time
+        self.assertIsNot(self.hints()[0], source)
 
     def test_the_same_words_decode_exactly_like_the_vocabulary_hints(self):
         from quill.streaming import StreamingTranscriber

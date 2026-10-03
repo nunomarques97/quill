@@ -9,6 +9,7 @@ import math
 import threading
 import unittest
 from array import array
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -853,6 +854,169 @@ class SetHintsTest(Case):
         _, other = replay(transcriber, speech([3]))
         self.assertTrue(other.ok)
         self.assert_dictation(self.model.calls[before:])
+
+class Source:
+    """A hint source (heard text -> hints) that records what it was asked; ``choose`` decides."""
+
+    def __init__(self, choose):
+        self.choose = choose
+        self.heard = []
+
+    def __call__(self, heard):
+        self.heard.append(heard)
+        return self.choose(heard)
+
+
+def raising(heard):
+    raise RuntimeError("fake source failure")
+
+
+class HintSourceTest(Case):
+    """A session given a hint source switches its hints by what it has heard."""
+
+    BEFORE = whisper.SessionHints(prompt="Vocabulário: orchard, Kelvar.", hotwords="orchard Kelvar")
+    HEARD = whisper.SessionHints(prompt="Vocabulário: w2x, orchard, Kelvar.", hotwords="w2x orchard Kelvar")
+    transcriber = SessionHintsTest.transcriber
+    assert_dictation = SessionHintsTest.assert_dictation
+    feed = SetHintsTest.feed
+
+    def chooser(self, heard):
+        """BEFORE until w2 is heard, then HEARD; always a new object, so only equality can tell them apart."""
+        return replace(self.HEARD if "w2" in heard.split() else self.BEFORE)
+
+    def prompts(self, calls=None):
+        hints = []
+        for call in self.model.calls if calls is None else calls:
+            prompt = call.options.initial_prompt or ""
+            hints.append("heard" if prompt.startswith(self.HEARD.prompt) else
+                         "before" if prompt.startswith(self.BEFORE.prompt) else prompt)
+        return hints
+
+    def test_the_hints_switch_once_a_new_term_is_heard_and_the_final_uses_them(self):
+        transcriber = self.transcriber()
+        source = Source(self.chooser)
+        partials = []
+        session = transcriber.open(partials.append, hints=source)
+        self.feed(transcriber, session, speech([1, 2, 3]))
+        result = session.release().wait(5)
+        self.assertEqual((result.ok, result.text, result.hint_switches), (True, text([1, 2, 3]), 1))
+        self.assertEqual(source.heard[0], "")  # asked at once, nothing heard yet
+        self.assertEqual(source.heard[1:], [p.text for p in partials])  # then after each partial shown
+        used = self.prompts()
+        self.assertEqual(used[0], "before")
+        self.assertEqual(used[-1], "heard")  # the final
+        switch = used.index("heard")
+        self.assertEqual(set(used[:switch]), {"before"})
+        self.assertEqual(set(used[switch:]), {"heard"})  # never back
+        self.assertEqual(self.model.calls[-1].options.beam_size, 5)
+
+    def test_no_switch_while_the_choice_is_unchanged(self):
+        transcriber = self.transcriber()
+        source = Source(lambda heard: replace(self.BEFORE))
+        partials = []
+        session = transcriber.open(partials.append, hints=source)
+        self.feed(transcriber, session, speech([1, 2, 3], gap=0.6))
+        version = session._hints_version
+        result = session.release().wait(5)
+        self.assertEqual((result.ok, result.text, result.hint_switches), (True, text([1, 2, 3]), 0))
+        self.assertEqual(version, 0)  # nothing planned was ever invalidated
+        self.assertGreater(len(source.heard), 2)
+        self.assertEqual(source.heard[1:], [p.text for p in partials])
+        self.assertEqual(set(self.prompts()), {"before"})
+
+    def test_a_switch_chosen_before_the_release_applies_to_the_final(self):
+        gate, entered = threading.Event(), threading.Event()
+
+        def choose(heard):
+            if "w2" in heard.split():
+                entered.set()
+                gate.wait(5)
+            return self.chooser(heard)
+
+        transcriber = self.transcriber()
+        source = Source(choose)
+        session = transcriber.open(hints=source)
+        self.feed(transcriber, session, speech([1, 2], trail=0.1), drain=False)
+        self.assertTrue(entered.wait(5))
+        handle = session.release()  # while the source is still choosing
+        asked = len(source.heard)
+        gate.set()
+        result = handle.wait(5)
+        self.assertEqual((result.ok, result.text, result.hint_switches), (True, text([1, 2]), 1))
+        self.assertEqual(self.prompts()[-1], "heard")  # the final decoded with the pending switch
+        self.assertEqual(self.model.calls[-1].options.beam_size, 5)
+        self.assertEqual(len(source.heard), asked)  # nothing asked after the release
+
+    def test_a_partial_that_completes_after_the_release_asks_nothing(self):
+        self.model.gate = threading.Event()
+        self.model.gate_when = lambda call: call.options.beam_size == 1
+        transcriber = self.transcriber(speculate=False)
+        source = Source(self.chooser)
+        session = transcriber.open(hints=source)
+        self.feed(transcriber, session, speech([1, 2], trail=0.1), drain=False)
+        self.assertTrue(self.model.entered.wait(5))
+        handle = session.release()
+        self.model.gate_when = lambda call: False
+        self.model.gate.set()
+        result = handle.wait(5)
+        self.assertEqual((result.ok, result.text, result.hint_switches), (True, text([1, 2]), 0))
+        self.assertEqual(source.heard, [""])
+        self.assertEqual(self.prompts()[-1], "before")
+
+    def test_a_failing_source_keeps_the_current_hints(self):
+        def broken_later(heard):
+            if heard:
+                raise RuntimeError("fake source failure")
+            return self.BEFORE
+
+        cases = {"raises later": (broken_later, "before"),
+                 "returns something else later": (lambda heard: "w2x" if heard else self.BEFORE, "before"),
+                 "raises at once": (raising, "vocabulary")}
+        for label, (choose, expected) in cases.items():
+            with self.subTest(label):
+                transcriber = self.transcriber()
+                before = len(self.model.calls)
+                source = Source(choose)
+                session = transcriber.open(hints=source)
+                self.feed(transcriber, session, speech([1, 2, 3]))
+                result = session.release().wait(5)
+                self.assertEqual((result.ok, result.text, result.hint_switches), (True, text([1, 2, 3]), 0))
+                self.assertGreater(len(source.heard), 1)  # asked again after each partial, never crashing
+                calls = self.model.calls[before:]
+                if expected == "vocabulary":
+                    self.assert_dictation(calls)
+                else:
+                    self.assertEqual(set(self.prompts(calls)), {expected})
+
+    def test_a_source_given_late_is_asked_with_the_words_heard_so_far(self):
+        transcriber = self.transcriber()
+        session = transcriber.open()
+        self.feed(transcriber, session, speech([1, 2], trail=0.1))
+        before = len(self.model.calls)
+        self.assert_dictation(self.model.calls)
+        source = Source(self.chooser)
+        self.assertTrue(session.set_hints(source))
+        self.assertEqual(len(source.heard), 1)
+        self.assertIn("w2", source.heard[0].split())
+        self.feed(transcriber, session, speech([3], lead=0.0, trail=0.1))
+        result = session.release().wait(5)
+        self.assertEqual((result.ok, result.text), (True, text([1, 2, 3])))
+        self.assertEqual(set(self.prompts(self.model.calls[before:])), {"heard"})
+        late = Source(self.chooser)
+        self.assertFalse(session.set_hints(late))  # released: refused, never asked
+        self.assertEqual(late.heard, [])
+
+    def test_plain_hints_replace_a_source(self):
+        transcriber = self.transcriber()
+        source = Source(self.chooser)
+        session = transcriber.open(hints=source)
+        self.assertTrue(session.set_hints(self.BEFORE))
+        self.feed(transcriber, session, speech([1, 2, 3]))
+        result = session.release().wait(5)
+        self.assertEqual((result.ok, result.hint_switches), (True, 0))
+        self.assertEqual(source.heard, [""])
+        self.assertEqual(set(self.prompts()), {"before"})
+
 
 
 if __name__ == "__main__":

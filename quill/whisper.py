@@ -173,7 +173,7 @@ def distinctive_term(term: str) -> bool:
 
 
 def project_terms(project: str, terms: Sequence[str], known: Sequence[str] = (),
-                  max_chars: int = PROJECT_HINT_MAX_CHARS) -> list[str]:
+                  max_chars: int = PROJECT_HINT_MAX_CHARS, first: Sequence[str] = ()) -> list[str]:
     """The project name, then its most relevant pack terms, joined within ``max_chars``.
 
     ``terms`` are the context pack's terms, most relevant first (its score
@@ -182,11 +182,14 @@ def project_terms(project: str, terms: Sequence[str], known: Sequence[str] = (),
     spelling Whisper cannot guess (``distinctive_term``) come first, then the
     others, each group in the pack's order; the list ends at the first term that
     does not fit. The project name is left out when it is already known.
+    ``first`` (pack terms heard in the dictation, ``quill.heard``) go before
+    all of them, in their order; without them the list is today's.
     """
     seen = {_hint_key(word) for word in known}
     out: list[str] = []
     length = 0
-    candidates = [project] if isinstance(project, str) else []
+    candidates = [term for term in first if isinstance(term, str) and term.strip() and spoken_term(term)]
+    candidates += [project] if isinstance(project, str) else []
     usable = [term for term in terms if isinstance(term, str) and term.strip() and spoken_term(term)]
     candidates += [term for term in usable if distinctive_term(term)]
     candidates += [term for term in usable if not distinctive_term(term)]

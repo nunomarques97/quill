@@ -73,6 +73,7 @@ from quill.config import LOCAL_CONFIG, REPO_ROOT, Config, ConfigError, load_conf
 from quill.corrections import CorrectionKey, CorrectionStore, Dictation, Learner, new_dictation_id
 from quill.edits import EditTracker, KeyTranslator, ManualEdits, RewriteUndo, UndoOutcome
 from quill.focus import ClickToFocus
+from quill.heard import HeardHints
 from quill.hooks import TriggerHooks, monotonic_ms, real_hooks
 from quill.indicator.render import ERROR, LOADING
 from quill.inject import FOREGROUND_CHANGED, NEWLINE_SHIFT_ENTER, NEWLINE_SPACE, Injector, Target
@@ -87,7 +88,7 @@ from quill.triggers import KEY, InputEvent
 from quill.voice import VoiceCommands, VoiceHints, default_parser
 from quill.vocabulary import (Matcher, Vocabulary, VocabularyError, VocabularyFile, hint_list, load_generic_terms,
                               load_vocabulary, whisper_hints)
-from quill.whisper import MODELS, Decode, SessionHints, TokenCounter, model_present, project_terms, session_hints
+from quill.whisper import MODELS, Decode, TokenCounter, model_present
 
 log = logging.getLogger("quill.app")
 
@@ -396,16 +397,19 @@ class TextPipeline:
 
 def project_hints(info: WindowInfo | None, pid: int, *, profiles: Profiles, projects: ProjectDetector | None,
                   pack_for: Callable[[Path], object | None] | None, vocabulary: Vocabulary,
-                  generic_terms: Sequence[str]) -> tuple[SessionHints | None, str]:
-    """(decoding hints, reason code) of mouse 5 into the window ``info`` of process ``pid``.
+                  generic_terms: Sequence[str]) -> tuple[HeardHints | None, str]:
+    """(decoding hint source, reason code) of mouse 5 into the window ``info`` of process ``pid``.
 
     Only Claude Code with a detected project and a context pack gets hints of
-    its own: the vocabulary hints with the project name and its most relevant
-    pack terms (``quill.whisper.project_terms``, at most
+    its own: a ``quill.heard.HeardHints`` source for its streaming session.
+    With nothing heard it gives the vocabulary hints with the project name and
+    its most relevant pack terms (``quill.whisper.project_terms``, at most
     ``PROJECT_HINT_MAX_CHARS``) placed after the personal names, the whole list
     within today's hint budget (``whisper_hints``), so the last generic and
-    personal terms make room. Any other window, no project, no pack or a
-    failure gives None: today's vocabulary hints. Reads only; never raises.
+    personal terms make room; the pack terms that sound like words already
+    heard then come first in the project part. One source per session. Any
+    other window, no project, no pack or a failure gives None: today's
+    vocabulary hints. Reads only; never raises.
     """
     try:
         if profiles.select(info) != CLAUDE_CODE:
@@ -417,10 +421,8 @@ def project_hints(info: WindowInfo | None, pid: int, *, profiles: Profiles, proj
         terms = getattr(pack, "terms", None)
         if pack is None or not isinstance(terms, (tuple, list)):
             return None, HINTS_NO_PACK
-        today = whisper_hints(vocabulary, (), generic_terms)
-        words = whisper_hints(vocabulary, project_terms(found.name, terms, today), generic_terms)
-        hints = session_hints(words)
-        return (hints, PROJECT_HINTS) if hints is not None else (None, HINTS_NO_PACK)
+        source = HeardHints(found.name, terms, vocabulary, generic_terms)
+        return (source, PROJECT_HINTS) if source.initial is not None else (None, HINTS_NO_PACK)
     except Exception as exc:  # noqa: BLE001 - hints are optional: today's hints decode instead
         log.warning("project hints: %s (%s)", HINTS_FAILED, type(exc).__name__)
         return None, HINTS_FAILED
@@ -751,8 +753,8 @@ class QuillApp:
         else:
             self.undo.remember(dictation, original, target, newline)
 
-    def _send_hints(self, target: Target) -> SessionHints | None:
-        """Decoding hints of a mouse 5 session once its window is known (hint thread); None: today's hints.
+    def _send_hints(self, target: Target) -> HeardHints | None:
+        """Decoding hint source of a mouse 5 session once its window is known (hint thread); None: today's hints.
 
         Reads the window (title, class, process and the focused element) and
         the project's context pack; never clicks, types or moves the focus.

@@ -7,8 +7,10 @@ Windows the CUDA libraries shipped in the torch and nvidia wheels are
 registered before the import. Audio never leaves the PC.
 
 ``Whisper.transcribe`` takes 16 kHz mono PCM16 bytes and one ``Decode`` set of
-options. Every call uses temperature 0 without fallback, no VAD filter and no
-conditioning on its own earlier windows, the settings of the Phase 2 baseline.
+options. By default a call uses temperature 0 without fallback, no VAD filter,
+no conditioning on its own earlier windows and the language Quill names, the
+settings of the Phase 2 baseline; a ``Decode`` may turn each of these on
+(``bench.asr_errors`` measures them).
 """
 
 from __future__ import annotations
@@ -49,6 +51,8 @@ SOT_SEQUENCE_TOKENS = 3  # start of transcript, language, task
 # Mouse 5 into Claude Code: the project name and its pack terms take at most
 # this many characters of the vocabulary hint budget (quill.vocabulary.HINT_MAX_CHARS).
 PROJECT_HINT_MAX_CHARS = 110
+# faster-whisper's own temperature schedule, used when a decode asks for fallback.
+FALLBACK_TEMPERATURES = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
 _CAMEL_PART = re.compile(r"[A-Z][a-z]")
 _INNER_MARK = re.compile(r"[^\W_]-[^\W_]|\d")
 
@@ -265,8 +269,17 @@ class Decode:
     # decode on near-silent audio. None keeps faster-whisper's default.
     max_new_tokens: int | None = None
     # The spoken language; None keeps the model's own (``Whisper.language``).
-    # Never auto-detected: Quill always names one.
     language: str | None = None
+    # True: the model detects the language itself and ``language`` is ignored
+    # (the detected one is ``Transcript.language``). Off everywhere in the app.
+    detect_language: bool = False
+    # True: a window that fails faster-whisper's compression or log-probability
+    # checks is decoded again at higher temperatures (FALLBACK_TEMPERATURES).
+    temperature_fallback: bool = False
+    # True: each 30 s window is prompted with the text of the window before it.
+    condition_on_previous_text: bool = False
+    # True: faster-whisper's Silero VAD drops the silence before decoding.
+    vad_filter: bool = False
 
 
 @dataclass(frozen=True)
@@ -304,6 +317,8 @@ class Word:
 class Transcript:
     text: str = field(repr=False)
     words: tuple[Word, ...] = field(default=(), repr=False)
+    # The language the text was decoded in: the one named, or the detected one.
+    language: str | None = None
 
 
 class Whisper:
@@ -402,13 +417,13 @@ class Whisper:
         if max_new is not None:
             extra["max_new_tokens"] = max_new
         try:
-            segments, _info = self._whisper.transcribe(
+            segments, info = self._whisper.transcribe(
                 audio,
-                language=options.language or self.language,
+                language=None if options.detect_language else options.language or self.language,
                 beam_size=options.beam_size,
-                temperature=0.0,
-                vad_filter=False,
-                condition_on_previous_text=False,
+                temperature=list(FALLBACK_TEMPERATURES) if options.temperature_fallback else 0.0,
+                vad_filter=options.vad_filter,
+                condition_on_previous_text=options.condition_on_previous_text,
                 initial_prompt=options.initial_prompt,
                 hotwords=options.hotwords,
                 **extra,
@@ -421,6 +436,8 @@ class Whisper:
                     text = word.word.strip()
                     if text:
                         words.append(Word(float(word.start), float(word.end), text))
+            language = getattr(info, "language", None)
         except Exception as exc:
             raise WhisperError(f"{self.id}: transcription failed: {type(exc).__name__}") from None
-        return Transcript(" ".join(" ".join(texts).split()), tuple(words))
+        return Transcript(" ".join(" ".join(texts).split()), tuple(words),
+                          language if isinstance(language, str) else None)

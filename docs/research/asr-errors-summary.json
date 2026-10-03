@@ -1,0 +1,4994 @@
+{
+  "schema": 1,
+  "kind": "asr_errors",
+  "engine": {
+    "app_model": "large-v3-turbo",
+    "compute_type": "float16",
+    "cleanup": "rules",
+    "cleanup_measured": "rules",
+    "vocabulary_hints": {
+      "count": 41,
+      "chars": 247
+    },
+    "hint_budgets_chars": [
+      150,
+      330,
+      600
+    ]
+  },
+  "configurations": {
+    "stream_app": {
+      "cause": "baseline",
+      "compared_with": null,
+      "model": "large-v3-turbo",
+      "decode": "streaming final",
+      "hints": "app",
+      "hint_budget_chars": 330,
+      "hints_as": "both",
+      "energy_trim": true,
+      "vad_filter": false,
+      "beam": 5,
+      "language": "pt",
+      "temperature_fallback": false,
+      "condition_on_previous_text": false,
+      "instruction_prompt": false
+    },
+    "whole_app": {
+      "cause": "segmentation",
+      "compared_with": "stream_app",
+      "model": "large-v3-turbo",
+      "decode": "whole audio",
+      "hints": "app",
+      "hint_budget_chars": 330,
+      "hints_as": "both",
+      "energy_trim": true,
+      "vad_filter": false,
+      "beam": 5,
+      "language": "pt",
+      "temperature_fallback": false,
+      "condition_on_previous_text": false,
+      "instruction_prompt": false
+    },
+    "whole_untrimmed": {
+      "cause": "vad_trimming",
+      "compared_with": "whole_app",
+      "model": "large-v3-turbo",
+      "decode": "whole audio",
+      "hints": "app",
+      "hint_budget_chars": 330,
+      "hints_as": "both",
+      "energy_trim": false,
+      "vad_filter": false,
+      "beam": 5,
+      "language": "pt",
+      "temperature_fallback": false,
+      "condition_on_previous_text": false,
+      "instruction_prompt": false
+    },
+    "whole_vad_filter": {
+      "cause": "vad_trimming",
+      "compared_with": "whole_app",
+      "model": "large-v3-turbo",
+      "decode": "whole audio",
+      "hints": "app",
+      "hint_budget_chars": 330,
+      "hints_as": "both",
+      "energy_trim": false,
+      "vad_filter": true,
+      "beam": 5,
+      "language": "pt",
+      "temperature_fallback": false,
+      "condition_on_previous_text": false,
+      "instruction_prompt": false
+    },
+    "hints_none": {
+      "cause": "hints",
+      "compared_with": "whole_app",
+      "model": "large-v3-turbo",
+      "decode": "whole audio",
+      "hints": "none",
+      "hint_budget_chars": 330,
+      "hints_as": "both",
+      "energy_trim": true,
+      "vad_filter": false,
+      "beam": 5,
+      "language": "pt",
+      "temperature_fallback": false,
+      "condition_on_previous_text": false,
+      "instruction_prompt": false
+    },
+    "hints_vocabulary": {
+      "cause": "hints",
+      "compared_with": "whole_app",
+      "model": "large-v3-turbo",
+      "decode": "whole audio",
+      "hints": "vocabulary",
+      "hint_budget_chars": 330,
+      "hints_as": "both",
+      "energy_trim": true,
+      "vad_filter": false,
+      "beam": 5,
+      "language": "pt",
+      "temperature_fallback": false,
+      "condition_on_previous_text": false,
+      "instruction_prompt": false
+    },
+    "hints_budget_150": {
+      "cause": "hint_budget",
+      "compared_with": "whole_app",
+      "model": "large-v3-turbo",
+      "decode": "whole audio",
+      "hints": "app",
+      "hint_budget_chars": 150,
+      "hints_as": "both",
+      "energy_trim": true,
+      "vad_filter": false,
+      "beam": 5,
+      "language": "pt",
+      "temperature_fallback": false,
+      "condition_on_previous_text": false,
+      "instruction_prompt": false
+    },
+    "hints_budget_600": {
+      "cause": "hint_budget",
+      "compared_with": "whole_app",
+      "model": "large-v3-turbo",
+      "decode": "whole audio",
+      "hints": "app",
+      "hint_budget_chars": 600,
+      "hints_as": "both",
+      "energy_trim": true,
+      "vad_filter": false,
+      "beam": 5,
+      "language": "pt",
+      "temperature_fallback": false,
+      "condition_on_previous_text": false,
+      "instruction_prompt": false
+    },
+    "language_auto": {
+      "cause": "language",
+      "compared_with": "whole_app",
+      "model": "large-v3-turbo",
+      "decode": "whole audio",
+      "hints": "app",
+      "hint_budget_chars": 330,
+      "hints_as": "both",
+      "energy_trim": true,
+      "vad_filter": false,
+      "beam": 5,
+      "language": "auto",
+      "temperature_fallback": false,
+      "condition_on_previous_text": false,
+      "instruction_prompt": false
+    },
+    "beam_1": {
+      "cause": "beam",
+      "compared_with": "whole_app",
+      "model": "large-v3-turbo",
+      "decode": "whole audio",
+      "hints": "app",
+      "hint_budget_chars": 330,
+      "hints_as": "both",
+      "energy_trim": true,
+      "vad_filter": false,
+      "beam": 1,
+      "language": "pt",
+      "temperature_fallback": false,
+      "condition_on_previous_text": false,
+      "instruction_prompt": false
+    },
+    "beam_10": {
+      "cause": "beam",
+      "compared_with": "whole_app",
+      "model": "large-v3-turbo",
+      "decode": "whole audio",
+      "hints": "app",
+      "hint_budget_chars": 330,
+      "hints_as": "both",
+      "energy_trim": true,
+      "vad_filter": false,
+      "beam": 10,
+      "language": "pt",
+      "temperature_fallback": false,
+      "condition_on_previous_text": false,
+      "instruction_prompt": false
+    },
+    "temperature_fallback": {
+      "cause": "temperature_fallback",
+      "compared_with": "whole_app",
+      "model": "large-v3-turbo",
+      "decode": "whole audio",
+      "hints": "app",
+      "hint_budget_chars": 330,
+      "hints_as": "both",
+      "energy_trim": true,
+      "vad_filter": false,
+      "beam": 5,
+      "language": "pt",
+      "temperature_fallback": true,
+      "condition_on_previous_text": false,
+      "instruction_prompt": false
+    },
+    "condition_previous": {
+      "cause": "condition_on_previous_text",
+      "compared_with": "whole_app",
+      "model": "large-v3-turbo",
+      "decode": "whole audio",
+      "hints": "app",
+      "hint_budget_chars": 330,
+      "hints_as": "both",
+      "energy_trim": true,
+      "vad_filter": false,
+      "beam": 5,
+      "language": "pt",
+      "temperature_fallback": false,
+      "condition_on_previous_text": true,
+      "instruction_prompt": false
+    },
+    "hotwords_only": {
+      "cause": "initial_prompt",
+      "compared_with": "whole_app",
+      "model": "large-v3-turbo",
+      "decode": "whole audio",
+      "hints": "app",
+      "hint_budget_chars": 330,
+      "hints_as": "hotwords",
+      "energy_trim": true,
+      "vad_filter": false,
+      "beam": 5,
+      "language": "pt",
+      "temperature_fallback": false,
+      "condition_on_previous_text": false,
+      "instruction_prompt": false
+    },
+    "prompt_only": {
+      "cause": "initial_prompt",
+      "compared_with": "whole_app",
+      "model": "large-v3-turbo",
+      "decode": "whole audio",
+      "hints": "app",
+      "hint_budget_chars": 330,
+      "hints_as": "prompt",
+      "energy_trim": true,
+      "vad_filter": false,
+      "beam": 5,
+      "language": "pt",
+      "temperature_fallback": false,
+      "condition_on_previous_text": false,
+      "instruction_prompt": false
+    },
+    "prompt_instruction": {
+      "cause": "initial_prompt",
+      "compared_with": "whole_app",
+      "model": "large-v3-turbo",
+      "decode": "whole audio",
+      "hints": "app",
+      "hint_budget_chars": 330,
+      "hints_as": "both",
+      "energy_trim": true,
+      "vad_filter": false,
+      "beam": 5,
+      "language": "pt",
+      "temperature_fallback": false,
+      "condition_on_previous_text": false,
+      "instruction_prompt": true
+    },
+    "whole_large_v3": {
+      "cause": "engine",
+      "compared_with": "whole_app",
+      "model": "large-v3",
+      "decode": "whole audio",
+      "hints": "app",
+      "hint_budget_chars": 330,
+      "hints_as": "both",
+      "energy_trim": true,
+      "vad_filter": false,
+      "beam": 5,
+      "language": "pt",
+      "temperature_fallback": false,
+      "condition_on_previous_text": false,
+      "instruction_prompt": false
+    },
+    "large_v3_hints_none": {
+      "cause": "engine",
+      "compared_with": "hints_none",
+      "model": "large-v3",
+      "decode": "whole audio",
+      "hints": "none",
+      "hint_budget_chars": 330,
+      "hints_as": "both",
+      "energy_trim": true,
+      "vad_filter": false,
+      "beam": 5,
+      "language": "pt",
+      "temperature_fallback": false,
+      "condition_on_previous_text": false,
+      "instruction_prompt": false
+    },
+    "large_v3_beam_10": {
+      "cause": "engine",
+      "compared_with": "beam_10",
+      "model": "large-v3",
+      "decode": "whole audio",
+      "hints": "app",
+      "hint_budget_chars": 330,
+      "hints_as": "both",
+      "energy_trim": true,
+      "vad_filter": false,
+      "beam": 10,
+      "language": "pt",
+      "temperature_fallback": false,
+      "condition_on_previous_text": false,
+      "instruction_prompt": false
+    },
+    "stream_large_v3": {
+      "cause": "engine",
+      "compared_with": "stream_app",
+      "model": "large-v3",
+      "decode": "streaming final",
+      "hints": "app",
+      "hint_budget_chars": 330,
+      "hints_as": "both",
+      "energy_trim": true,
+      "vad_filter": false,
+      "beam": 5,
+      "language": "pt",
+      "temperature_fallback": false,
+      "condition_on_previous_text": false,
+      "instruction_prompt": false
+    }
+  },
+  "sets": {
+    "prompts": {
+      "takes": 15,
+      "audio_s": {
+        "total": 95.2,
+        "p50": 6.108,
+        "max": 8.348
+      },
+      "configs": {
+        "stream_app": {
+          "takes": 15,
+          "failed": 0,
+          "reference_words": 304,
+          "word_errors": {
+            "substitutions": 48,
+            "deletions": 16,
+            "insertions": 7,
+            "total": 71
+          },
+          "wer": 0.2336,
+          "splits": {
+            "events": 3,
+            "errors": 6
+          },
+          "merges": {
+            "events": 9,
+            "errors": 18
+          },
+          "edges": {
+            "reference_words": 60,
+            "errors": 21
+          },
+          "term_words": {
+            "reference_words": 18,
+            "errors": 6
+          },
+          "other_words": {
+            "reference_words": 286,
+            "errors": 65
+          },
+          "domain_terms": {
+            "occurrences": 16,
+            "errors": 4
+          },
+          "pipeline": {
+            "word_errors": 71,
+            "wer": 0.2336,
+            "domain_term_errors": 4
+          },
+          "languages": {
+            "pt": 15
+          },
+          "latency_s": {
+            "n": 15,
+            "p50": 0.229,
+            "p95": 0.278
+          }
+        },
+        "whole_app": {
+          "takes": 15,
+          "failed": 0,
+          "reference_words": 304,
+          "word_errors": {
+            "substitutions": 49,
+            "deletions": 13,
+            "insertions": 8,
+            "total": 70
+          },
+          "wer": 0.2303,
+          "splits": {
+            "events": 3,
+            "errors": 6
+          },
+          "merges": {
+            "events": 7,
+            "errors": 14
+          },
+          "edges": {
+            "reference_words": 60,
+            "errors": 21
+          },
+          "term_words": {
+            "reference_words": 18,
+            "errors": 4
+          },
+          "other_words": {
+            "reference_words": 286,
+            "errors": 66
+          },
+          "domain_terms": {
+            "occurrences": 16,
+            "errors": 3
+          },
+          "pipeline": {
+            "word_errors": 70,
+            "wer": 0.2303,
+            "domain_term_errors": 3
+          },
+          "languages": {
+            "pt": 15
+          },
+          "latency_s": {
+            "n": 15,
+            "p50": 0.259,
+            "p95": 0.293
+          }
+        },
+        "whole_untrimmed": {
+          "takes": 15,
+          "failed": 0,
+          "reference_words": 304,
+          "word_errors": {
+            "substitutions": 55,
+            "deletions": 14,
+            "insertions": 6,
+            "total": 75
+          },
+          "wer": 0.2467,
+          "splits": {
+            "events": 3,
+            "errors": 6
+          },
+          "merges": {
+            "events": 9,
+            "errors": 18
+          },
+          "edges": {
+            "reference_words": 60,
+            "errors": 20
+          },
+          "term_words": {
+            "reference_words": 18,
+            "errors": 8
+          },
+          "other_words": {
+            "reference_words": 286,
+            "errors": 67
+          },
+          "domain_terms": {
+            "occurrences": 16,
+            "errors": 5
+          },
+          "pipeline": {
+            "word_errors": 75,
+            "wer": 0.2467,
+            "domain_term_errors": 5
+          },
+          "languages": {
+            "pt": 15
+          },
+          "latency_s": {
+            "n": 15,
+            "p50": 0.233,
+            "p95": 0.277
+          }
+        },
+        "whole_vad_filter": {
+          "takes": 15,
+          "failed": 0,
+          "reference_words": 304,
+          "word_errors": {
+            "substitutions": 50,
+            "deletions": 13,
+            "insertions": 6,
+            "total": 69
+          },
+          "wer": 0.227,
+          "splits": {
+            "events": 3,
+            "errors": 6
+          },
+          "merges": {
+            "events": 8,
+            "errors": 16
+          },
+          "edges": {
+            "reference_words": 60,
+            "errors": 19
+          },
+          "term_words": {
+            "reference_words": 18,
+            "errors": 5
+          },
+          "other_words": {
+            "reference_words": 286,
+            "errors": 64
+          },
+          "domain_terms": {
+            "occurrences": 16,
+            "errors": 3
+          },
+          "pipeline": {
+            "word_errors": 69,
+            "wer": 0.227,
+            "domain_term_errors": 3
+          },
+          "languages": {
+            "pt": 15
+          },
+          "latency_s": {
+            "n": 15,
+            "p50": 0.261,
+            "p95": 0.544
+          }
+        },
+        "hints_none": {
+          "takes": 15,
+          "failed": 0,
+          "reference_words": 304,
+          "word_errors": {
+            "substitutions": 63,
+            "deletions": 14,
+            "insertions": 16,
+            "total": 93
+          },
+          "wer": 0.3059,
+          "splits": {
+            "events": 3,
+            "errors": 6
+          },
+          "merges": {
+            "events": 10,
+            "errors": 20
+          },
+          "edges": {
+            "reference_words": 60,
+            "errors": 31
+          },
+          "term_words": {
+            "reference_words": 18,
+            "errors": 10
+          },
+          "other_words": {
+            "reference_words": 286,
+            "errors": 83
+          },
+          "domain_terms": {
+            "occurrences": 16,
+            "errors": 6
+          },
+          "pipeline": {
+            "word_errors": 85,
+            "wer": 0.2796,
+            "domain_term_errors": 6
+          },
+          "languages": {
+            "pt": 15
+          },
+          "latency_s": {
+            "n": 15,
+            "p50": 0.228,
+            "p95": 0.285
+          }
+        },
+        "hints_vocabulary": {
+          "takes": 15,
+          "failed": 0,
+          "reference_words": 304,
+          "word_errors": {
+            "substitutions": 60,
+            "deletions": 14,
+            "insertions": 15,
+            "total": 89
+          },
+          "wer": 0.2928,
+          "splits": {
+            "events": 3,
+            "errors": 6
+          },
+          "merges": {
+            "events": 7,
+            "errors": 14
+          },
+          "edges": {
+            "reference_words": 60,
+            "errors": 28
+          },
+          "term_words": {
+            "reference_words": 18,
+            "errors": 15
+          },
+          "other_words": {
+            "reference_words": 286,
+            "errors": 74
+          },
+          "domain_terms": {
+            "occurrences": 16,
+            "errors": 7
+          },
+          "pipeline": {
+            "word_errors": 89,
+            "wer": 0.2928,
+            "domain_term_errors": 7
+          },
+          "languages": {
+            "pt": 15
+          },
+          "latency_s": {
+            "n": 15,
+            "p50": 0.227,
+            "p95": 0.294
+          }
+        },
+        "hints_budget_150": {
+          "takes": 15,
+          "failed": 0,
+          "reference_words": 304,
+          "word_errors": {
+            "substitutions": 49,
+            "deletions": 13,
+            "insertions": 7,
+            "total": 69
+          },
+          "wer": 0.227,
+          "splits": {
+            "events": 4,
+            "errors": 8
+          },
+          "merges": {
+            "events": 7,
+            "errors": 14
+          },
+          "edges": {
+            "reference_words": 60,
+            "errors": 20
+          },
+          "term_words": {
+            "reference_words": 18,
+            "errors": 4
+          },
+          "other_words": {
+            "reference_words": 286,
+            "errors": 65
+          },
+          "domain_terms": {
+            "occurrences": 16,
+            "errors": 3
+          },
+          "pipeline": {
+            "word_errors": 70,
+            "wer": 0.2303,
+            "domain_term_errors": 3
+          },
+          "languages": {
+            "pt": 15
+          },
+          "latency_s": {
+            "n": 15,
+            "p50": 0.237,
+            "p95": 0.311
+          }
+        },
+        "hints_budget_600": {
+          "takes": 15,
+          "failed": 0,
+          "reference_words": 304,
+          "word_errors": {
+            "substitutions": 92,
+            "deletions": 28,
+            "insertions": 63,
+            "total": 183
+          },
+          "wer": 0.602,
+          "splits": {
+            "events": 2,
+            "errors": 4
+          },
+          "merges": {
+            "events": 6,
+            "errors": 20
+          },
+          "edges": {
+            "reference_words": 60,
+            "errors": 78
+          },
+          "term_words": {
+            "reference_words": 18,
+            "errors": 48
+          },
+          "other_words": {
+            "reference_words": 286,
+            "errors": 135
+          },
+          "domain_terms": {
+            "occurrences": 16,
+            "errors": 6
+          },
+          "pipeline": {
+            "word_errors": 122,
+            "wer": 0.4013,
+            "domain_term_errors": 6
+          },
+          "languages": {
+            "pt": 15
+          },
+          "latency_s": {
+            "n": 15,
+            "p50": 0.23,
+            "p95": 0.345
+          }
+        },
+        "language_auto": {
+          "takes": 15,
+          "failed": 0,
+          "reference_words": 304,
+          "word_errors": {
+            "substitutions": 49,
+            "deletions": 13,
+            "insertions": 8,
+            "total": 70
+          },
+          "wer": 0.2303,
+          "splits": {
+            "events": 3,
+            "errors": 6
+          },
+          "merges": {
+            "events": 7,
+            "errors": 14
+          },
+          "edges": {
+            "reference_words": 60,
+            "errors": 21
+          },
+          "term_words": {
+            "reference_words": 18,
+            "errors": 4
+          },
+          "other_words": {
+            "reference_words": 286,
+            "errors": 66
+          },
+          "domain_terms": {
+            "occurrences": 16,
+            "errors": 3
+          },
+          "pipeline": {
+            "word_errors": 70,
+            "wer": 0.2303,
+            "domain_term_errors": 3
+          },
+          "languages": {
+            "pt": 15
+          },
+          "latency_s": {
+            "n": 15,
+            "p50": 0.373,
+            "p95": 0.432
+          }
+        },
+        "beam_1": {
+          "takes": 15,
+          "failed": 0,
+          "reference_words": 304,
+          "word_errors": {
+            "substitutions": 61,
+            "deletions": 10,
+            "insertions": 8,
+            "total": 79
+          },
+          "wer": 0.2599,
+          "splits": {
+            "events": 4,
+            "errors": 8
+          },
+          "merges": {
+            "events": 6,
+            "errors": 12
+          },
+          "edges": {
+            "reference_words": 60,
+            "errors": 20
+          },
+          "term_words": {
+            "reference_words": 18,
+            "errors": 9
+          },
+          "other_words": {
+            "reference_words": 286,
+            "errors": 70
+          },
+          "domain_terms": {
+            "occurrences": 16,
+            "errors": 5
+          },
+          "pipeline": {
+            "word_errors": 79,
+            "wer": 0.2599,
+            "domain_term_errors": 5
+          },
+          "languages": {
+            "pt": 15
+          },
+          "latency_s": {
+            "n": 15,
+            "p50": 0.252,
+            "p95": 0.362
+          }
+        },
+        "beam_10": {
+          "takes": 15,
+          "failed": 0,
+          "reference_words": 304,
+          "word_errors": {
+            "substitutions": 49,
+            "deletions": 13,
+            "insertions": 8,
+            "total": 70
+          },
+          "wer": 0.2303,
+          "splits": {
+            "events": 3,
+            "errors": 6
+          },
+          "merges": {
+            "events": 7,
+            "errors": 14
+          },
+          "edges": {
+            "reference_words": 60,
+            "errors": 21
+          },
+          "term_words": {
+            "reference_words": 18,
+            "errors": 4
+          },
+          "other_words": {
+            "reference_words": 286,
+            "errors": 66
+          },
+          "domain_terms": {
+            "occurrences": 16,
+            "errors": 3
+          },
+          "pipeline": {
+            "word_errors": 70,
+            "wer": 0.2303,
+            "domain_term_errors": 3
+          },
+          "languages": {
+            "pt": 15
+          },
+          "latency_s": {
+            "n": 15,
+            "p50": 0.37,
+            "p95": 0.416
+          }
+        },
+        "temperature_fallback": {
+          "takes": 15,
+          "failed": 0,
+          "reference_words": 304,
+          "word_errors": {
+            "substitutions": 49,
+            "deletions": 13,
+            "insertions": 8,
+            "total": 70
+          },
+          "wer": 0.2303,
+          "splits": {
+            "events": 3,
+            "errors": 6
+          },
+          "merges": {
+            "events": 7,
+            "errors": 14
+          },
+          "edges": {
+            "reference_words": 60,
+            "errors": 21
+          },
+          "term_words": {
+            "reference_words": 18,
+            "errors": 4
+          },
+          "other_words": {
+            "reference_words": 286,
+            "errors": 66
+          },
+          "domain_terms": {
+            "occurrences": 16,
+            "errors": 3
+          },
+          "pipeline": {
+            "word_errors": 70,
+            "wer": 0.2303,
+            "domain_term_errors": 3
+          },
+          "languages": {
+            "pt": 15
+          },
+          "latency_s": {
+            "n": 15,
+            "p50": 0.236,
+            "p95": 0.289
+          }
+        },
+        "condition_previous": {
+          "takes": 15,
+          "failed": 0,
+          "reference_words": 304,
+          "word_errors": {
+            "substitutions": 49,
+            "deletions": 13,
+            "insertions": 8,
+            "total": 70
+          },
+          "wer": 0.2303,
+          "splits": {
+            "events": 3,
+            "errors": 6
+          },
+          "merges": {
+            "events": 7,
+            "errors": 14
+          },
+          "edges": {
+            "reference_words": 60,
+            "errors": 21
+          },
+          "term_words": {
+            "reference_words": 18,
+            "errors": 4
+          },
+          "other_words": {
+            "reference_words": 286,
+            "errors": 66
+          },
+          "domain_terms": {
+            "occurrences": 16,
+            "errors": 3
+          },
+          "pipeline": {
+            "word_errors": 70,
+            "wer": 0.2303,
+            "domain_term_errors": 3
+          },
+          "languages": {
+            "pt": 15
+          },
+          "latency_s": {
+            "n": 15,
+            "p50": 0.25,
+            "p95": 0.275
+          }
+        },
+        "hotwords_only": {
+          "takes": 15,
+          "failed": 0,
+          "reference_words": 304,
+          "word_errors": {
+            "substitutions": 50,
+            "deletions": 16,
+            "insertions": 6,
+            "total": 72
+          },
+          "wer": 0.2368,
+          "splits": {
+            "events": 2,
+            "errors": 4
+          },
+          "merges": {
+            "events": 10,
+            "errors": 20
+          },
+          "edges": {
+            "reference_words": 60,
+            "errors": 22
+          },
+          "term_words": {
+            "reference_words": 18,
+            "errors": 8
+          },
+          "other_words": {
+            "reference_words": 286,
+            "errors": 64
+          },
+          "domain_terms": {
+            "occurrences": 16,
+            "errors": 5
+          },
+          "pipeline": {
+            "word_errors": 70,
+            "wer": 0.2303,
+            "domain_term_errors": 5
+          },
+          "languages": {
+            "pt": 15
+          },
+          "latency_s": {
+            "n": 15,
+            "p50": 0.232,
+            "p95": 0.292
+          }
+        },
+        "prompt_only": {
+          "takes": 15,
+          "failed": 0,
+          "reference_words": 304,
+          "word_errors": {
+            "substitutions": 51,
+            "deletions": 13,
+            "insertions": 9,
+            "total": 73
+          },
+          "wer": 0.2401,
+          "splits": {
+            "events": 3,
+            "errors": 6
+          },
+          "merges": {
+            "events": 7,
+            "errors": 14
+          },
+          "edges": {
+            "reference_words": 60,
+            "errors": 22
+          },
+          "term_words": {
+            "reference_words": 18,
+            "errors": 4
+          },
+          "other_words": {
+            "reference_words": 286,
+            "errors": 69
+          },
+          "domain_terms": {
+            "occurrences": 16,
+            "errors": 3
+          },
+          "pipeline": {
+            "word_errors": 73,
+            "wer": 0.2401,
+            "domain_term_errors": 3
+          },
+          "languages": {
+            "pt": 15
+          },
+          "latency_s": {
+            "n": 15,
+            "p50": 0.248,
+            "p95": 0.269
+          }
+        },
+        "prompt_instruction": {
+          "takes": 15,
+          "failed": 0,
+          "reference_words": 304,
+          "word_errors": {
+            "substitutions": 51,
+            "deletions": 13,
+            "insertions": 6,
+            "total": 70
+          },
+          "wer": 0.2303,
+          "splits": {
+            "events": 3,
+            "errors": 6
+          },
+          "merges": {
+            "events": 8,
+            "errors": 16
+          },
+          "edges": {
+            "reference_words": 60,
+            "errors": 20
+          },
+          "term_words": {
+            "reference_words": 18,
+            "errors": 4
+          },
+          "other_words": {
+            "reference_words": 286,
+            "errors": 66
+          },
+          "domain_terms": {
+            "occurrences": 16,
+            "errors": 3
+          },
+          "pipeline": {
+            "word_errors": 70,
+            "wer": 0.2303,
+            "domain_term_errors": 3
+          },
+          "languages": {
+            "pt": 15
+          },
+          "latency_s": {
+            "n": 15,
+            "p50": 0.265,
+            "p95": 0.342
+          }
+        },
+        "whole_large_v3": {
+          "takes": 15,
+          "failed": 0,
+          "reference_words": 304,
+          "word_errors": {
+            "substitutions": 45,
+            "deletions": 18,
+            "insertions": 6,
+            "total": 69
+          },
+          "wer": 0.227,
+          "splits": {
+            "events": 2,
+            "errors": 5
+          },
+          "merges": {
+            "events": 6,
+            "errors": 12
+          },
+          "edges": {
+            "reference_words": 60,
+            "errors": 19
+          },
+          "term_words": {
+            "reference_words": 18,
+            "errors": 5
+          },
+          "other_words": {
+            "reference_words": 286,
+            "errors": 64
+          },
+          "domain_terms": {
+            "occurrences": 16,
+            "errors": 4
+          },
+          "pipeline": {
+            "word_errors": 70,
+            "wer": 0.2303,
+            "domain_term_errors": 4
+          },
+          "languages": {
+            "pt": 15
+          },
+          "latency_s": {
+            "n": 15,
+            "p50": 0.584,
+            "p95": 0.763
+          }
+        },
+        "large_v3_hints_none": {
+          "takes": 15,
+          "failed": 0,
+          "reference_words": 304,
+          "word_errors": {
+            "substitutions": 70,
+            "deletions": 15,
+            "insertions": 13,
+            "total": 98
+          },
+          "wer": 0.3224,
+          "splits": {
+            "events": 5,
+            "errors": 12
+          },
+          "merges": {
+            "events": 9,
+            "errors": 18
+          },
+          "edges": {
+            "reference_words": 60,
+            "errors": 28
+          },
+          "term_words": {
+            "reference_words": 18,
+            "errors": 15
+          },
+          "other_words": {
+            "reference_words": 286,
+            "errors": 83
+          },
+          "domain_terms": {
+            "occurrences": 16,
+            "errors": 8
+          },
+          "pipeline": {
+            "word_errors": 89,
+            "wer": 0.2928,
+            "domain_term_errors": 8
+          },
+          "languages": {
+            "pt": 15
+          },
+          "latency_s": {
+            "n": 15,
+            "p50": 0.549,
+            "p95": 0.917
+          }
+        },
+        "large_v3_beam_10": {
+          "takes": 15,
+          "failed": 0,
+          "reference_words": 304,
+          "word_errors": {
+            "substitutions": 43,
+            "deletions": 19,
+            "insertions": 6,
+            "total": 68
+          },
+          "wer": 0.2237,
+          "splits": {
+            "events": 2,
+            "errors": 5
+          },
+          "merges": {
+            "events": 6,
+            "errors": 12
+          },
+          "edges": {
+            "reference_words": 60,
+            "errors": 18
+          },
+          "term_words": {
+            "reference_words": 18,
+            "errors": 5
+          },
+          "other_words": {
+            "reference_words": 286,
+            "errors": 63
+          },
+          "domain_terms": {
+            "occurrences": 16,
+            "errors": 4
+          },
+          "pipeline": {
+            "word_errors": 69,
+            "wer": 0.227,
+            "domain_term_errors": 4
+          },
+          "languages": {
+            "pt": 15
+          },
+          "latency_s": {
+            "n": 15,
+            "p50": 0.703,
+            "p95": 0.851
+          }
+        },
+        "stream_large_v3": {
+          "takes": 15,
+          "failed": 0,
+          "reference_words": 304,
+          "word_errors": {
+            "substitutions": 55,
+            "deletions": 18,
+            "insertions": 7,
+            "total": 80
+          },
+          "wer": 0.2632,
+          "splits": {
+            "events": 3,
+            "errors": 6
+          },
+          "merges": {
+            "events": 7,
+            "errors": 14
+          },
+          "edges": {
+            "reference_words": 60,
+            "errors": 19
+          },
+          "term_words": {
+            "reference_words": 18,
+            "errors": 9
+          },
+          "other_words": {
+            "reference_words": 286,
+            "errors": 71
+          },
+          "domain_terms": {
+            "occurrences": 16,
+            "errors": 6
+          },
+          "pipeline": {
+            "word_errors": 81,
+            "wer": 0.2664,
+            "domain_term_errors": 6
+          },
+          "languages": {
+            "pt": 15
+          },
+          "latency_s": {
+            "n": 15,
+            "p50": 0.528,
+            "p95": 2.678
+          }
+        }
+      }
+    },
+    "claude_code": {
+      "takes": 9,
+      "audio_s": {
+        "total": 87.2,
+        "p50": 8.468,
+        "max": 18.048
+      },
+      "configs": {
+        "stream_app": {
+          "takes": 9,
+          "failed": 0,
+          "reference_words": 253,
+          "word_errors": {
+            "substitutions": 15,
+            "deletions": 6,
+            "insertions": 10,
+            "total": 31
+          },
+          "wer": 0.1225,
+          "splits": {
+            "events": 2,
+            "errors": 4
+          },
+          "merges": {
+            "events": 1,
+            "errors": 2
+          },
+          "edges": {
+            "reference_words": 36,
+            "errors": 7
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 253,
+            "errors": 31
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 25,
+            "wer": 0.0988,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 9
+          },
+          "latency_s": {
+            "n": 9,
+            "p50": 0.212,
+            "p95": 0.384
+          }
+        },
+        "whole_app": {
+          "takes": 9,
+          "failed": 0,
+          "reference_words": 253,
+          "word_errors": {
+            "substitutions": 15,
+            "deletions": 6,
+            "insertions": 10,
+            "total": 31
+          },
+          "wer": 0.1225,
+          "splits": {
+            "events": 2,
+            "errors": 4
+          },
+          "merges": {
+            "events": 1,
+            "errors": 2
+          },
+          "edges": {
+            "reference_words": 36,
+            "errors": 7
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 253,
+            "errors": 31
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 25,
+            "wer": 0.0988,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 9
+          },
+          "latency_s": {
+            "n": 9,
+            "p50": 0.285,
+            "p95": 0.356
+          }
+        },
+        "whole_untrimmed": {
+          "takes": 9,
+          "failed": 0,
+          "reference_words": 253,
+          "word_errors": {
+            "substitutions": 18,
+            "deletions": 6,
+            "insertions": 9,
+            "total": 33
+          },
+          "wer": 0.1304,
+          "splits": {
+            "events": 3,
+            "errors": 6
+          },
+          "merges": {
+            "events": 1,
+            "errors": 2
+          },
+          "edges": {
+            "reference_words": 36,
+            "errors": 8
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 253,
+            "errors": 33
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 27,
+            "wer": 0.1067,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 9
+          },
+          "latency_s": {
+            "n": 9,
+            "p50": 0.262,
+            "p95": 0.345
+          }
+        },
+        "whole_vad_filter": {
+          "takes": 9,
+          "failed": 0,
+          "reference_words": 253,
+          "word_errors": {
+            "substitutions": 20,
+            "deletions": 6,
+            "insertions": 10,
+            "total": 36
+          },
+          "wer": 0.1423,
+          "splits": {
+            "events": 2,
+            "errors": 4
+          },
+          "merges": {
+            "events": 1,
+            "errors": 2
+          },
+          "edges": {
+            "reference_words": 36,
+            "errors": 10
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 253,
+            "errors": 36
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 31,
+            "wer": 0.1225,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 9
+          },
+          "latency_s": {
+            "n": 9,
+            "p50": 0.295,
+            "p95": 0.521
+          }
+        },
+        "hints_none": {
+          "takes": 9,
+          "failed": 0,
+          "reference_words": 253,
+          "word_errors": {
+            "substitutions": 18,
+            "deletions": 7,
+            "insertions": 10,
+            "total": 35
+          },
+          "wer": 0.1383,
+          "splits": {
+            "events": 3,
+            "errors": 6
+          },
+          "merges": {
+            "events": 3,
+            "errors": 6
+          },
+          "edges": {
+            "reference_words": 36,
+            "errors": 7
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 253,
+            "errors": 35
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 25,
+            "wer": 0.0988,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 9
+          },
+          "latency_s": {
+            "n": 9,
+            "p50": 0.233,
+            "p95": 0.324
+          }
+        },
+        "hints_vocabulary": {
+          "takes": 9,
+          "failed": 0,
+          "reference_words": 253,
+          "word_errors": {
+            "substitutions": 15,
+            "deletions": 7,
+            "insertions": 9,
+            "total": 31
+          },
+          "wer": 0.1225,
+          "splits": {
+            "events": 2,
+            "errors": 4
+          },
+          "merges": {
+            "events": 2,
+            "errors": 4
+          },
+          "edges": {
+            "reference_words": 36,
+            "errors": 7
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 253,
+            "errors": 31
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 23,
+            "wer": 0.0909,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 9
+          },
+          "latency_s": {
+            "n": 9,
+            "p50": 0.256,
+            "p95": 0.344
+          }
+        },
+        "hints_budget_150": {
+          "takes": 9,
+          "failed": 0,
+          "reference_words": 253,
+          "word_errors": {
+            "substitutions": 16,
+            "deletions": 6,
+            "insertions": 8,
+            "total": 30
+          },
+          "wer": 0.1186,
+          "splits": {
+            "events": 2,
+            "errors": 4
+          },
+          "merges": {
+            "events": 1,
+            "errors": 2
+          },
+          "edges": {
+            "reference_words": 36,
+            "errors": 8
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 253,
+            "errors": 30
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 26,
+            "wer": 0.1028,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 9
+          },
+          "latency_s": {
+            "n": 9,
+            "p50": 0.246,
+            "p95": 0.385
+          }
+        },
+        "hints_budget_600": {
+          "takes": 9,
+          "failed": 0,
+          "reference_words": 253,
+          "word_errors": {
+            "substitutions": 98,
+            "deletions": 46,
+            "insertions": 89,
+            "total": 233
+          },
+          "wer": 0.9209,
+          "splits": {
+            "events": 2,
+            "errors": 4
+          },
+          "merges": {
+            "events": 1,
+            "errors": 2
+          },
+          "edges": {
+            "reference_words": 36,
+            "errors": 100
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 253,
+            "errors": 233
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 182,
+            "wer": 0.7194,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 9
+          },
+          "latency_s": {
+            "n": 9,
+            "p50": 0.242,
+            "p95": 0.449
+          }
+        },
+        "language_auto": {
+          "takes": 9,
+          "failed": 0,
+          "reference_words": 253,
+          "word_errors": {
+            "substitutions": 15,
+            "deletions": 6,
+            "insertions": 10,
+            "total": 31
+          },
+          "wer": 0.1225,
+          "splits": {
+            "events": 2,
+            "errors": 4
+          },
+          "merges": {
+            "events": 1,
+            "errors": 2
+          },
+          "edges": {
+            "reference_words": 36,
+            "errors": 7
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 253,
+            "errors": 31
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 25,
+            "wer": 0.0988,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 9
+          },
+          "latency_s": {
+            "n": 9,
+            "p50": 0.427,
+            "p95": 0.521
+          }
+        },
+        "beam_1": {
+          "takes": 9,
+          "failed": 0,
+          "reference_words": 253,
+          "word_errors": {
+            "substitutions": 21,
+            "deletions": 8,
+            "insertions": 16,
+            "total": 45
+          },
+          "wer": 0.1779,
+          "splits": {
+            "events": 3,
+            "errors": 6
+          },
+          "merges": {
+            "events": 2,
+            "errors": 4
+          },
+          "edges": {
+            "reference_words": 36,
+            "errors": 13
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 253,
+            "errors": 45
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 35,
+            "wer": 0.1383,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 9
+          },
+          "latency_s": {
+            "n": 9,
+            "p50": 0.278,
+            "p95": 0.398
+          }
+        },
+        "beam_10": {
+          "takes": 9,
+          "failed": 0,
+          "reference_words": 253,
+          "word_errors": {
+            "substitutions": 16,
+            "deletions": 6,
+            "insertions": 10,
+            "total": 32
+          },
+          "wer": 0.1265,
+          "splits": {
+            "events": 2,
+            "errors": 4
+          },
+          "merges": {
+            "events": 1,
+            "errors": 2
+          },
+          "edges": {
+            "reference_words": 36,
+            "errors": 7
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 253,
+            "errors": 32
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 26,
+            "wer": 0.1028,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 9
+          },
+          "latency_s": {
+            "n": 9,
+            "p50": 0.407,
+            "p95": 0.707
+          }
+        },
+        "temperature_fallback": {
+          "takes": 9,
+          "failed": 0,
+          "reference_words": 253,
+          "word_errors": {
+            "substitutions": 15,
+            "deletions": 6,
+            "insertions": 10,
+            "total": 31
+          },
+          "wer": 0.1225,
+          "splits": {
+            "events": 2,
+            "errors": 4
+          },
+          "merges": {
+            "events": 1,
+            "errors": 2
+          },
+          "edges": {
+            "reference_words": 36,
+            "errors": 7
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 253,
+            "errors": 31
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 25,
+            "wer": 0.0988,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 9
+          },
+          "latency_s": {
+            "n": 9,
+            "p50": 0.253,
+            "p95": 0.341
+          }
+        },
+        "condition_previous": {
+          "takes": 9,
+          "failed": 0,
+          "reference_words": 253,
+          "word_errors": {
+            "substitutions": 15,
+            "deletions": 6,
+            "insertions": 10,
+            "total": 31
+          },
+          "wer": 0.1225,
+          "splits": {
+            "events": 2,
+            "errors": 4
+          },
+          "merges": {
+            "events": 1,
+            "errors": 2
+          },
+          "edges": {
+            "reference_words": 36,
+            "errors": 7
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 253,
+            "errors": 31
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 25,
+            "wer": 0.0988,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 9
+          },
+          "latency_s": {
+            "n": 9,
+            "p50": 0.268,
+            "p95": 0.425
+          }
+        },
+        "hotwords_only": {
+          "takes": 9,
+          "failed": 0,
+          "reference_words": 253,
+          "word_errors": {
+            "substitutions": 22,
+            "deletions": 9,
+            "insertions": 15,
+            "total": 46
+          },
+          "wer": 0.1818,
+          "splits": {
+            "events": 3,
+            "errors": 6
+          },
+          "merges": {
+            "events": 1,
+            "errors": 2
+          },
+          "edges": {
+            "reference_words": 36,
+            "errors": 12
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 253,
+            "errors": 46
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 34,
+            "wer": 0.1344,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 9
+          },
+          "latency_s": {
+            "n": 9,
+            "p50": 0.26,
+            "p95": 0.435
+          }
+        },
+        "prompt_only": {
+          "takes": 9,
+          "failed": 0,
+          "reference_words": 253,
+          "word_errors": {
+            "substitutions": 17,
+            "deletions": 6,
+            "insertions": 10,
+            "total": 33
+          },
+          "wer": 0.1304,
+          "splits": {
+            "events": 2,
+            "errors": 4
+          },
+          "merges": {
+            "events": 1,
+            "errors": 2
+          },
+          "edges": {
+            "reference_words": 36,
+            "errors": 9
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 253,
+            "errors": 33
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 26,
+            "wer": 0.1028,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 9
+          },
+          "latency_s": {
+            "n": 9,
+            "p50": 0.273,
+            "p95": 0.361
+          }
+        },
+        "prompt_instruction": {
+          "takes": 9,
+          "failed": 0,
+          "reference_words": 253,
+          "word_errors": {
+            "substitutions": 15,
+            "deletions": 5,
+            "insertions": 11,
+            "total": 31
+          },
+          "wer": 0.1225,
+          "splits": {
+            "events": 2,
+            "errors": 4
+          },
+          "merges": {
+            "events": 1,
+            "errors": 2
+          },
+          "edges": {
+            "reference_words": 36,
+            "errors": 6
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 253,
+            "errors": 31
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 24,
+            "wer": 0.0949,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 9
+          },
+          "latency_s": {
+            "n": 9,
+            "p50": 0.284,
+            "p95": 0.419
+          }
+        },
+        "whole_large_v3": {
+          "takes": 9,
+          "failed": 0,
+          "reference_words": 253,
+          "word_errors": {
+            "substitutions": 15,
+            "deletions": 5,
+            "insertions": 11,
+            "total": 31
+          },
+          "wer": 0.1225,
+          "splits": {
+            "events": 3,
+            "errors": 6
+          },
+          "merges": {
+            "events": 1,
+            "errors": 2
+          },
+          "edges": {
+            "reference_words": 36,
+            "errors": 6
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 253,
+            "errors": 31
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 26,
+            "wer": 0.1028,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 9
+          },
+          "latency_s": {
+            "n": 9,
+            "p50": 0.724,
+            "p95": 1.097
+          }
+        },
+        "large_v3_hints_none": {
+          "takes": 9,
+          "failed": 0,
+          "reference_words": 253,
+          "word_errors": {
+            "substitutions": 18,
+            "deletions": 9,
+            "insertions": 9,
+            "total": 36
+          },
+          "wer": 0.1423,
+          "splits": {
+            "events": 2,
+            "errors": 4
+          },
+          "merges": {
+            "events": 4,
+            "errors": 8
+          },
+          "edges": {
+            "reference_words": 36,
+            "errors": 8
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 253,
+            "errors": 36
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 28,
+            "wer": 0.1107,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 9
+          },
+          "latency_s": {
+            "n": 9,
+            "p50": 0.639,
+            "p95": 0.964
+          }
+        },
+        "large_v3_beam_10": {
+          "takes": 9,
+          "failed": 0,
+          "reference_words": 253,
+          "word_errors": {
+            "substitutions": 15,
+            "deletions": 4,
+            "insertions": 11,
+            "total": 30
+          },
+          "wer": 0.1186,
+          "splits": {
+            "events": 3,
+            "errors": 6
+          },
+          "merges": {
+            "events": 1,
+            "errors": 2
+          },
+          "edges": {
+            "reference_words": 36,
+            "errors": 6
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 253,
+            "errors": 30
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 25,
+            "wer": 0.0988,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 9
+          },
+          "latency_s": {
+            "n": 9,
+            "p50": 0.895,
+            "p95": 1.334
+          }
+        },
+        "stream_large_v3": {
+          "takes": 9,
+          "failed": 0,
+          "reference_words": 253,
+          "word_errors": {
+            "substitutions": 19,
+            "deletions": 6,
+            "insertions": 11,
+            "total": 36
+          },
+          "wer": 0.1423,
+          "splits": {
+            "events": 4,
+            "errors": 8
+          },
+          "merges": {
+            "events": 2,
+            "errors": 4
+          },
+          "edges": {
+            "reference_words": 36,
+            "errors": 9
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 253,
+            "errors": 36
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 31,
+            "wer": 0.1225,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 9
+          },
+          "latency_s": {
+            "n": 9,
+            "p50": 0.462,
+            "p95": 1.018
+          }
+        }
+      }
+    },
+    "dictation": {
+      "takes": 36,
+      "audio_s": {
+        "total": 337.9,
+        "p50": 8.468,
+        "max": 18.048
+      },
+      "configs": {
+        "stream_app": {
+          "takes": 36,
+          "failed": 0,
+          "reference_words": 960,
+          "word_errors": {
+            "substitutions": 71,
+            "deletions": 17,
+            "insertions": 37,
+            "total": 125
+          },
+          "wer": 0.1302,
+          "splits": {
+            "events": 9,
+            "errors": 19
+          },
+          "merges": {
+            "events": 5,
+            "errors": 10
+          },
+          "edges": {
+            "reference_words": 144,
+            "errors": 26
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 960,
+            "errors": 125
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 104,
+            "wer": 0.1083,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 36
+          },
+          "latency_s": {
+            "n": 36,
+            "p50": 0.267,
+            "p95": 0.481
+          }
+        },
+        "whole_app": {
+          "takes": 36,
+          "failed": 0,
+          "reference_words": 960,
+          "word_errors": {
+            "substitutions": 71,
+            "deletions": 17,
+            "insertions": 37,
+            "total": 125
+          },
+          "wer": 0.1302,
+          "splits": {
+            "events": 9,
+            "errors": 19
+          },
+          "merges": {
+            "events": 5,
+            "errors": 10
+          },
+          "edges": {
+            "reference_words": 144,
+            "errors": 26
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 960,
+            "errors": 125
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 104,
+            "wer": 0.1083,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 36
+          },
+          "latency_s": {
+            "n": 36,
+            "p50": 0.276,
+            "p95": 0.5
+          }
+        },
+        "whole_untrimmed": {
+          "takes": 36,
+          "failed": 0,
+          "reference_words": 960,
+          "word_errors": {
+            "substitutions": 74,
+            "deletions": 17,
+            "insertions": 32,
+            "total": 123
+          },
+          "wer": 0.1281,
+          "splits": {
+            "events": 10,
+            "errors": 21
+          },
+          "merges": {
+            "events": 5,
+            "errors": 10
+          },
+          "edges": {
+            "reference_words": 144,
+            "errors": 27
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 960,
+            "errors": 123
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 104,
+            "wer": 0.1083,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 36
+          },
+          "latency_s": {
+            "n": 36,
+            "p50": 0.26,
+            "p95": 0.43
+          }
+        },
+        "whole_vad_filter": {
+          "takes": 36,
+          "failed": 0,
+          "reference_words": 960,
+          "word_errors": {
+            "substitutions": 81,
+            "deletions": 16,
+            "insertions": 35,
+            "total": 132
+          },
+          "wer": 0.1375,
+          "splits": {
+            "events": 8,
+            "errors": 16
+          },
+          "merges": {
+            "events": 5,
+            "errors": 10
+          },
+          "edges": {
+            "reference_words": 144,
+            "errors": 32
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 960,
+            "errors": 132
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 112,
+            "wer": 0.1167,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 36
+          },
+          "latency_s": {
+            "n": 36,
+            "p50": 0.295,
+            "p95": 0.521
+          }
+        },
+        "hints_none": {
+          "takes": 36,
+          "failed": 0,
+          "reference_words": 960,
+          "word_errors": {
+            "substitutions": 85,
+            "deletions": 20,
+            "insertions": 30,
+            "total": 135
+          },
+          "wer": 0.1406,
+          "splits": {
+            "events": 9,
+            "errors": 19
+          },
+          "merges": {
+            "events": 9,
+            "errors": 18
+          },
+          "edges": {
+            "reference_words": 144,
+            "errors": 26
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 960,
+            "errors": 135
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 112,
+            "wer": 0.1167,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 36
+          },
+          "latency_s": {
+            "n": 36,
+            "p50": 0.239,
+            "p95": 0.388
+          }
+        },
+        "hints_vocabulary": {
+          "takes": 36,
+          "failed": 0,
+          "reference_words": 960,
+          "word_errors": {
+            "substitutions": 72,
+            "deletions": 19,
+            "insertions": 36,
+            "total": 127
+          },
+          "wer": 0.1323,
+          "splits": {
+            "events": 9,
+            "errors": 19
+          },
+          "merges": {
+            "events": 7,
+            "errors": 14
+          },
+          "edges": {
+            "reference_words": 144,
+            "errors": 26
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 960,
+            "errors": 127
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 102,
+            "wer": 0.1062,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 36
+          },
+          "latency_s": {
+            "n": 36,
+            "p50": 0.261,
+            "p95": 0.369
+          }
+        },
+        "hints_budget_150": {
+          "takes": 36,
+          "failed": 0,
+          "reference_words": 960,
+          "word_errors": {
+            "substitutions": 71,
+            "deletions": 17,
+            "insertions": 28,
+            "total": 116
+          },
+          "wer": 0.1208,
+          "splits": {
+            "events": 8,
+            "errors": 17
+          },
+          "merges": {
+            "events": 5,
+            "errors": 10
+          },
+          "edges": {
+            "reference_words": 144,
+            "errors": 28
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 960,
+            "errors": 116
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 101,
+            "wer": 0.1052,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 36
+          },
+          "latency_s": {
+            "n": 36,
+            "p50": 0.245,
+            "p95": 0.347
+          }
+        },
+        "hints_budget_600": {
+          "takes": 36,
+          "failed": 0,
+          "reference_words": 960,
+          "word_errors": {
+            "substitutions": 229,
+            "deletions": 135,
+            "insertions": 310,
+            "total": 674
+          },
+          "wer": 0.7021,
+          "splits": {
+            "events": 7,
+            "errors": 47
+          },
+          "merges": {
+            "events": 6,
+            "errors": 33
+          },
+          "edges": {
+            "reference_words": 144,
+            "errors": 315
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 960,
+            "errors": 674
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 534,
+            "wer": 0.5563,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 36
+          },
+          "latency_s": {
+            "n": 36,
+            "p50": 0.245,
+            "p95": 0.453
+          }
+        },
+        "language_auto": {
+          "takes": 36,
+          "failed": 0,
+          "reference_words": 960,
+          "word_errors": {
+            "substitutions": 71,
+            "deletions": 17,
+            "insertions": 37,
+            "total": 125
+          },
+          "wer": 0.1302,
+          "splits": {
+            "events": 9,
+            "errors": 19
+          },
+          "merges": {
+            "events": 5,
+            "errors": 10
+          },
+          "edges": {
+            "reference_words": 144,
+            "errors": 26
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 960,
+            "errors": 125
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 104,
+            "wer": 0.1083,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 36
+          },
+          "latency_s": {
+            "n": 36,
+            "p50": 0.406,
+            "p95": 0.505
+          }
+        },
+        "beam_1": {
+          "takes": 36,
+          "failed": 0,
+          "reference_words": 960,
+          "word_errors": {
+            "substitutions": 86,
+            "deletions": 21,
+            "insertions": 41,
+            "total": 148
+          },
+          "wer": 0.1542,
+          "splits": {
+            "events": 9,
+            "errors": 19
+          },
+          "merges": {
+            "events": 8,
+            "errors": 16
+          },
+          "edges": {
+            "reference_words": 144,
+            "errors": 33
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 960,
+            "errors": 148
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 121,
+            "wer": 0.126,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 36
+          },
+          "latency_s": {
+            "n": 36,
+            "p50": 0.278,
+            "p95": 0.411
+          }
+        },
+        "beam_10": {
+          "takes": 36,
+          "failed": 0,
+          "reference_words": 960,
+          "word_errors": {
+            "substitutions": 73,
+            "deletions": 17,
+            "insertions": 36,
+            "total": 126
+          },
+          "wer": 0.1313,
+          "splits": {
+            "events": 9,
+            "errors": 19
+          },
+          "merges": {
+            "events": 5,
+            "errors": 10
+          },
+          "edges": {
+            "reference_words": 144,
+            "errors": 26
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 960,
+            "errors": 126
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 105,
+            "wer": 0.1094,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 36
+          },
+          "latency_s": {
+            "n": 36,
+            "p50": 0.413,
+            "p95": 0.717
+          }
+        },
+        "temperature_fallback": {
+          "takes": 36,
+          "failed": 0,
+          "reference_words": 960,
+          "word_errors": {
+            "substitutions": 71,
+            "deletions": 17,
+            "insertions": 37,
+            "total": 125
+          },
+          "wer": 0.1302,
+          "splits": {
+            "events": 9,
+            "errors": 19
+          },
+          "merges": {
+            "events": 5,
+            "errors": 10
+          },
+          "edges": {
+            "reference_words": 144,
+            "errors": 26
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 960,
+            "errors": 125
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 104,
+            "wer": 0.1083,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 36
+          },
+          "latency_s": {
+            "n": 36,
+            "p50": 0.263,
+            "p95": 0.398
+          }
+        },
+        "condition_previous": {
+          "takes": 36,
+          "failed": 0,
+          "reference_words": 960,
+          "word_errors": {
+            "substitutions": 71,
+            "deletions": 17,
+            "insertions": 37,
+            "total": 125
+          },
+          "wer": 0.1302,
+          "splits": {
+            "events": 9,
+            "errors": 19
+          },
+          "merges": {
+            "events": 5,
+            "errors": 10
+          },
+          "edges": {
+            "reference_words": 144,
+            "errors": 26
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 960,
+            "errors": 125
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 104,
+            "wer": 0.1083,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 36
+          },
+          "latency_s": {
+            "n": 36,
+            "p50": 0.264,
+            "p95": 0.403
+          }
+        },
+        "hotwords_only": {
+          "takes": 36,
+          "failed": 0,
+          "reference_words": 960,
+          "word_errors": {
+            "substitutions": 93,
+            "deletions": 21,
+            "insertions": 49,
+            "total": 163
+          },
+          "wer": 0.1698,
+          "splits": {
+            "events": 10,
+            "errors": 22
+          },
+          "merges": {
+            "events": 5,
+            "errors": 10
+          },
+          "edges": {
+            "reference_words": 144,
+            "errors": 35
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 960,
+            "errors": 163
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 131,
+            "wer": 0.1365,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 36
+          },
+          "latency_s": {
+            "n": 36,
+            "p50": 0.26,
+            "p95": 0.412
+          }
+        },
+        "prompt_only": {
+          "takes": 36,
+          "failed": 0,
+          "reference_words": 960,
+          "word_errors": {
+            "substitutions": 76,
+            "deletions": 17,
+            "insertions": 32,
+            "total": 125
+          },
+          "wer": 0.1302,
+          "splits": {
+            "events": 8,
+            "errors": 17
+          },
+          "merges": {
+            "events": 5,
+            "errors": 10
+          },
+          "edges": {
+            "reference_words": 144,
+            "errors": 28
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 960,
+            "errors": 125
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 108,
+            "wer": 0.1125,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 36
+          },
+          "latency_s": {
+            "n": 36,
+            "p50": 0.249,
+            "p95": 0.361
+          }
+        },
+        "prompt_instruction": {
+          "takes": 36,
+          "failed": 0,
+          "reference_words": 960,
+          "word_errors": {
+            "substitutions": 67,
+            "deletions": 17,
+            "insertions": 36,
+            "total": 120
+          },
+          "wer": 0.125,
+          "splits": {
+            "events": 9,
+            "errors": 19
+          },
+          "merges": {
+            "events": 6,
+            "errors": 12
+          },
+          "edges": {
+            "reference_words": 144,
+            "errors": 24
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 960,
+            "errors": 120
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 98,
+            "wer": 0.1021,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 36
+          },
+          "latency_s": {
+            "n": 36,
+            "p50": 0.271,
+            "p95": 0.419
+          }
+        },
+        "whole_large_v3": {
+          "takes": 36,
+          "failed": 0,
+          "reference_words": 960,
+          "word_errors": {
+            "substitutions": 78,
+            "deletions": 17,
+            "insertions": 39,
+            "total": 134
+          },
+          "wer": 0.1396,
+          "splits": {
+            "events": 12,
+            "errors": 26
+          },
+          "merges": {
+            "events": 5,
+            "errors": 10
+          },
+          "edges": {
+            "reference_words": 144,
+            "errors": 28
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 960,
+            "errors": 134
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 117,
+            "wer": 0.1219,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 36
+          },
+          "latency_s": {
+            "n": 36,
+            "p50": 0.711,
+            "p95": 1.165
+          }
+        },
+        "large_v3_hints_none": {
+          "takes": 36,
+          "failed": 0,
+          "reference_words": 960,
+          "word_errors": {
+            "substitutions": 76,
+            "deletions": 22,
+            "insertions": 31,
+            "total": 129
+          },
+          "wer": 0.1344,
+          "splits": {
+            "events": 8,
+            "errors": 18
+          },
+          "merges": {
+            "events": 10,
+            "errors": 20
+          },
+          "edges": {
+            "reference_words": 144,
+            "errors": 25
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 960,
+            "errors": 129
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 105,
+            "wer": 0.1094,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 36
+          },
+          "latency_s": {
+            "n": 36,
+            "p50": 0.645,
+            "p95": 1.187
+          }
+        },
+        "large_v3_beam_10": {
+          "takes": 36,
+          "failed": 0,
+          "reference_words": 960,
+          "word_errors": {
+            "substitutions": 78,
+            "deletions": 16,
+            "insertions": 41,
+            "total": 135
+          },
+          "wer": 0.1406,
+          "splits": {
+            "events": 11,
+            "errors": 24
+          },
+          "merges": {
+            "events": 5,
+            "errors": 10
+          },
+          "edges": {
+            "reference_words": 144,
+            "errors": 28
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 960,
+            "errors": 135
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 115,
+            "wer": 0.1198,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 36
+          },
+          "latency_s": {
+            "n": 36,
+            "p50": 0.831,
+            "p95": 1.334
+          }
+        },
+        "stream_large_v3": {
+          "takes": 36,
+          "failed": 0,
+          "reference_words": 960,
+          "word_errors": {
+            "substitutions": 77,
+            "deletions": 18,
+            "insertions": 39,
+            "total": 134
+          },
+          "wer": 0.1396,
+          "splits": {
+            "events": 10,
+            "errors": 21
+          },
+          "merges": {
+            "events": 5,
+            "errors": 10
+          },
+          "edges": {
+            "reference_words": 144,
+            "errors": 29
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 960,
+            "errors": 134
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 118,
+            "wer": 0.1229,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 36
+          },
+          "latency_s": {
+            "n": 36,
+            "p50": 0.505,
+            "p95": 1.018
+          }
+        }
+      }
+    },
+    "rewrite": {
+      "takes": 20,
+      "audio_s": {
+        "total": 65.5,
+        "p50": 3.088,
+        "max": 6.018
+      },
+      "configs": {
+        "stream_app": {
+          "takes": 20,
+          "failed": 0,
+          "reference_words": 106,
+          "word_errors": {
+            "substitutions": 12,
+            "deletions": 4,
+            "insertions": 6,
+            "total": 22
+          },
+          "wer": 0.2075,
+          "splits": {
+            "events": 1,
+            "errors": 2
+          },
+          "merges": {
+            "events": 4,
+            "errors": 8
+          },
+          "edges": {
+            "reference_words": 78,
+            "errors": 18
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 106,
+            "errors": 22
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 18,
+            "wer": 0.1698,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 20
+          },
+          "latency_s": {
+            "n": 20,
+            "p50": 0.203,
+            "p95": 0.22
+          }
+        },
+        "whole_app": {
+          "takes": 20,
+          "failed": 0,
+          "reference_words": 106,
+          "word_errors": {
+            "substitutions": 12,
+            "deletions": 4,
+            "insertions": 6,
+            "total": 22
+          },
+          "wer": 0.2075,
+          "splits": {
+            "events": 1,
+            "errors": 2
+          },
+          "merges": {
+            "events": 4,
+            "errors": 8
+          },
+          "edges": {
+            "reference_words": 78,
+            "errors": 18
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 106,
+            "errors": 22
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 18,
+            "wer": 0.1698,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 20
+          },
+          "latency_s": {
+            "n": 20,
+            "p50": 0.185,
+            "p95": 0.221
+          }
+        },
+        "whole_untrimmed": {
+          "takes": 20,
+          "failed": 0,
+          "reference_words": 106,
+          "word_errors": {
+            "substitutions": 17,
+            "deletions": 5,
+            "insertions": 7,
+            "total": 29
+          },
+          "wer": 0.2736,
+          "splits": {
+            "events": 1,
+            "errors": 2
+          },
+          "merges": {
+            "events": 3,
+            "errors": 6
+          },
+          "edges": {
+            "reference_words": 78,
+            "errors": 25
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 106,
+            "errors": 29
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 26,
+            "wer": 0.2453,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 20
+          },
+          "latency_s": {
+            "n": 20,
+            "p50": 0.195,
+            "p95": 0.223
+          }
+        },
+        "whole_vad_filter": {
+          "takes": 20,
+          "failed": 0,
+          "reference_words": 106,
+          "word_errors": {
+            "substitutions": 18,
+            "deletions": 2,
+            "insertions": 6,
+            "total": 26
+          },
+          "wer": 0.2453,
+          "splits": {
+            "events": 1,
+            "errors": 2
+          },
+          "merges": {
+            "events": 2,
+            "errors": 4
+          },
+          "edges": {
+            "reference_words": 78,
+            "errors": 22
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 106,
+            "errors": 26
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 22,
+            "wer": 0.2075,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 20
+          },
+          "latency_s": {
+            "n": 20,
+            "p50": 0.194,
+            "p95": 0.231
+          }
+        },
+        "hints_none": {
+          "takes": 20,
+          "failed": 0,
+          "reference_words": 106,
+          "word_errors": {
+            "substitutions": 13,
+            "deletions": 4,
+            "insertions": 7,
+            "total": 24
+          },
+          "wer": 0.2264,
+          "splits": {
+            "events": 1,
+            "errors": 2
+          },
+          "merges": {
+            "events": 4,
+            "errors": 8
+          },
+          "edges": {
+            "reference_words": 78,
+            "errors": 20
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 106,
+            "errors": 24
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 22,
+            "wer": 0.2075,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 20
+          },
+          "latency_s": {
+            "n": 20,
+            "p50": 0.18,
+            "p95": 0.202
+          }
+        },
+        "hints_vocabulary": {
+          "takes": 20,
+          "failed": 0,
+          "reference_words": 106,
+          "word_errors": {
+            "substitutions": 12,
+            "deletions": 4,
+            "insertions": 6,
+            "total": 22
+          },
+          "wer": 0.2075,
+          "splits": {
+            "events": 1,
+            "errors": 2
+          },
+          "merges": {
+            "events": 4,
+            "errors": 8
+          },
+          "edges": {
+            "reference_words": 78,
+            "errors": 18
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 106,
+            "errors": 22
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 18,
+            "wer": 0.1698,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 20
+          },
+          "latency_s": {
+            "n": 20,
+            "p50": 0.183,
+            "p95": 0.202
+          }
+        },
+        "hints_budget_150": {
+          "takes": 20,
+          "failed": 0,
+          "reference_words": 106,
+          "word_errors": {
+            "substitutions": 15,
+            "deletions": 4,
+            "insertions": 9,
+            "total": 28
+          },
+          "wer": 0.2642,
+          "splits": {
+            "events": 3,
+            "errors": 6
+          },
+          "merges": {
+            "events": 4,
+            "errors": 8
+          },
+          "edges": {
+            "reference_words": 78,
+            "errors": 20
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 106,
+            "errors": 28
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 24,
+            "wer": 0.2264,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 20
+          },
+          "latency_s": {
+            "n": 20,
+            "p50": 0.171,
+            "p95": 0.183
+          }
+        },
+        "hints_budget_600": {
+          "takes": 20,
+          "failed": 0,
+          "reference_words": 106,
+          "word_errors": {
+            "substitutions": 48,
+            "deletions": 4,
+            "insertions": 40,
+            "total": 92
+          },
+          "wer": 0.8679,
+          "splits": {
+            "events": 5,
+            "errors": 19
+          },
+          "merges": {
+            "events": 1,
+            "errors": 2
+          },
+          "edges": {
+            "reference_words": 78,
+            "errors": 71
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 106,
+            "errors": 92
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 65,
+            "wer": 0.6132,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 20
+          },
+          "latency_s": {
+            "n": 20,
+            "p50": 0.182,
+            "p95": 0.211
+          }
+        },
+        "language_auto": {
+          "takes": 20,
+          "failed": 0,
+          "reference_words": 106,
+          "word_errors": {
+            "substitutions": 16,
+            "deletions": 5,
+            "insertions": 5,
+            "total": 26
+          },
+          "wer": 0.2453,
+          "splits": {
+            "events": 1,
+            "errors": 2
+          },
+          "merges": {
+            "events": 3,
+            "errors": 6
+          },
+          "edges": {
+            "reference_words": 78,
+            "errors": 22
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 106,
+            "errors": 26
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 23,
+            "wer": 0.217,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "el": 1,
+            "en": 1,
+            "es": 1,
+            "pt": 17
+          },
+          "latency_s": {
+            "n": 20,
+            "p50": 0.323,
+            "p95": 0.341
+          }
+        },
+        "beam_1": {
+          "takes": 20,
+          "failed": 0,
+          "reference_words": 106,
+          "word_errors": {
+            "substitutions": 13,
+            "deletions": 4,
+            "insertions": 6,
+            "total": 23
+          },
+          "wer": 0.217,
+          "splits": {
+            "events": 1,
+            "errors": 2
+          },
+          "merges": {
+            "events": 4,
+            "errors": 8
+          },
+          "edges": {
+            "reference_words": 78,
+            "errors": 19
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 106,
+            "errors": 23
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 19,
+            "wer": 0.1792,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 20
+          },
+          "latency_s": {
+            "n": 20,
+            "p50": 0.184,
+            "p95": 0.21
+          }
+        },
+        "beam_10": {
+          "takes": 20,
+          "failed": 0,
+          "reference_words": 106,
+          "word_errors": {
+            "substitutions": 13,
+            "deletions": 4,
+            "insertions": 6,
+            "total": 23
+          },
+          "wer": 0.217,
+          "splits": {
+            "events": 1,
+            "errors": 2
+          },
+          "merges": {
+            "events": 3,
+            "errors": 6
+          },
+          "edges": {
+            "reference_words": 78,
+            "errors": 19
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 106,
+            "errors": 23
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 19,
+            "wer": 0.1792,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 20
+          },
+          "latency_s": {
+            "n": 20,
+            "p50": 0.23,
+            "p95": 0.26
+          }
+        },
+        "temperature_fallback": {
+          "takes": 20,
+          "failed": 0,
+          "reference_words": 106,
+          "word_errors": {
+            "substitutions": 13,
+            "deletions": 3,
+            "insertions": 7,
+            "total": 23
+          },
+          "wer": 0.217,
+          "splits": {
+            "events": 1,
+            "errors": 2
+          },
+          "merges": {
+            "events": 3,
+            "errors": 6
+          },
+          "edges": {
+            "reference_words": 78,
+            "errors": 19
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 106,
+            "errors": 23
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 19,
+            "wer": 0.1792,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 20
+          },
+          "latency_s": {
+            "n": 20,
+            "p50": 0.182,
+            "p95": 0.22
+          }
+        },
+        "condition_previous": {
+          "takes": 20,
+          "failed": 0,
+          "reference_words": 106,
+          "word_errors": {
+            "substitutions": 12,
+            "deletions": 4,
+            "insertions": 6,
+            "total": 22
+          },
+          "wer": 0.2075,
+          "splits": {
+            "events": 1,
+            "errors": 2
+          },
+          "merges": {
+            "events": 4,
+            "errors": 8
+          },
+          "edges": {
+            "reference_words": 78,
+            "errors": 18
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 106,
+            "errors": 22
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 18,
+            "wer": 0.1698,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 20
+          },
+          "latency_s": {
+            "n": 20,
+            "p50": 0.185,
+            "p95": 0.208
+          }
+        },
+        "hotwords_only": {
+          "takes": 20,
+          "failed": 0,
+          "reference_words": 106,
+          "word_errors": {
+            "substitutions": 16,
+            "deletions": 7,
+            "insertions": 6,
+            "total": 29
+          },
+          "wer": 0.2736,
+          "splits": {
+            "events": 2,
+            "errors": 4
+          },
+          "merges": {
+            "events": 4,
+            "errors": 8
+          },
+          "edges": {
+            "reference_words": 78,
+            "errors": 24
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 106,
+            "errors": 29
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 26,
+            "wer": 0.2453,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 20
+          },
+          "latency_s": {
+            "n": 20,
+            "p50": 0.18,
+            "p95": 0.201
+          }
+        },
+        "prompt_only": {
+          "takes": 20,
+          "failed": 0,
+          "reference_words": 106,
+          "word_errors": {
+            "substitutions": 14,
+            "deletions": 3,
+            "insertions": 7,
+            "total": 24
+          },
+          "wer": 0.2264,
+          "splits": {
+            "events": 1,
+            "errors": 2
+          },
+          "merges": {
+            "events": 3,
+            "errors": 6
+          },
+          "edges": {
+            "reference_words": 78,
+            "errors": 20
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 106,
+            "errors": 24
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 20,
+            "wer": 0.1887,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 20
+          },
+          "latency_s": {
+            "n": 20,
+            "p50": 0.176,
+            "p95": 0.195
+          }
+        },
+        "prompt_instruction": {
+          "takes": 20,
+          "failed": 0,
+          "reference_words": 106,
+          "word_errors": {
+            "substitutions": 12,
+            "deletions": 4,
+            "insertions": 6,
+            "total": 22
+          },
+          "wer": 0.2075,
+          "splits": {
+            "events": 1,
+            "errors": 2
+          },
+          "merges": {
+            "events": 4,
+            "errors": 8
+          },
+          "edges": {
+            "reference_words": 78,
+            "errors": 18
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 106,
+            "errors": 22
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 18,
+            "wer": 0.1698,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 20
+          },
+          "latency_s": {
+            "n": 20,
+            "p50": 0.184,
+            "p95": 0.213
+          }
+        },
+        "whole_large_v3": {
+          "takes": 20,
+          "failed": 0,
+          "reference_words": 106,
+          "word_errors": {
+            "substitutions": 19,
+            "deletions": 3,
+            "insertions": 8,
+            "total": 30
+          },
+          "wer": 0.283,
+          "splits": {
+            "events": 3,
+            "errors": 6
+          },
+          "merges": {
+            "events": 3,
+            "errors": 6
+          },
+          "edges": {
+            "reference_words": 78,
+            "errors": 25
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 106,
+            "errors": 30
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 28,
+            "wer": 0.2642,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 20
+          },
+          "latency_s": {
+            "n": 20,
+            "p50": 0.323,
+            "p95": 0.418
+          }
+        },
+        "large_v3_hints_none": {
+          "takes": 20,
+          "failed": 0,
+          "reference_words": 106,
+          "word_errors": {
+            "substitutions": 23,
+            "deletions": 2,
+            "insertions": 10,
+            "total": 35
+          },
+          "wer": 0.3302,
+          "splits": {
+            "events": 3,
+            "errors": 6
+          },
+          "merges": {
+            "events": 2,
+            "errors": 4
+          },
+          "edges": {
+            "reference_words": 78,
+            "errors": 29
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 106,
+            "errors": 35
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 33,
+            "wer": 0.3113,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 20
+          },
+          "latency_s": {
+            "n": 20,
+            "p50": 0.286,
+            "p95": 0.37
+          }
+        },
+        "large_v3_beam_10": {
+          "takes": 20,
+          "failed": 0,
+          "reference_words": 106,
+          "word_errors": {
+            "substitutions": 17,
+            "deletions": 3,
+            "insertions": 8,
+            "total": 28
+          },
+          "wer": 0.2642,
+          "splits": {
+            "events": 3,
+            "errors": 6
+          },
+          "merges": {
+            "events": 3,
+            "errors": 6
+          },
+          "edges": {
+            "reference_words": 78,
+            "errors": 23
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 106,
+            "errors": 28
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 26,
+            "wer": 0.2453,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 20
+          },
+          "latency_s": {
+            "n": 20,
+            "p50": 0.353,
+            "p95": 0.444
+          }
+        },
+        "stream_large_v3": {
+          "takes": 20,
+          "failed": 0,
+          "reference_words": 106,
+          "word_errors": {
+            "substitutions": 19,
+            "deletions": 3,
+            "insertions": 6,
+            "total": 28
+          },
+          "wer": 0.2642,
+          "splits": {
+            "events": 3,
+            "errors": 6
+          },
+          "merges": {
+            "events": 3,
+            "errors": 6
+          },
+          "edges": {
+            "reference_words": 78,
+            "errors": 25
+          },
+          "term_words": {
+            "reference_words": 0,
+            "errors": 0
+          },
+          "other_words": {
+            "reference_words": 106,
+            "errors": 28
+          },
+          "domain_terms": {
+            "occurrences": 0,
+            "errors": 0
+          },
+          "pipeline": {
+            "word_errors": 26,
+            "wer": 0.2453,
+            "domain_term_errors": 0
+          },
+          "languages": {
+            "pt": 20
+          },
+          "latency_s": {
+            "n": 20,
+            "p50": 0.317,
+            "p95": 0.447
+          }
+        }
+      }
+    }
+  },
+  "causes": {
+    "prompts": [
+      {
+        "cause": "engine",
+        "config": "large_v3_beam_10",
+        "compared_with": "beam_10",
+        "word_errors_removed": 2,
+        "wer": {
+          "compared": 0.2303,
+          "config": 0.2237
+        },
+        "pipeline_word_errors_removed": 1,
+        "domain_term_errors": {
+          "compared": 3,
+          "config": 4
+        }
+      },
+      {
+        "cause": "hint_budget",
+        "config": "hints_budget_150",
+        "compared_with": "whole_app",
+        "word_errors_removed": 1,
+        "wer": {
+          "compared": 0.2303,
+          "config": 0.227
+        },
+        "pipeline_word_errors_removed": 0,
+        "domain_term_errors": {
+          "compared": 3,
+          "config": 3
+        }
+      },
+      {
+        "cause": "segmentation",
+        "config": "whole_app",
+        "compared_with": "stream_app",
+        "word_errors_removed": 1,
+        "wer": {
+          "compared": 0.2336,
+          "config": 0.2303
+        },
+        "pipeline_word_errors_removed": 1,
+        "domain_term_errors": {
+          "compared": 4,
+          "config": 3
+        }
+      },
+      {
+        "cause": "vad_trimming",
+        "config": "whole_vad_filter",
+        "compared_with": "whole_app",
+        "word_errors_removed": 1,
+        "wer": {
+          "compared": 0.2303,
+          "config": 0.227
+        },
+        "pipeline_word_errors_removed": 1,
+        "domain_term_errors": {
+          "compared": 3,
+          "config": 3
+        }
+      },
+      {
+        "cause": "beam",
+        "config": "beam_10",
+        "compared_with": "whole_app",
+        "word_errors_removed": 0,
+        "wer": {
+          "compared": 0.2303,
+          "config": 0.2303
+        },
+        "pipeline_word_errors_removed": 0,
+        "domain_term_errors": {
+          "compared": 3,
+          "config": 3
+        }
+      },
+      {
+        "cause": "condition_on_previous_text",
+        "config": "condition_previous",
+        "compared_with": "whole_app",
+        "word_errors_removed": 0,
+        "wer": {
+          "compared": 0.2303,
+          "config": 0.2303
+        },
+        "pipeline_word_errors_removed": 0,
+        "domain_term_errors": {
+          "compared": 3,
+          "config": 3
+        }
+      },
+      {
+        "cause": "initial_prompt",
+        "config": "prompt_instruction",
+        "compared_with": "whole_app",
+        "word_errors_removed": 0,
+        "wer": {
+          "compared": 0.2303,
+          "config": 0.2303
+        },
+        "pipeline_word_errors_removed": 0,
+        "domain_term_errors": {
+          "compared": 3,
+          "config": 3
+        }
+      },
+      {
+        "cause": "language",
+        "config": "language_auto",
+        "compared_with": "whole_app",
+        "word_errors_removed": 0,
+        "wer": {
+          "compared": 0.2303,
+          "config": 0.2303
+        },
+        "pipeline_word_errors_removed": 0,
+        "domain_term_errors": {
+          "compared": 3,
+          "config": 3
+        }
+      },
+      {
+        "cause": "temperature_fallback",
+        "config": "temperature_fallback",
+        "compared_with": "whole_app",
+        "word_errors_removed": 0,
+        "wer": {
+          "compared": 0.2303,
+          "config": 0.2303
+        },
+        "pipeline_word_errors_removed": 0,
+        "domain_term_errors": {
+          "compared": 3,
+          "config": 3
+        }
+      },
+      {
+        "cause": "hints",
+        "config": "hints_vocabulary",
+        "compared_with": "whole_app",
+        "word_errors_removed": -19,
+        "wer": {
+          "compared": 0.2303,
+          "config": 0.2928
+        },
+        "pipeline_word_errors_removed": -19,
+        "domain_term_errors": {
+          "compared": 3,
+          "config": 7
+        }
+      }
+    ],
+    "claude_code": [
+      {
+        "cause": "engine",
+        "config": "large_v3_beam_10",
+        "compared_with": "beam_10",
+        "word_errors_removed": 2,
+        "wer": {
+          "compared": 0.1265,
+          "config": 0.1186
+        },
+        "pipeline_word_errors_removed": 1,
+        "domain_term_errors": {
+          "compared": 0,
+          "config": 0
+        }
+      },
+      {
+        "cause": "hint_budget",
+        "config": "hints_budget_150",
+        "compared_with": "whole_app",
+        "word_errors_removed": 1,
+        "wer": {
+          "compared": 0.1225,
+          "config": 0.1186
+        },
+        "pipeline_word_errors_removed": -1,
+        "domain_term_errors": {
+          "compared": 0,
+          "config": 0
+        }
+      },
+      {
+        "cause": "condition_on_previous_text",
+        "config": "condition_previous",
+        "compared_with": "whole_app",
+        "word_errors_removed": 0,
+        "wer": {
+          "compared": 0.1225,
+          "config": 0.1225
+        },
+        "pipeline_word_errors_removed": 0,
+        "domain_term_errors": {
+          "compared": 0,
+          "config": 0
+        }
+      },
+      {
+        "cause": "hints",
+        "config": "hints_vocabulary",
+        "compared_with": "whole_app",
+        "word_errors_removed": 0,
+        "wer": {
+          "compared": 0.1225,
+          "config": 0.1225
+        },
+        "pipeline_word_errors_removed": 2,
+        "domain_term_errors": {
+          "compared": 0,
+          "config": 0
+        }
+      },
+      {
+        "cause": "initial_prompt",
+        "config": "prompt_instruction",
+        "compared_with": "whole_app",
+        "word_errors_removed": 0,
+        "wer": {
+          "compared": 0.1225,
+          "config": 0.1225
+        },
+        "pipeline_word_errors_removed": 1,
+        "domain_term_errors": {
+          "compared": 0,
+          "config": 0
+        }
+      },
+      {
+        "cause": "language",
+        "config": "language_auto",
+        "compared_with": "whole_app",
+        "word_errors_removed": 0,
+        "wer": {
+          "compared": 0.1225,
+          "config": 0.1225
+        },
+        "pipeline_word_errors_removed": 0,
+        "domain_term_errors": {
+          "compared": 0,
+          "config": 0
+        }
+      },
+      {
+        "cause": "segmentation",
+        "config": "whole_app",
+        "compared_with": "stream_app",
+        "word_errors_removed": 0,
+        "wer": {
+          "compared": 0.1225,
+          "config": 0.1225
+        },
+        "pipeline_word_errors_removed": 0,
+        "domain_term_errors": {
+          "compared": 0,
+          "config": 0
+        }
+      },
+      {
+        "cause": "temperature_fallback",
+        "config": "temperature_fallback",
+        "compared_with": "whole_app",
+        "word_errors_removed": 0,
+        "wer": {
+          "compared": 0.1225,
+          "config": 0.1225
+        },
+        "pipeline_word_errors_removed": 0,
+        "domain_term_errors": {
+          "compared": 0,
+          "config": 0
+        }
+      },
+      {
+        "cause": "beam",
+        "config": "beam_10",
+        "compared_with": "whole_app",
+        "word_errors_removed": -1,
+        "wer": {
+          "compared": 0.1225,
+          "config": 0.1265
+        },
+        "pipeline_word_errors_removed": -1,
+        "domain_term_errors": {
+          "compared": 0,
+          "config": 0
+        }
+      },
+      {
+        "cause": "vad_trimming",
+        "config": "whole_untrimmed",
+        "compared_with": "whole_app",
+        "word_errors_removed": -2,
+        "wer": {
+          "compared": 0.1225,
+          "config": 0.1304
+        },
+        "pipeline_word_errors_removed": -2,
+        "domain_term_errors": {
+          "compared": 0,
+          "config": 0
+        }
+      }
+    ],
+    "dictation": [
+      {
+        "cause": "hint_budget",
+        "config": "hints_budget_150",
+        "compared_with": "whole_app",
+        "word_errors_removed": 9,
+        "wer": {
+          "compared": 0.1302,
+          "config": 0.1208
+        },
+        "pipeline_word_errors_removed": 3,
+        "domain_term_errors": {
+          "compared": 0,
+          "config": 0
+        }
+      },
+      {
+        "cause": "engine",
+        "config": "large_v3_hints_none",
+        "compared_with": "hints_none",
+        "word_errors_removed": 6,
+        "wer": {
+          "compared": 0.1406,
+          "config": 0.1344
+        },
+        "pipeline_word_errors_removed": 7,
+        "domain_term_errors": {
+          "compared": 0,
+          "config": 0
+        }
+      },
+      {
+        "cause": "initial_prompt",
+        "config": "prompt_instruction",
+        "compared_with": "whole_app",
+        "word_errors_removed": 5,
+        "wer": {
+          "compared": 0.1302,
+          "config": 0.125
+        },
+        "pipeline_word_errors_removed": 6,
+        "domain_term_errors": {
+          "compared": 0,
+          "config": 0
+        }
+      },
+      {
+        "cause": "vad_trimming",
+        "config": "whole_untrimmed",
+        "compared_with": "whole_app",
+        "word_errors_removed": 2,
+        "wer": {
+          "compared": 0.1302,
+          "config": 0.1281
+        },
+        "pipeline_word_errors_removed": 0,
+        "domain_term_errors": {
+          "compared": 0,
+          "config": 0
+        }
+      },
+      {
+        "cause": "condition_on_previous_text",
+        "config": "condition_previous",
+        "compared_with": "whole_app",
+        "word_errors_removed": 0,
+        "wer": {
+          "compared": 0.1302,
+          "config": 0.1302
+        },
+        "pipeline_word_errors_removed": 0,
+        "domain_term_errors": {
+          "compared": 0,
+          "config": 0
+        }
+      },
+      {
+        "cause": "language",
+        "config": "language_auto",
+        "compared_with": "whole_app",
+        "word_errors_removed": 0,
+        "wer": {
+          "compared": 0.1302,
+          "config": 0.1302
+        },
+        "pipeline_word_errors_removed": 0,
+        "domain_term_errors": {
+          "compared": 0,
+          "config": 0
+        }
+      },
+      {
+        "cause": "segmentation",
+        "config": "whole_app",
+        "compared_with": "stream_app",
+        "word_errors_removed": 0,
+        "wer": {
+          "compared": 0.1302,
+          "config": 0.1302
+        },
+        "pipeline_word_errors_removed": 0,
+        "domain_term_errors": {
+          "compared": 0,
+          "config": 0
+        }
+      },
+      {
+        "cause": "temperature_fallback",
+        "config": "temperature_fallback",
+        "compared_with": "whole_app",
+        "word_errors_removed": 0,
+        "wer": {
+          "compared": 0.1302,
+          "config": 0.1302
+        },
+        "pipeline_word_errors_removed": 0,
+        "domain_term_errors": {
+          "compared": 0,
+          "config": 0
+        }
+      },
+      {
+        "cause": "beam",
+        "config": "beam_10",
+        "compared_with": "whole_app",
+        "word_errors_removed": -1,
+        "wer": {
+          "compared": 0.1302,
+          "config": 0.1313
+        },
+        "pipeline_word_errors_removed": -1,
+        "domain_term_errors": {
+          "compared": 0,
+          "config": 0
+        }
+      },
+      {
+        "cause": "hints",
+        "config": "hints_vocabulary",
+        "compared_with": "whole_app",
+        "word_errors_removed": -2,
+        "wer": {
+          "compared": 0.1302,
+          "config": 0.1323
+        },
+        "pipeline_word_errors_removed": 2,
+        "domain_term_errors": {
+          "compared": 0,
+          "config": 0
+        }
+      }
+    ],
+    "rewrite": [
+      {
+        "cause": "condition_on_previous_text",
+        "config": "condition_previous",
+        "compared_with": "whole_app",
+        "word_errors_removed": 0,
+        "wer": {
+          "compared": 0.2075,
+          "config": 0.2075
+        },
+        "pipeline_word_errors_removed": 0,
+        "domain_term_errors": {
+          "compared": 0,
+          "config": 0
+        }
+      },
+      {
+        "cause": "hints",
+        "config": "hints_vocabulary",
+        "compared_with": "whole_app",
+        "word_errors_removed": 0,
+        "wer": {
+          "compared": 0.2075,
+          "config": 0.2075
+        },
+        "pipeline_word_errors_removed": 0,
+        "domain_term_errors": {
+          "compared": 0,
+          "config": 0
+        }
+      },
+      {
+        "cause": "initial_prompt",
+        "config": "prompt_instruction",
+        "compared_with": "whole_app",
+        "word_errors_removed": 0,
+        "wer": {
+          "compared": 0.2075,
+          "config": 0.2075
+        },
+        "pipeline_word_errors_removed": 0,
+        "domain_term_errors": {
+          "compared": 0,
+          "config": 0
+        }
+      },
+      {
+        "cause": "segmentation",
+        "config": "whole_app",
+        "compared_with": "stream_app",
+        "word_errors_removed": 0,
+        "wer": {
+          "compared": 0.2075,
+          "config": 0.2075
+        },
+        "pipeline_word_errors_removed": 0,
+        "domain_term_errors": {
+          "compared": 0,
+          "config": 0
+        }
+      },
+      {
+        "cause": "beam",
+        "config": "beam_1",
+        "compared_with": "whole_app",
+        "word_errors_removed": -1,
+        "wer": {
+          "compared": 0.2075,
+          "config": 0.217
+        },
+        "pipeline_word_errors_removed": -1,
+        "domain_term_errors": {
+          "compared": 0,
+          "config": 0
+        }
+      },
+      {
+        "cause": "temperature_fallback",
+        "config": "temperature_fallback",
+        "compared_with": "whole_app",
+        "word_errors_removed": -1,
+        "wer": {
+          "compared": 0.2075,
+          "config": 0.217
+        },
+        "pipeline_word_errors_removed": -1,
+        "domain_term_errors": {
+          "compared": 0,
+          "config": 0
+        }
+      },
+      {
+        "cause": "language",
+        "config": "language_auto",
+        "compared_with": "whole_app",
+        "word_errors_removed": -4,
+        "wer": {
+          "compared": 0.2075,
+          "config": 0.2453
+        },
+        "pipeline_word_errors_removed": -5,
+        "domain_term_errors": {
+          "compared": 0,
+          "config": 0
+        }
+      },
+      {
+        "cause": "vad_trimming",
+        "config": "whole_vad_filter",
+        "compared_with": "whole_app",
+        "word_errors_removed": -4,
+        "wer": {
+          "compared": 0.2075,
+          "config": 0.2453
+        },
+        "pipeline_word_errors_removed": -4,
+        "domain_term_errors": {
+          "compared": 0,
+          "config": 0
+        }
+      },
+      {
+        "cause": "engine",
+        "config": "large_v3_beam_10",
+        "compared_with": "beam_10",
+        "word_errors_removed": -5,
+        "wer": {
+          "compared": 0.217,
+          "config": 0.2642
+        },
+        "pipeline_word_errors_removed": -7,
+        "domain_term_errors": {
+          "compared": 0,
+          "config": 0
+        }
+      },
+      {
+        "cause": "hint_budget",
+        "config": "hints_budget_150",
+        "compared_with": "whole_app",
+        "word_errors_removed": -6,
+        "wer": {
+          "compared": 0.2075,
+          "config": 0.2642
+        },
+        "pipeline_word_errors_removed": -6,
+        "domain_term_errors": {
+          "compared": 0,
+          "config": 0
+        }
+      }
+    ]
+  },
+  "gpu": [
+    {
+      "label": "start",
+      "utilization_pct": 0,
+      "used_mib": 10527,
+      "free_mib": 5524,
+      "ollama_loaded": [
+        {
+          "name": "qwen3:8b",
+          "vram_mib": 5320
+        }
+      ],
+      "contention": [
+        "VRAM contention: qwen3:8b is loaded by another client (5320 MiB in VRAM)"
+      ]
+    },
+    {
+      "label": "large-v3-turbo loaded",
+      "utilization_pct": 41,
+      "used_mib": 12666,
+      "free_mib": 3385,
+      "ollama_loaded": [
+        {
+          "name": "qwen3:8b",
+          "vram_mib": 5320
+        }
+      ],
+      "contention": [
+        "VRAM contention: qwen3:8b is loaded by another client (5320 MiB in VRAM)"
+      ]
+    },
+    {
+      "label": "large-v3-turbo after its configurations",
+      "utilization_pct": 93,
+      "used_mib": 10364,
+      "free_mib": 5687,
+      "ollama_loaded": [],
+      "contention": []
+    },
+    {
+      "label": "large-v3 loaded",
+      "utilization_pct": 40,
+      "used_mib": 11991,
+      "free_mib": 4060,
+      "ollama_loaded": [],
+      "contention": []
+    },
+    {
+      "label": "large-v3 after its configurations",
+      "utilization_pct": 85,
+      "used_mib": 9468,
+      "free_mib": 6583,
+      "ollama_loaded": [
+        {
+          "name": "qwen3:8b",
+          "vram_mib": 5320
+        }
+      ],
+      "contention": [
+        "VRAM contention: qwen3:8b is loaded by another client (5320 MiB in VRAM)"
+      ]
+    },
+    {
+      "label": "end",
+      "utilization_pct": 85,
+      "used_mib": 5564,
+      "free_mib": 10487,
+      "ollama_loaded": [
+        {
+          "name": "qwen3:8b",
+          "vram_mib": 5320
+        }
+      ],
+      "contention": [
+        "VRAM contention: qwen3:8b is loaded by another client (5320 MiB in VRAM)"
+      ]
+    }
+  ]
+}

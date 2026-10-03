@@ -16,11 +16,14 @@ import tempfile
 import threading
 import time
 import unittest
+from array import array
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
 from quill import app as A
+from quill import clips as C
 from quill import notify as N
 from quill import autorewrite as R
 from quill import inject
@@ -847,6 +850,80 @@ class ClaudeAlertTest(AppCase):
         self.start()
         self.ring()
         wait_for(lambda: self.indicator.last == ("show", CLAUDE_DONE, ""), "the nameless alert")
+
+    # Own-voice clips: generated tones in a temporary local/names.
+
+    def clip_store(self):
+        local = self.base / "local"
+        store = C.ClipStore(local / "names", local_root=local)
+        store.save_clip("zorblat-kit", array("h", [1000, -1000] * 1600).tobytes(), datetime(2026, 1, 1))
+        return store
+
+    def started_log(self, quill):
+        with self.assertLogs("quill.app", level="INFO") as logs:
+            self.start(quill)
+        return [line for line in logs.output if "Quill started" in line][0]
+
+    def test_a_recorded_name_plays_its_clip_after_the_sound(self):
+        quill = self.speaker_setup()
+        self.speaker.clips = self.clip_store()
+        line = self.started_log(quill)
+        self.assertIn("claude alert on (own voice on, 1 clips)", line)
+        self.assertEqual(self.hook("zorblat-kit"), "signalled")
+        wait_for(lambda: self.speaker.pending, "the pending speech")
+        self.assertEqual(self.player.plays, [sound.DONE])
+        self.now[0] += SP.CHIME_GAP_S
+        self.assertTrue(self.speaker.tick())
+        [[(kind, _)]] = self.engine.played
+        self.assertEqual(kind, "wav")
+        process = self.engine.processes[0]
+        self.assertNotIn("zorblat", process.data.decode("utf-8"))
+        at_start = []
+        self.captures.on_start = lambda capture: at_start.append(process.terminated)
+        self.hold((1,), quill=quill)
+        self.assertEqual(at_start, [1])  # a hold ends the clip before the microphone opens
+
+    def test_the_startup_log_says_own_voice_off_without_clips(self):
+        quill = self.speaker_setup()
+        self.assertIn("claude alert on (own voice off)", self.started_log(quill))
+        self.assertEqual(self.hook("zorblat-kit"), "signalled")
+        wait_for(lambda: self.speaker.pending, "the pending speech")
+        self.now[0] += SP.CHIME_GAP_S
+        self.assertTrue(self.speaker.tick())
+        self.assertEqual(self.engine.played, [[("say", "zorblat kit")]])
+
+    def test_a_clip_count_that_fails_is_logged_by_type(self):
+        quill = self.speaker_setup()
+        self.speaker.clips = SimpleNamespace(count=lambda: (_ for _ in ()).throw(OSError("zorblat")))
+        with self.assertLogs("quill.app", level="INFO") as logs:
+            self.start(quill)
+        output = "\n".join(logs.output)
+        self.assertIn("own-voice clips not counted (OSError)", output)
+        self.assertIn("own voice on, clips unknown", output)
+        self.assertNotIn("zorblat", output)
+
+    def test_the_clip_store_reaches_the_real_speaker_only_with_own_voice(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.base = Path(folder.name).resolve()
+        store = self.clip_store()
+        made = []
+
+        def factory(rate, volume, clips):
+            made.append((rate, volume, clips))
+            return "speaker"
+        with mock.patch.object(C, "default_store", return_value=store):
+            config = self.alert_config(speech_rate=1.5, speech_volume=30)
+            self.assertEqual(A.alert_speaker(config, factory), "speaker")
+            self.assertEqual(made.pop(), (1.5, 30, store))
+            self.assertEqual(A.alert_speaker(self.alert_config(own_voice=False), factory), "speaker")
+            self.assertEqual(made.pop(), (1.0, 80, None))
+            for changes in ({"speak_project": False}, {"sound": False}, {"enabled": False}):
+                with self.subTest(changes=changes):
+                    self.assertIsNone(A.alert_speaker(self.alert_config(**changes), factory))
+            self.assertEqual(made, [])
+        with self.assertRaises(AssertionError):  # the tests never read the app's own clips folder
+            A.alert_speaker(self.alert_config(), factory)
 
 
 class SpokenModel(GatedModel):

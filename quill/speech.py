@@ -1,15 +1,24 @@
-"""The project names of the Claude Code alerts, spoken after the chime with a voice Windows already has.
+"""The project names of the Claude Code alerts, spoken after the chime with a voice Windows already has,
+or played from the user's own recording of the name.
 
 Nothing is installed and nothing leaves the PC: ``PowerShellSpeech`` starts the
 built-in Windows PowerShell 5.1 (at its absolute ``%SystemRoot%`` path, with
 ``-NoProfile -NonInteractive``, no console window and no focus change) with a
-constant script (``SCRIPT``). The names, the rate and the volume reach it only
-on stdin, as UTF-8 JSON, never in the command line or the script text, and are
-spoken as plain text (never markup). The script prefers a pt-PT voice of
+constant script (``SCRIPT``). The request reaches it only on stdin, as UTF-8
+JSON, never in the command line or the script text: segments played one after
+another, each either names to speak (plain text, never markup, at the rate and
+volume of the request) or a recorded clip (base64 WAV bytes, already scaled to
+the volume here). The script prefers a pt-PT voice of
 ``Windows.Media.SpeechSynthesis`` (the OneCore voices), then another pt voice,
-then the default WinRT voice, then the ``System.Speech`` default voice. When
-no voice is available or synthesis or playback fails it exits silently: the
-chime has already played and the indicator still shows the names.
+then the default WinRT voice, then the ``System.Speech`` default voice. A
+segment that cannot be synthesized or played is skipped silently: the chime
+has already played and the indicator still shows the names.
+
+With own voice on, ``Speaker`` has a clip store (``quill.clips.ClipStore``):
+when a request starts (on the worker thread, never under the session lock) it
+looks up each name's clip by ``quill.clips.clip_key``; a name with a valid
+clip plays the clip, the others keep the Windows voice, in the same order. A
+clip that cannot be used falls back to the voice and logs a reason code only.
 
 ``Speaker`` decides when: ``say(names)`` schedules the speech ``gap_s`` after
 the chime starts (``CHIME_GAP_S``), and ``stop()`` cancels a pending speech
@@ -29,6 +38,8 @@ constructor fail. Manual commands (nothing is played by the probe):
 from __future__ import annotations
 
 import argparse
+import base64
+import io
 import json
 import logging
 import math
@@ -37,6 +48,8 @@ import subprocess
 import sys
 import threading
 import time
+import wave
+from array import array
 from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 
@@ -74,50 +87,70 @@ $input_stream = [Console]::OpenStandardInput()
 $buffer = New-Object IO.MemoryStream
 $input_stream.CopyTo($buffer)
 $request = [Text.Encoding]::UTF8.GetString($buffer.ToArray()) | ConvertFrom-Json
-$text = [string]::Join(', ', [string[]]@($request.names))
-if ([string]::IsNullOrWhiteSpace($text)) { exit 1 }
+$segments = @($request.segments)
+if ($segments.Count -eq 0) { exit 1 }
 $rate = [double]$request.rate
 $volume = [int]$request.volume
-$bytes = $null
-$language = ''
-try {
-    Add-Type -AssemblyName System.Runtime.WindowsRuntime
-    $null = [Windows.Media.SpeechSynthesis.SpeechSynthesizer, Windows.Media.SpeechSynthesis, ContentType = WindowsRuntime]
-    $as_task = [WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.IsGenericMethod -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' } | Select-Object -First 1
-    $voices = @([Windows.Media.SpeechSynthesis.SpeechSynthesizer]::AllVoices)
-    $voice = $voices | Where-Object { $_.Language -eq 'pt-PT' } | Select-Object -First 1
-    if (-not $voice) { $voice = $voices | Where-Object { $_.Language -like 'pt-*' } | Select-Object -First 1 }
-    if (-not $voice) { $voice = [Windows.Media.SpeechSynthesis.SpeechSynthesizer]::DefaultVoice }
-    if (-not $voice) { throw 'no WinRT voice' }
-    $synth = New-Object Windows.Media.SpeechSynthesis.SpeechSynthesizer
-    $synth.Voice = $voice
-    $synth.Options.SpeakingRate = $rate
-    $synth.Options.AudioVolume = $volume / 100.0
-    $task = $as_task.MakeGenericMethod([Windows.Media.SpeechSynthesis.SpeechSynthesisStream]).Invoke($null, @($synth.SynthesizeTextToStreamAsync($text)))
-    $stream = $task.GetAwaiter().GetResult()
-    $wave = New-Object IO.MemoryStream
-    [IO.WindowsRuntimeStreamExtensions]::AsStreamForRead($stream).CopyTo($wave)
-    if ($wave.Length -gt 0) { $bytes = $wave.ToArray(); $language = $voice.Language }
-} catch { $bytes = $null }
-if ($null -eq $bytes) {
+$out = @{ bytes = $null; language = '' }
+function Synthesize([string]$text) {
+    $out.bytes = $null
+    $out.language = ''
     try {
-        Add-Type -AssemblyName System.Speech
-        $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
-        $synth.Rate = [int][Math]::Max(-10, [Math]::Min(10, [Math]::Round(10 * [Math]::Log($rate) / [Math]::Log(3))))
-        $synth.Volume = $volume
+        Add-Type -AssemblyName System.Runtime.WindowsRuntime
+        $null = [Windows.Media.SpeechSynthesis.SpeechSynthesizer, Windows.Media.SpeechSynthesis, ContentType = WindowsRuntime]
+        $as_task = [WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and $_.IsGenericMethod -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' } | Select-Object -First 1
+        $voices = @([Windows.Media.SpeechSynthesis.SpeechSynthesizer]::AllVoices)
+        $voice = $voices | Where-Object { $_.Language -eq 'pt-PT' } | Select-Object -First 1
+        if (-not $voice) { $voice = $voices | Where-Object { $_.Language -like 'pt-*' } | Select-Object -First 1 }
+        if (-not $voice) { $voice = [Windows.Media.SpeechSynthesis.SpeechSynthesizer]::DefaultVoice }
+        if (-not $voice) { throw 'no WinRT voice' }
+        $synth = New-Object Windows.Media.SpeechSynthesis.SpeechSynthesizer
+        $synth.Voice = $voice
+        $synth.Options.SpeakingRate = $rate
+        $synth.Options.AudioVolume = $volume / 100.0
+        $task = $as_task.MakeGenericMethod([Windows.Media.SpeechSynthesis.SpeechSynthesisStream]).Invoke($null, @($synth.SynthesizeTextToStreamAsync($text)))
+        $stream = $task.GetAwaiter().GetResult()
         $wave = New-Object IO.MemoryStream
-        $synth.SetOutputToWaveStream($wave)
-        $synth.Speak($text)
-        $synth.SetOutputToNull()
-        if ($wave.Length -gt 0) { $bytes = $wave.ToArray(); $language = $synth.Voice.Culture.Name }
-    } catch { $bytes = $null }
+        [IO.WindowsRuntimeStreamExtensions]::AsStreamForRead($stream).CopyTo($wave)
+        if ($wave.Length -gt 0) { $out.bytes = $wave.ToArray(); $out.language = $voice.Language }
+    } catch { $out.bytes = $null }
+    if ($null -eq $out.bytes) {
+        try {
+            Add-Type -AssemblyName System.Speech
+            $synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
+            $synth.Rate = [int][Math]::Max(-10, [Math]::Min(10, [Math]::Round(10 * [Math]::Log($rate) / [Math]::Log(3))))
+            $synth.Volume = $volume
+            $wave = New-Object IO.MemoryStream
+            $synth.SetOutputToWaveStream($wave)
+            $synth.Speak($text)
+            $synth.SetOutputToNull()
+            if ($wave.Length -gt 0) { $out.bytes = $wave.ToArray(); $out.language = $synth.Voice.Culture.Name }
+        } catch { $out.bytes = $null }
+    }
 }
-if ($null -eq $bytes) { exit 1 }
-if ($request.probe) { [Console]::Out.Write($language + ' ' + $bytes.Length); exit 0 }
-try {
-    $player = New-Object Media.SoundPlayer -ArgumentList (,(New-Object IO.MemoryStream -ArgumentList (,$bytes)))
-    $player.PlaySync()
-} catch { exit 1 }
+$failed = $false
+$language = ''
+$size = 0
+foreach ($segment in $segments) {
+    $bytes = $null
+    if ($null -ne $segment.wav) {
+        try { $bytes = [Convert]::FromBase64String([string]$segment.wav) } catch { $bytes = $null }
+    } else {
+        $text = [string]::Join(', ', [string[]]@($segment.say))
+        if (-not [string]::IsNullOrWhiteSpace($text)) {
+            Synthesize $text
+            $bytes = $out.bytes
+            if ($null -ne $bytes) { $language = $out.language; $size += $bytes.Length }
+        }
+    }
+    if ($null -eq $bytes) { $failed = $true; continue }
+    try {
+        $player = New-Object Media.SoundPlayer -ArgumentList (,(New-Object IO.MemoryStream -ArgumentList (,$bytes)))
+        if ($request.probe) { $player.Load() } else { $player.PlaySync() }
+    } catch { $failed = $true }
+}
+if ($failed) { exit 1 }
+if ($request.probe) { [Console]::Out.Write($language + ' ' + $size) }
 exit 0
 """.strip()
 
@@ -143,10 +176,55 @@ def spoken_names(alerts: Iterable[tuple[str, str | None]]) -> list[str]:
     return names
 
 
-def payload(names: Sequence[str], rate: float, volume: int, probe: bool = False) -> bytes:
-    """The UTF-8 JSON the script reads from stdin."""
-    return json.dumps({"names": list(names), "rate": float(rate), "volume": int(volume), "probe": probe},
+def segments(items: Sequence[str | bytes]) -> list[dict[str, object]]:
+    """The script's segments, in order: consecutive names (``str``) are spoken together
+    (``{"say": [...]}``), a clip (WAV ``bytes``) is played (``{"wav": base64}``)."""
+    result: list[dict[str, object]] = []
+    for item in items:
+        if isinstance(item, bytes):
+            result.append({"wav": base64.b64encode(item).decode("ascii")})
+        elif result and "say" in result[-1]:
+            result[-1]["say"].append(item)
+        else:
+            result.append({"say": [item]})
+    return result
+
+
+def payload(items: Sequence[str | bytes], rate: float, volume: int, probe: bool = False) -> bytes:
+    """The UTF-8 JSON the script reads from stdin; ``items`` are names to speak or clip WAV bytes."""
+    return json.dumps({"segments": segments(items), "rate": float(rate), "volume": int(volume), "probe": probe},
                       ensure_ascii=False).encode("utf-8")
+
+
+def clip_wav(clip: object, volume: int) -> bytes:
+    """A clip (``quill.clips.Clip``: mono PCM16 samples and their rate) as WAV bytes, scaled by ``volume``/100."""
+    samples = array("h")
+    samples.frombytes(clip.pcm)
+    factor = max(VOLUME_RANGE[0], min(VOLUME_RANGE[1], int(volume))) / 100.0
+    scaled = array("h", (max(-32768, min(32767, round(sample * factor))) for sample in samples))
+    out = io.BytesIO()
+    with wave.open(out, "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(clip.rate)
+        handle.writeframes(scaled.tobytes())
+    return out.getvalue()
+
+
+def request(names: Sequence[str], rate: float, volume: int, clips: object | None = None) -> bytes:
+    """The payload of ``names``: a name with a valid clip in ``clips`` (``quill.clips.ClipStore``;
+    None: no clips) plays it, the others are spoken. Reads files: never call it under the session lock."""
+    items: list[str | bytes] = list(names)
+    if clips is not None and items:
+        try:
+            found = clips.clips_for(list(names))
+            if len(found) != len(items):
+                raise ValueError("one clip lookup per name")
+            items = [name if clip is None else clip_wav(clip, volume) for name, clip in zip(names, found)]
+        except Exception as exc:  # noqa: BLE001 - every name keeps the Windows voice
+            log.error("own-voice clips not used (%s)", type(exc).__name__)
+            items = list(names)
+    return payload(items, rate, volume)
 
 
 def system_root() -> Path:
@@ -186,16 +264,13 @@ class PowerShellSpeech:
         self.args = command_line(powershell_path(system_root() if root is None else root))
 
     def start(self, data: bytes) -> subprocess.Popen:
-        """Start speaking ``data`` (``payload``); returns at once with the process."""
+        """Start speaking ``data`` (``payload``); returns at once with the process. A short thread
+        writes ``data`` to its stdin (clips make it larger than a pipe holds), so the caller never
+        waits for PowerShell to read it and may terminate the process meanwhile."""
         process = subprocess.Popen(self.args, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
                                    stderr=subprocess.DEVNULL, creationflags=CREATE_NO_WINDOW,
                                    startupinfo=_hidden(), close_fds=True)
-        try:
-            process.stdin.write(data)
-            process.stdin.close()
-        except OSError:
-            process.kill()
-            raise
+        threading.Thread(target=_feed, args=(process, data), name="quill-speech-input", daemon=True).start()
         return process
 
     def probe(self, data: bytes, timeout_s: float = PROBE_TIMEOUT_S) -> tuple[int, str]:
@@ -204,6 +279,19 @@ class PowerShellSpeech:
                               creationflags=CREATE_NO_WINDOW, startupinfo=_hidden(), timeout=timeout_s,
                               close_fds=True)
         return done.returncode, done.stdout[:MAX_PROBE_OUTPUT].decode("ascii", "replace")
+
+
+def _feed(process: subprocess.Popen, data: bytes) -> None:
+    """Write the request to the process's stdin; a failed write (it was terminated) kills it."""
+    try:
+        process.stdin.write(data)
+        process.stdin.close()
+    except (OSError, ValueError) as exc:
+        log.warning("speech input failed (%s)", type(exc).__name__)
+        try:
+            process.kill()
+        except OSError:
+            pass
 
 
 def _terminate(process: object) -> None:
@@ -219,13 +307,16 @@ class Speaker:
     ``engine.start(data)`` starts a process (``PowerShellSpeech``; tests pass a
     fake) that has ``terminate()``. With ``threaded`` a short worker thread per
     request waits for the gap; without it (tests) ``tick()`` starts a due
-    request, driven by the fake ``clock``.
+    request, driven by the fake ``clock``. ``clips`` (``quill.clips.ClipStore``;
+    None: always the Windows voice) gives the own-voice clips of the names,
+    read when a request starts, so a newly recorded clip is used at once.
     """
 
     def __init__(self, engine: object, *, rate: float = DEFAULT_RATE, volume: int = DEFAULT_VOLUME,
                  gap_s: float = CHIME_GAP_S, clock: Callable[[], float] = time.monotonic,
-                 threaded: bool = True) -> None:
+                 threaded: bool = True, clips: object | None = None) -> None:
         self.engine = engine
+        self.clips = clips
         self.rate = rate
         self.volume = volume
         self.gap_s = gap_s
@@ -233,19 +324,18 @@ class Speaker:
         self.threaded = threaded
         self._lock = threading.Condition()
         self._generation = 0
-        self._pending: tuple[float, bytes, int] | None = None
+        self._pending: tuple[float, tuple[str, ...], int] | None = None
         self._process: object | None = None
         self._waiting = False  # a worker thread is waiting for the pending request (set and cleared under the lock)
 
     def say(self, names: Sequence[str]) -> None:
         """Speak ``names`` ``gap_s`` from now (the chime just started); a speech still going stops.
-        Never blocks: the process starts later, on another thread."""
-        names = [name for name in names if name][:MAX_NAMES]
+        Never blocks and reads no file: the clips are read and the process starts later, on another thread."""
+        names = tuple(name for name in names if name)[:MAX_NAMES]
         with self._lock:
             self._generation += 1
             process, self._process = self._process, None
-            self._pending = (self.clock() + self.gap_s, payload(names, self.rate, self.volume),
-                             self._generation) if names else None
+            self._pending = (self.clock() + self.gap_s, names, self._generation) if names else None
             self._lock.notify_all()
             if self._pending is not None and self.threaded and not self._waiting:
                 self._waiting = True
@@ -272,8 +362,12 @@ class Speaker:
         with self._lock:
             if self._pending is None or self.clock() < self._pending[0]:
                 return False
-            _, data, generation = self._pending
+            _, names, generation = self._pending
             self._pending = None
+        data = request(names, self.rate, self.volume, self.clips)
+        with self._lock:
+            if generation != self._generation:  # a hold (or a newer alert) came while the clips were read
+                return False
         try:
             process = self.engine.start(data)
         except Exception as exc:  # noqa: BLE001 - the chime played and the indicator shows the names
@@ -300,10 +394,11 @@ class Speaker:
             self.tick()
 
 
-def real_speaker(rate: float, volume: int) -> Speaker | None:
-    """The app's speaker with the real engine, or None (only the chime) when PowerShell cannot be located."""
+def real_speaker(rate: float, volume: int, clips: object | None = None) -> Speaker | None:
+    """The app's speaker with the real engine and the own-voice ``clips`` (None: the Windows voice only),
+    or None (only the chime) when PowerShell cannot be located."""
     try:
-        return Speaker(PowerShellSpeech(), rate=rate, volume=volume)
+        return Speaker(PowerShellSpeech(), rate=rate, volume=volume, clips=clips)
     except OSError as exc:
         log.error("speech unavailable (%s)", type(exc).__name__)
         return None

@@ -13,8 +13,10 @@ constructor fail. The only manual way to hear the sounds is:
     py -3.12 -m quill.sound --play-sound
 
 With ``--speak`` it plays one example instead: the ``done`` chime, then an
-invented project name (or ``--project NAME``) spoken by a Windows voice
-(``quill.speech``) at the rate and volume of ``[claude_alert]``:
+invented project name (or ``--project NAME``): the own-voice clip recorded for
+that name (``quill.clips``, when ``own_voice`` is on and one exists), otherwise
+a Windows voice (``quill.speech``), at the volume (and voice rate) of
+``[claude_alert]``:
 
     py -3.12 -m quill.sound --play-sound --speak [--project NAME]
 """
@@ -22,6 +24,7 @@ invented project name (or ``--project NAME``) spoken by a Windows voice
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 
@@ -36,7 +39,7 @@ REFUSAL = (
     "refusing to run: this plays the alert sounds on the speakers.\n"
     "Pass --play-sound to hear them."
 )
-NO_VOICE = "no Windows voice spoke the name (only the chime plays in Quill)"
+NO_VOICE = "the project name did not play (only the chime plays in Quill)"
 
 
 class WinsoundPlayer:
@@ -57,13 +60,14 @@ class WinsoundPlayer:
 
 
 def main(argv: list[str] | None = None, player: object | None = None, sleep=time.sleep,
-         engine: object | None = None, settings: object | None = None) -> int:
-    """``engine`` speaks (``quill.speech.PowerShellSpeech``) and ``settings`` is the
-    ``[claude_alert]`` table (``quill.config.ClaudeAlert``); both default to the real ones."""
+         engine: object | None = None, settings: object | None = None, clips: object | None = None) -> int:
+    """``engine`` speaks (``quill.speech.PowerShellSpeech``), ``settings`` is the
+    ``[claude_alert]`` table (``quill.config.ClaudeAlert``) and ``clips`` the own-voice clips
+    (``quill.clips.ClipStore``); all default to the real ones."""
     parser = argparse.ArgumentParser(prog="python -m quill.sound", description="Play Quill's alert sounds (manual).")
     parser.add_argument("--play-sound", action="store_true", help="required: play each alert sound once")
     parser.add_argument("--speak", action="store_true",
-                        help="play one example: the chime, then a project name spoken by a Windows voice")
+                        help="play one example: the chime, then a project name (own-voice clip or Windows voice)")
     parser.add_argument("--project", metavar="NAME", help="the project name to speak (default: an invented one)")
     args = parser.parse_args(argv)
     if not args.play_sound:
@@ -72,7 +76,7 @@ def main(argv: list[str] | None = None, player: object | None = None, sleep=time
     if args.project is not None and not args.speak:
         parser.error("--project needs --speak")
     if args.speak:
-        return _speak_example(args.project, player, sleep, engine, settings)
+        return _speak_example(args.project, player, sleep, engine, settings, clips)
     player = WinsoundPlayer() if player is None else player
     for kind in KINDS:
         print(f"playing the '{kind}' sound ({ALIASES[kind]})")
@@ -83,7 +87,7 @@ def main(argv: list[str] | None = None, player: object | None = None, sleep=time
 
 
 def _speak_example(project: str | None, player: object | None, sleep, engine: object | None,
-                   settings: object | None) -> int:
+                   settings: object | None, clips: object | None) -> int:
     from quill import speech
 
     if settings is None:
@@ -98,14 +102,23 @@ def _speak_example(project: str | None, player: object | None, sleep, engine: ob
     if not name:
         print("the project name has nothing to speak", file=sys.stderr)
         return 2
+    if not settings.own_voice:
+        clips = None
+    elif clips is None:
+        from quill import clips as own_voice
+
+        clips = own_voice.default_store()
+    data = speech.request([name], settings.speech_rate, settings.speech_volume, clips)
+    clip = any("wav" in segment for segment in json.loads(data.decode("utf-8"))["segments"])
     player = WinsoundPlayer() if player is None else player
     engine = speech.PowerShellSpeech() if engine is None else engine
-    print(f"playing the '{DONE}' sound ({ALIASES[DONE]}), then the project name")
+    print(f"playing the '{DONE}' sound ({ALIASES[DONE]}), then the project name "
+          f"({'own-voice clip' if clip else 'Windows voice'})")
     player.play(DONE)
     sleep(speech.CHIME_GAP_S)
     process = None
     try:
-        process = engine.start(speech.payload([name], settings.speech_rate, settings.speech_volume))
+        process = engine.start(data)
         code = process.wait(timeout=speech.SPEAK_TIMEOUT_S)
     except Exception as exc:  # noqa: BLE001 - reported by type only
         if process is not None:

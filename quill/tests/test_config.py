@@ -79,6 +79,7 @@ class ExampleTest(ConfigCase):
         alert = load_config(None).claude_alert
         self.assertEqual((alert.enabled, alert.sound, alert.filter), (True, True, "attended"))
         self.assertEqual((alert.speak_project, alert.speech_volume, alert.speech_rate), (True, 80, 1.0))
+        self.assertIs(alert.own_voice, True)
         self.assertEqual(alert, config.ClaudeAlert())  # the example and the dataclass agree
 
     def test_action_for_maps_inputs_to_actions(self) -> None:
@@ -329,6 +330,8 @@ class RejectTest(ConfigCase):
             ('speech_rate = "1.0"', "claude_alert.speech_rate"),
             ("speech_rate = nan", "claude_alert.speech_rate"),
             ("speech_rate = inf", "claude_alert.speech_rate"),
+            ("own_voice = 1", "claude_alert.own_voice"),
+            ('own_voice = "yes"', "claude_alert.own_voice"),
         ):
             with self.subTest(text=text):
                 self.assertTrue(self.rejected(f"[claude_alert]\n{text}\n", field).isascii())
@@ -342,6 +345,13 @@ class RejectTest(ConfigCase):
         alert = self.load("[claude_alert]\nspeech_volume = 100\nspeech_rate = 0.5\n").claude_alert
         self.assertEqual((alert.speech_volume, alert.speech_rate), (100, 0.5))
         self.assertIsInstance(alert.speech_rate, float)
+
+    def test_own_voice_merges_over_the_example(self) -> None:
+        alert = self.load("[claude_alert]\nown_voice = false\n").claude_alert
+        self.assertEqual((alert.own_voice, alert.speak_project, alert.speech_volume, alert.sound),
+                         (False, True, 80, True))
+        self.assertIs(self.load("[claude_alert]\nown_voice = true\nspeak_project = false\n").claude_alert.own_voice,
+                      True)
 
     def test_common_sense_fixes(self) -> None:
         self.assertIs(self.load("[autorewrite]\ncommon_sense_fixes = true\n").autorewrite.common_sense_fixes, True)

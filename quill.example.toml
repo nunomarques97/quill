@@ -204,8 +204,12 @@ common_sense_fixes = false
 # project names (a Portuguese voice when Windows has one; at most three,
 # permission requests first). A dictation that starts stops it at once.
 # speech_volume: 0 to 100. speech_rate: 0.5 to 6.0 (1.0 is normal speed).
-# With sound = false nothing is spoken either. Hear an example with
-#   py -3.12 -m quill.sound --play-sound --speak
+# With sound = false nothing is spoken either.
+# own_voice: a name recorded in your own voice (py -3.12 -m quill.names; the
+# clips stay in the ignored local/names) plays that recording instead, at
+# speech_volume (speech_rate does not change it); a name without a recording
+# keeps the Windows voice. Hear an example with
+#   py -3.12 -m quill.sound --play-sound --speak [--project NAME]
 [claude_alert]
 enabled = true
 sound = true
@@ -213,6 +217,7 @@ filter = "attended"
 speak_project = true
 speech_volume = 80
 speech_rate = 1.0
+own_voice = true
 
 # Folders with one Windows shortcut (.lnk) per project, for the voice command
 # "abre VS Code no <projeto>". Empty here: list absolute folder paths only in

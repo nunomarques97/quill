@@ -106,7 +106,7 @@ SCHEMA: dict[str, object] = {
                     "keep_alive": None, "load_wait_s": None, "undo_key": None, "undo_window_s": None,
                     "common_sense_fixes": None},
     "claude_alert": {"enabled": None, "sound": None, "filter": None, "speak_project": None, "speech_volume": None,
-                     "speech_rate": None},
+                     "speech_rate": None, "own_voice": None},
     "voice_commands": {"shortcut_dirs": None, "model": None},
     "claude_code": {"send_key": None, "focus_check": None},
     "project_context": {"folders": NAMES_TABLE, "cache": None, "max_age_h": None, "build_timeout_s": None},
@@ -181,7 +181,10 @@ class ClaudeAlert:
     ``filter`` chooses which Claude Code sessions ring (``quill.notify.FILTERS``).
     ``speak_project`` says the project names after the sound with a Windows
     voice (``quill.speech``) at ``speech_volume`` (0-100) and ``speech_rate``
-    (1.0 is normal speed); without ``sound`` nothing is spoken either."""
+    (1.0 is normal speed); without ``sound`` nothing is spoken either.
+    ``own_voice`` plays the user's own recording of a name instead
+    (``quill.clips``, recorded with ``python -m quill.names``) at ``speech_volume``;
+    a name without a recording keeps the Windows voice."""
 
     enabled: bool = True
     sound: bool = True
@@ -189,6 +192,7 @@ class ClaudeAlert:
     speak_project: bool = True
     speech_volume: int = DEFAULT_VOLUME
     speech_rate: float = DEFAULT_RATE
+    own_voice: bool = True
 
 
 @dataclass(frozen=True)
@@ -470,6 +474,7 @@ def _claude_alert(data: dict[str, object]) -> ClaudeAlert:
         speak_project=_bool(_get(data, "claude_alert.speak_project"), "claude_alert.speak_project"),
         speech_volume=_integer(_get(data, "claude_alert.speech_volume"), "claude_alert.speech_volume", VOLUME_RANGE),
         speech_rate=_number(_get(data, "claude_alert.speech_rate"), "claude_alert.speech_rate", RATE_RANGE),
+        own_voice=_bool(_get(data, "claude_alert.own_voice"), "claude_alert.own_voice"),
     )
 
 

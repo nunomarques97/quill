@@ -39,7 +39,8 @@ vocabulary hints. When ``[claude_alert]`` is on, ``quill.notify.AlertListener`` 
 named events set by the Claude Code hooks (with the project records in ``local/alerts``) and the
 sessions show the alert with its project and play its sound (``quill.sound``) once no dictation is
 recording; after the sound a Windows voice says the project names (``quill.speech``) when
-``speak_project`` is on.
+``speak_project`` is on, or the user's own recording of a name when ``own_voice`` is on and one
+exists (``quill.clips``, read from ``local/names`` when the speech starts).
 Learning from corrections is wired too:
 the correction key and manual-edit detection (``quill.corrections``,
 ``quill.edits``) see the key events of the hooks in memory only.
@@ -65,6 +66,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from quill import clips as own_voice
 from quill import startup
 from quill.autorewrite import AutoRewriter, project_hint
 from quill.cleanup import Cleanup
@@ -587,7 +589,19 @@ class QuillApp:
                  (("on" if self.config.autorewrite.enabled else "send_polished only")
                   + f" (common-sense fixes {'on' if self.rewriter.common_sense_fixes else 'off'})")
                  if self.rewriter else "off",
-                 "on" if self.alerts is not None and self.alerts.running else "off")
+                 f"on ({self._own_voice_status()})" if self.alerts is not None and self.alerts.running else "off")
+
+    def _own_voice_status(self) -> str:
+        """Whether the alert names may play own-voice clips, and how many clips exist (counts only)."""
+        clips = getattr(self.sessions.speaker, "clips", None)
+        if clips is None:
+            return "own voice off"
+        try:
+            count = clips.count()
+        except Exception as exc:  # noqa: BLE001 - only the startup log needs it
+            log.error("own-voice clips not counted (%s)", type(exc).__name__)
+            return "own voice on, clips unknown"
+        return f"own voice on, {count} clips"
 
     def _start_alerts(self) -> None:
         """Listen for the Claude Code alerts; a failure leaves them off, never Quill."""
@@ -885,6 +899,18 @@ def load_personal(config: Config) -> tuple[VocabularyFile, list[str]]:
     return source, load_generic_terms()
 
 
+def alert_speaker(config: Config, factory: Callable[..., object | None] | None = None) -> object | None:
+    """The speaker of the alert names (``quill.speech.real_speaker``), given the own-voice clips of
+    ``local/names`` only when ``own_voice`` is on; None when the alerts speak no name."""
+    alert = config.claude_alert
+    if not (alert.enabled and alert.sound and alert.speak_project):
+        return None
+    if factory is None:
+        from quill.speech import real_speaker as factory
+    clips = own_voice.default_store() if alert.own_voice else None
+    return factory(alert.speech_rate, alert.speech_volume, clips)
+
+
 def real_parts(config: Config) -> Parts:
     """The Windows parts. Creating them installs nothing; ``QuillApp.start`` does."""
     from quill.context_pack import ContextPacks
@@ -894,7 +920,6 @@ def real_parts(config: Config) -> Parts:
     from quill.ollama import OllamaClient
     from quill.shortcuts import ShellLauncher
     from quill.sound import WinsoundPlayer
-    from quill.speech import real_speaker
     from quill.uia import FocusProbe
     from quill.whisper import Whisper
     from quill.win32 import Processes, User32
@@ -919,9 +944,7 @@ def real_parts(config: Config) -> Parts:
         alert_events=Events() if config.claude_alert.enabled else None,
         alerts_dir=ALERTS_DIR if config.claude_alert.enabled else None,
         player=WinsoundPlayer() if config.claude_alert.enabled and config.claude_alert.sound else None,
-        speaker=(real_speaker(config.claude_alert.speech_rate, config.claude_alert.speech_volume)
-                 if config.claude_alert.enabled and config.claude_alert.sound and config.claude_alert.speak_project
-                 else None),
+        speaker=alert_speaker(config),
         launcher=ShellLauncher() if config.trigger("voice").enabled else None,
         voice_model=(WarmModel(Whisper(config.voice.model))
                      if config.trigger("voice").enabled and config.voice.model != config.engine_model else None),

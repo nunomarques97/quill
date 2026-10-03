@@ -535,10 +535,25 @@ class FakeSpeechEngine:
 
     @property
     def spoken(self) -> list[list[str]]:
-        """The names of each started process, from its stdin payload."""
+        """The names each started process speaks with the Windows voice, from its stdin payload."""
+        return [[name for kind, item in played if kind == "say" for name in [item]] for played in self.played]
+
+    @property
+    def played(self) -> list[list[tuple[str, object]]]:
+        """What each started process plays, in order: ("say", name) or ("wav", WAV bytes)."""
+        import base64
         import json
 
-        return [json.loads(process.data.decode("utf-8"))["names"] for process in self.processes]
+        result = []
+        for process in self.processes:
+            items: list[tuple[str, object]] = []
+            for segment in json.loads(process.data.decode("utf-8"))["segments"]:
+                if "wav" in segment:
+                    items.append(("wav", base64.b64decode(segment["wav"])))
+                else:
+                    items.extend(("say", name) for name in segment["say"])
+            result.append(items)
+        return result
 
 
 class FakeAlertEvents:

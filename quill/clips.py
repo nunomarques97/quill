@@ -24,26 +24,39 @@ ignored, so an edited manifest can never point outside it.
 name is cut by 20 ms frame level (keeping a short pad), and the speech is
 brought to one fixed loudness with its peak kept below full scale, so every
 name plays at the same level.
+
+At alert time ``ClipStore.clips_for`` reads the clip of each spoken name
+(``quill.speech.Speaker`` calls it on its worker thread, never under the
+session lock). A clip is used only when it is a RIFF PCM16 mono WAV of at
+most ``MAX_CLIP_BYTES`` and ``MAX_CLIP_S``; a missing, unreadable, corrupt,
+oversized or wrongly formatted clip, or an unreadable manifest, gives no clip
+(the name keeps the Windows voice) and logs only a reason code
+(``REASONS``), never a name or a path.
 """
 
 from __future__ import annotations
 
 import hashlib
+import io
 import json
+import logging
 import os
 import re
 import stat
 import unicodedata
 import wave
 from array import array
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from struct import error as struct_error
 
 from quill.audio import SAMPLE_RATE, SAMPLE_WIDTH
 from quill.config import LOCAL_DIR
 from quill.speech import MAX_NAME_CHARS, spoken
+
+log = logging.getLogger("quill.clips")
 
 CLIPS_DIR = LOCAL_DIR / "names"
 MANIFEST_NAME = "manifest.json"
@@ -63,6 +76,19 @@ MAX_CLIP_S = 4.0  # whole trimmed clip, pads included
 TARGET_RMS = 0.1  # about -20 dBFS over the voiced frames
 MAX_PEAK = 0.89  # about -1 dBFS
 
+# A clip played at alert time: any common rate, at most MAX_CLIP_S, and a file no larger than that at 48 kHz.
+PLAY_RATES = (8000, 48000)
+PCM_TAGS = (1, 0xFFFE)  # WAVE_FORMAT_PCM, and WAVE_FORMAT_EXTENSIBLE (whose PCM subformat ``wave`` checks)
+MAX_CLIP_BYTES = 1024 + int(MAX_CLIP_S * PLAY_RATES[1]) * SAMPLE_WIDTH
+# Why a recorded clip was not used (logged; the name keeps the Windows voice).
+MANIFEST = "manifest"
+MISSING = "missing"
+UNREADABLE = "unreadable"
+OVERSIZED = "oversized"
+CORRUPT = "corrupt"
+FORMAT = "format"
+REASONS = (MANIFEST, MISSING, UNREADABLE, OVERSIZED, CORRUPT, FORMAT)
+
 TOO_QUIET = "não se ouviu nenhum nome; verifica o microfone e fala mais perto"
 TOO_SHORT = "o nome ficou demasiado curto (menos de 0,2 s)"
 TOO_LONG = f"o nome ficou demasiado longo (mais de {MAX_CLIP_S:.0f} s); diz só o nome"
@@ -70,6 +96,22 @@ TOO_LONG = f"o nome ficou demasiado longo (mais de {MAX_CLIP_S:.0f} s); diz só 
 
 class ClipsError(ValueError):
     """The clips folder or manifest cannot be used; the message never holds a name."""
+
+
+class ClipUnusable(Exception):
+    """A recorded clip cannot be played; ``reason`` is one of ``REASONS``."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+@dataclass(frozen=True)
+class Clip:
+    """The samples of a validated clip: mono PCM16 at ``rate``."""
+
+    pcm: bytes = field(repr=False)
+    rate: int
 
 
 def clip_key(name: str) -> str:
@@ -263,3 +305,87 @@ class ClipStore:
         if key and all(clip_key(item) != key for item in manifest.added):
             manifest.added.append(name)
             self.save(manifest)
+
+    def read_clip(self, manifest: Manifest, key: str) -> Clip:
+        """The validated clip of ``key``; ClipUnusable with the reason when it cannot be played."""
+        path = self.clip_path(manifest, key)
+        if path is None:
+            raise ClipUnusable(MISSING)
+        try:
+            with path.open("rb") as handle:
+                if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                    raise ClipUnusable(MISSING)
+                raw = handle.read(MAX_CLIP_BYTES + 1)
+        except FileNotFoundError:
+            raise ClipUnusable(MISSING) from None
+        except OSError:
+            raise ClipUnusable(UNREADABLE) from None
+        return parse_clip(raw)
+
+    def clips_for(self, names: Sequence[str]) -> list[Clip | None]:
+        """The clip of each name (by ``clip_key``), or None where the name keeps the Windows voice.
+        A name without a manifest entry has no clip; any other problem is logged as a reason code only."""
+        try:
+            manifest = self.load()
+        except ClipsError:
+            log.warning("own-voice clips not used (%s)", MANIFEST)
+            return [None] * len(names)
+        found: list[Clip | None] = []
+        for name in names:
+            key = clip_key(name)
+            clip = None
+            if key in manifest.clips:
+                try:
+                    clip = self.read_clip(manifest, key)
+                except ClipUnusable as problem:
+                    log.warning("own-voice clip not used (%s)", problem.reason)
+            found.append(clip)
+        return found
+
+    def count(self) -> int:
+        """How many names have a clip file (an unreadable manifest counts none)."""
+        try:
+            manifest = self.load()
+        except ClipsError:
+            return 0
+        return sum(1 for key in manifest.clips if self.has_clip(manifest, key))
+
+
+def _format_tag(raw: bytes) -> int | None:
+    """The format tag of the WAV's ``fmt `` chunk, or None when there is none."""
+    position = 12
+    while position + 8 <= len(raw):
+        chunk, size = raw[position : position + 4], int.from_bytes(raw[position + 4 : position + 8], "little")
+        if chunk == b"fmt ":
+            return int.from_bytes(raw[position + 8 : position + 10], "little") if size >= 2 else None
+        position += 8 + size + (size & 1)
+    return None
+
+
+def parse_clip(raw: bytes) -> Clip:
+    """The samples of a WAV file's bytes; ClipUnusable unless it is RIFF PCM16 mono within the limits."""
+    if len(raw) > MAX_CLIP_BYTES:
+        raise ClipUnusable(OVERSIZED)
+    if raw[:4] != b"RIFF" or raw[8:12] != b"WAVE" or _format_tag(raw) not in PCM_TAGS:
+        raise ClipUnusable(FORMAT)
+    try:
+        with wave.open(io.BytesIO(raw), "rb") as handle:
+            channels, width, rate = handle.getnchannels(), handle.getsampwidth(), handle.getframerate()
+            frames = handle.getnframes()
+            if channels != 1 or width != SAMPLE_WIDTH or not PLAY_RATES[0] <= rate <= PLAY_RATES[1]:
+                raise ClipUnusable(FORMAT)
+            if frames <= 0:
+                raise ClipUnusable(CORRUPT)
+            if frames > MAX_CLIP_S * rate:
+                raise ClipUnusable(OVERSIZED)
+            pcm = handle.readframes(frames)
+    except (wave.Error, EOFError, ValueError, struct_error):
+        raise ClipUnusable(CORRUPT) from None
+    if len(pcm) != frames * SAMPLE_WIDTH:
+        raise ClipUnusable(CORRUPT)
+    return Clip(pcm, rate)
+
+
+def default_store() -> ClipStore:
+    """The app's clips folder, ``local/names`` (the tests replace this function, so they never read it)."""
+    return ClipStore(CLIPS_DIR)

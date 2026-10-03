@@ -6,7 +6,10 @@
     "term_errors_ratio_max": 0.5,
     "lost_max": 0,
     "invented_max": 0,
-    "pack_outside_context_max": 0
+    "pack_outside_context_max": 0,
+    "release_p95_s_max": 6.0,
+    "release_takes_audio_s_max": 20.0,
+    "prompts_wer_max": 0.12
   },
   "sets": {
     "prompts": {
@@ -36,11 +39,11 @@
         "new": 0
       },
       "pack_outside_context": 0,
-      "enriched": 10,
+      "enriched": 9,
       "enrichment_requests": 11,
-      "enrichment_refused": 1,
+      "enrichment_refused": 2,
       "tidied": {
-        "replies": 6,
+        "replies": 7,
         "enriched": 5
       },
       "likely_terms": {
@@ -59,14 +62,16 @@
         "kept_as_dictated": 3,
         "reference_words": 304,
         "word_errors": {
+          "transcription": 71,
           "source": 71,
           "corrected": 68
         },
         "wer": {
+          "transcription": 0.2336,
           "source": 0.2336,
           "corrected": 0.2237
         },
-        "invented_reference": 1
+        "invented_reference": 2
       },
       "reasons": {
         "today": {
@@ -75,8 +80,8 @@
         },
         "correction": {
           "autorewrite_refused": 4,
-          "autorewrite_rewritten": 3,
-          "autorewrite_unchanged": 8
+          "autorewrite_rewritten": 4,
+          "autorewrite_unchanged": 7
         },
         "correction_refusals": {
           "changed": 2,
@@ -84,30 +89,40 @@
           "explanation": 1
         },
         "enrichment": {
-          "enrich_enriched": 10,
-          "enrich_refused": 1,
+          "enrich_enriched": 9,
+          "enrich_refused": 2,
           "not_asked": 4
         },
         "enrichment_refusals": {
-          "invented": 1
+          "invented": 2
         },
         "packs": {
           "cached": 15
         }
       },
       "latency": {
-        "transcription_p50_s": 0.263,
-        "transcription_p95_s": 0.346,
-        "today_correction_p50_s": 2.057,
-        "today_correction_p95_s": 8.579,
-        "pack_p50_s": 0.048,
-        "pack_p95_s": 0.092,
-        "correction_p50_s": 0.626,
-        "correction_p95_s": 0.912,
-        "enrichment_p50_s": 1.43,
-        "enrichment_p95_s": 2.175,
-        "total_p50_s": 2.131,
-        "total_p95_s": 2.825
+        "transcription_p50_s": 0.24,
+        "transcription_p95_s": 0.294,
+        "today_correction_p50_s": 1.965,
+        "today_correction_p95_s": 7.537,
+        "pack_p50_s": 0.05,
+        "pack_p95_s": 0.355,
+        "correction_p50_s": 0.762,
+        "correction_p95_s": 0.88,
+        "enrichment_p50_s": 1.503,
+        "enrichment_p95_s": 1.884,
+        "total_p50_s": 2.046,
+        "total_p95_s": 2.675,
+        "streaming_final_p50_s": 0.24,
+        "streaming_final_p95_s": 0.294,
+        "final_pass_p50_s": null,
+        "final_pass_p95_s": null,
+        "text_pipeline_p50_s": 0.002,
+        "text_pipeline_p95_s": 0.002,
+        "release_p50_s": 2.292,
+        "release_p95_s": 2.916,
+        "release_up_to_20s_p95_s": 2.916,
+        "takes_up_to_limit": 15
       },
       "over_product_timeout": {
         "correction_calls": 30,
@@ -126,22 +141,22 @@
         "lost": 0,
         "invented": 0,
         "pack_outside_context": 0,
-        "enriched": 13,
-        "enrichment_requests": 13,
-        "enrichment_refused": 0,
+        "enriched": 11,
+        "enrichment_requests": 12,
+        "enrichment_refused": 1,
         "likely_terms": {
           "takes": 0,
           "terms": 0
         },
         "latency": {
-          "transcription_p50_s": 0.278,
-          "transcription_p95_s": 0.346,
-          "correction_p50_s": 0.674,
-          "correction_p95_s": 1.008,
-          "enrichment_p50_s": 1.255,
-          "enrichment_p95_s": 2.175,
-          "total_p50_s": 1.955,
-          "total_p95_s": 5.793
+          "transcription_p50_s": 0.237,
+          "transcription_p95_s": 0.273,
+          "correction_p50_s": 0.712,
+          "correction_p95_s": 1.029,
+          "enrichment_p50_s": 1.346,
+          "enrichment_p95_s": 1.884,
+          "total_p50_s": 2.198,
+          "total_p95_s": 2.611
         }
       },
       "today_hints": {
@@ -153,22 +168,22 @@
         "lost": 0,
         "invented": 0,
         "pack_outside_context": 0,
-        "enriched": 11,
+        "enriched": 10,
         "enrichment_requests": 12,
-        "enrichment_refused": 1,
+        "enrichment_refused": 2,
         "likely_terms": {
           "takes": 0,
           "terms": 0
         },
         "latency": {
-          "transcription_p50_s": 0.236,
-          "transcription_p95_s": 0.352,
-          "correction_p50_s": 0.667,
-          "correction_p95_s": 0.988,
-          "enrichment_p50_s": 1.255,
-          "enrichment_p95_s": 2.252,
-          "total_p50_s": 2.06,
-          "total_p95_s": 5.793
+          "transcription_p50_s": 0.232,
+          "transcription_p95_s": 0.25,
+          "correction_p50_s": 0.72,
+          "correction_p95_s": 0.913,
+          "enrichment_p50_s": 1.429,
+          "enrichment_p95_s": 1.98,
+          "total_p50_s": 2.23,
+          "total_p95_s": 3.856
         }
       },
       "heard_hints": {
@@ -196,27 +211,29 @@
           "kept_as_dictated": 3,
           "reference_words": 304,
           "word_errors": {
+            "transcription": 71,
             "source": 71,
             "corrected": 70
           },
           "wer": {
+            "transcription": 0.2336,
             "source": 0.2336,
             "corrected": 0.2303
           },
-          "invented_reference": 1,
+          "invented_reference": 2,
           "lost": 0,
           "invented": 0,
           "invented_fixes": 0,
           "invented_beyond_fixes": 0,
           "pack_outside_context": 0,
           "enrichment_requests": 10,
-          "enriched": 8,
-          "enrichment_refused": 2,
+          "enriched": 7,
+          "enrichment_refused": 3,
           "reasons": {
             "correction": {
               "autorewrite_refused": 5,
-              "autorewrite_rewritten": 2,
-              "autorewrite_unchanged": 8
+              "autorewrite_rewritten": 3,
+              "autorewrite_unchanged": 7
             },
             "correction_refusals": {
               "changed": 2,
@@ -226,10 +243,10 @@
             }
           },
           "latency": {
-            "correction_p50_s": 0.638,
-            "correction_p95_s": 0.852,
-            "total_p50_s": 1.931,
-            "total_p95_s": 3.127
+            "correction_p50_s": 0.716,
+            "correction_p95_s": 3.01,
+            "total_p50_s": 2.054,
+            "total_p95_s": 9.211
           }
         },
         "names": {
@@ -250,27 +267,29 @@
           "kept_as_dictated": 3,
           "reference_words": 304,
           "word_errors": {
+            "transcription": 71,
             "source": 71,
             "corrected": 68
           },
           "wer": {
+            "transcription": 0.2336,
             "source": 0.2336,
             "corrected": 0.2237
           },
-          "invented_reference": 1,
+          "invented_reference": 2,
           "lost": 0,
           "invented": 0,
           "invented_fixes": 0,
           "invented_beyond_fixes": 0,
           "pack_outside_context": 0,
           "enrichment_requests": 11,
-          "enriched": 10,
-          "enrichment_refused": 1,
+          "enriched": 9,
+          "enrichment_refused": 2,
           "reasons": {
             "correction": {
               "autorewrite_refused": 4,
-              "autorewrite_rewritten": 3,
-              "autorewrite_unchanged": 8
+              "autorewrite_rewritten": 4,
+              "autorewrite_unchanged": 7
             },
             "correction_refusals": {
               "changed": 2,
@@ -279,10 +298,10 @@
             }
           },
           "latency": {
-            "correction_p50_s": 0.626,
-            "correction_p95_s": 0.912,
-            "total_p50_s": 2.131,
-            "total_p95_s": 2.825
+            "correction_p50_s": 0.762,
+            "correction_p95_s": 0.88,
+            "total_p50_s": 2.046,
+            "total_p95_s": 2.675
           }
         },
         "common_sense": {
@@ -299,43 +318,44 @@
           },
           "names_fixed": 0,
           "names_prestep": 0,
-          "common_sense_fixes": 3,
+          "common_sense_fixes": 4,
           "kept_as_dictated": 1,
           "reference_words": 304,
           "word_errors": {
+            "transcription": 71,
             "source": 71,
-            "corrected": 68
+            "corrected": 67
           },
           "wer": {
+            "transcription": 0.2336,
             "source": 0.2336,
-            "corrected": 0.2237
+            "corrected": 0.2204
           },
           "invented_reference": 4,
           "lost": 0,
-          "invented": 3,
-          "invented_fixes": 3,
+          "invented": 4,
+          "invented_fixes": 4,
           "invented_beyond_fixes": 0,
           "pack_outside_context": 0,
-          "enrichment_requests": 11,
-          "enriched": 10,
-          "enrichment_refused": 1,
+          "enrichment_requests": 12,
+          "enriched": 9,
+          "enrichment_refused": 3,
           "reasons": {
             "correction": {
-              "autorewrite_refused": 4,
-              "autorewrite_rewritten": 7,
+              "autorewrite_refused": 3,
+              "autorewrite_rewritten": 8,
               "autorewrite_unchanged": 4
             },
             "correction_refusals": {
               "changed": 2,
-              "dropped": 1,
-              "explanation": 1
+              "dropped": 1
             }
           },
           "latency": {
-            "correction_p50_s": 0.68,
-            "correction_p95_s": 2.866,
-            "total_p50_s": 2.086,
-            "total_p95_s": 4.866
+            "correction_p50_s": 0.751,
+            "correction_p95_s": 1.637,
+            "total_p50_s": 2.388,
+            "total_p95_s": 7.799
           }
         }
       },
@@ -387,10 +407,12 @@
         "kept_as_dictated": 2,
         "reference_words": 253,
         "word_errors": {
+          "transcription": 31,
           "source": 25,
           "corrected": 25
         },
         "wer": {
+          "transcription": 0.1225,
           "source": 0.0988,
           "corrected": 0.0988
         },
@@ -398,9 +420,9 @@
       },
       "reasons": {
         "today": {
-          "autorewrite_refused": 3,
+          "autorewrite_refused": 4,
           "autorewrite_rewritten": 3,
-          "autorewrite_unchanged": 3
+          "autorewrite_unchanged": 2
         },
         "correction": {
           "autorewrite_refused": 2,
@@ -424,18 +446,28 @@
         }
       },
       "latency": {
-        "transcription_p50_s": 0.228,
-        "transcription_p95_s": 0.329,
-        "today_correction_p50_s": 0.899,
-        "today_correction_p95_s": 2.299,
-        "pack_p50_s": 0.068,
-        "pack_p95_s": 0.087,
-        "correction_p50_s": 0.94,
-        "correction_p95_s": 1.406,
-        "enrichment_p50_s": 1.01,
-        "enrichment_p95_s": 2.071,
-        "total_p50_s": 1.73,
-        "total_p95_s": 3.05
+        "transcription_p50_s": 0.211,
+        "transcription_p95_s": 0.324,
+        "today_correction_p50_s": 1.031,
+        "today_correction_p95_s": 2.114,
+        "pack_p50_s": 0.042,
+        "pack_p95_s": 0.065,
+        "correction_p50_s": 0.718,
+        "correction_p95_s": 1.163,
+        "enrichment_p50_s": 0.986,
+        "enrichment_p95_s": 1.686,
+        "total_p50_s": 1.228,
+        "total_p95_s": 2.523,
+        "streaming_final_p50_s": 0.211,
+        "streaming_final_p95_s": 0.324,
+        "final_pass_p50_s": null,
+        "final_pass_p95_s": null,
+        "text_pipeline_p50_s": 0.002,
+        "text_pipeline_p95_s": 0.004,
+        "release_p50_s": 1.308,
+        "release_p95_s": 2.784,
+        "release_up_to_20s_p95_s": 2.784,
+        "takes_up_to_limit": 9
       },
       "over_product_timeout": {
         "correction_calls": 18,
@@ -452,22 +484,22 @@
         "lost": 0,
         "invented": 0,
         "pack_outside_context": 0,
-        "enriched": 6,
+        "enriched": 7,
         "enrichment_requests": 7,
-        "enrichment_refused": 1,
+        "enrichment_refused": 0,
         "likely_terms": {
           "takes": 0,
           "terms": 0
         },
         "latency": {
-          "transcription_p50_s": 0.228,
-          "transcription_p95_s": 0.329,
-          "correction_p50_s": 0.888,
-          "correction_p95_s": 1.406,
-          "enrichment_p50_s": 1.01,
-          "enrichment_p95_s": 2.071,
-          "total_p50_s": 1.759,
-          "total_p95_s": 3.562
+          "transcription_p50_s": 0.211,
+          "transcription_p95_s": 0.324,
+          "correction_p50_s": 0.788,
+          "correction_p95_s": 1.163,
+          "enrichment_p50_s": 0.986,
+          "enrichment_p95_s": 2.333,
+          "total_p50_s": 1.451,
+          "total_p95_s": 5.248
         }
       },
       "today_hints": {
@@ -476,22 +508,22 @@
         "lost": 0,
         "invented": 0,
         "pack_outside_context": 0,
-        "enriched": 7,
+        "enriched": 8,
         "enrichment_requests": 8,
-        "enrichment_refused": 1,
+        "enrichment_refused": 0,
         "likely_terms": {
           "takes": 0,
           "terms": 0
         },
         "latency": {
-          "transcription_p50_s": 0.228,
-          "transcription_p95_s": 0.329,
-          "correction_p50_s": 0.888,
-          "correction_p95_s": 1.256,
-          "enrichment_p50_s": 1.01,
-          "enrichment_p95_s": 2.071,
-          "total_p50_s": 1.897,
-          "total_p95_s": 3.562
+          "transcription_p50_s": 0.211,
+          "transcription_p95_s": 0.324,
+          "correction_p50_s": 0.795,
+          "correction_p95_s": 0.972,
+          "enrichment_p50_s": 0.986,
+          "enrichment_p95_s": 2.333,
+          "total_p50_s": 1.766,
+          "total_p95_s": 5.248
         }
       },
       "heard_hints": {
@@ -516,10 +548,12 @@
           "kept_as_dictated": 3,
           "reference_words": 253,
           "word_errors": {
+            "transcription": 31,
             "source": 25,
             "corrected": 25
           },
           "wer": {
+            "transcription": 0.1225,
             "source": 0.0988,
             "corrected": 0.0988
           },
@@ -543,10 +577,10 @@
             }
           },
           "latency": {
-            "correction_p50_s": 1.054,
-            "correction_p95_s": 1.4,
-            "total_p50_s": 1.668,
-            "total_p95_s": 3.21
+            "correction_p50_s": 0.782,
+            "correction_p95_s": 2.432,
+            "total_p50_s": 1.603,
+            "total_p95_s": 3.655
           }
         },
         "names": {
@@ -564,10 +598,12 @@
           "kept_as_dictated": 2,
           "reference_words": 253,
           "word_errors": {
+            "transcription": 31,
             "source": 25,
             "corrected": 25
           },
           "wer": {
+            "transcription": 0.1225,
             "source": 0.0988,
             "corrected": 0.0988
           },
@@ -591,10 +627,10 @@
             }
           },
           "latency": {
-            "correction_p50_s": 0.94,
-            "correction_p95_s": 1.406,
-            "total_p50_s": 1.73,
-            "total_p95_s": 3.05
+            "correction_p50_s": 0.718,
+            "correction_p95_s": 1.163,
+            "total_p50_s": 1.228,
+            "total_p95_s": 2.523
           }
         },
         "common_sense": {
@@ -612,10 +648,12 @@
           "kept_as_dictated": 1,
           "reference_words": 253,
           "word_errors": {
+            "transcription": 31,
             "source": 25,
             "corrected": 24
           },
           "wer": {
+            "transcription": 0.1225,
             "source": 0.0988,
             "corrected": 0.0949
           },
@@ -639,10 +677,10 @@
             }
           },
           "latency": {
-            "correction_p50_s": 1.0,
-            "correction_p95_s": 1.599,
-            "total_p50_s": 1.82,
-            "total_p95_s": 3.603
+            "correction_p50_s": 0.818,
+            "correction_p95_s": 0.964,
+            "total_p50_s": 1.521,
+            "total_p95_s": 2.571
           }
         }
       },
@@ -690,7 +728,7 @@
     "common_sense_fixes": false,
     "first_call": {
       "model_loaded_before": false,
-      "seconds": 8.579,
+      "seconds": 7.537,
       "reason": "autorewrite_refused"
     }
   },
@@ -720,10 +758,12 @@
         "kept_as_dictated": 5,
         "reference_words": 960,
         "word_errors": {
+          "transcription": 127,
           "source": 102,
           "corrected": 102
         },
         "wer": {
+          "transcription": 0.1323,
           "source": 0.1062,
           "corrected": 0.1062
         },
@@ -748,10 +788,10 @@
           }
         },
         "latency": {
-          "correction_p50_s": 0.692,
-          "correction_p95_s": 1.376,
-          "total_p50_s": 0.692,
-          "total_p95_s": 1.376
+          "correction_p50_s": 0.6,
+          "correction_p95_s": 1.727,
+          "total_p50_s": 0.6,
+          "total_p95_s": 1.727
         }
       },
       "names": {
@@ -769,10 +809,12 @@
         "kept_as_dictated": 5,
         "reference_words": 960,
         "word_errors": {
+          "transcription": 127,
           "source": 102,
           "corrected": 100
         },
         "wer": {
+          "transcription": 0.1323,
           "source": 0.1062,
           "corrected": 0.1042
         },
@@ -797,10 +839,10 @@
           }
         },
         "latency": {
-          "correction_p50_s": 0.648,
-          "correction_p95_s": 1.159,
-          "total_p50_s": 0.648,
-          "total_p95_s": 1.159
+          "correction_p50_s": 0.587,
+          "correction_p95_s": 1.008,
+          "total_p50_s": 0.587,
+          "total_p95_s": 1.008
         }
       },
       "common_sense": {
@@ -818,10 +860,12 @@
         "kept_as_dictated": 2,
         "reference_words": 960,
         "word_errors": {
+          "transcription": 127,
           "source": 102,
           "corrected": 100
         },
         "wer": {
+          "transcription": 0.1323,
           "source": 0.1062,
           "corrected": 0.1042
         },
@@ -846,14 +890,1010 @@
           }
         },
         "latency": {
-          "correction_p50_s": 0.689,
-          "correction_p95_s": 1.107,
-          "total_p50_s": 0.689,
-          "total_p95_s": 1.107
+          "correction_p50_s": 0.576,
+          "correction_p95_s": 1.04,
+          "total_p50_s": 0.576,
+          "total_p95_s": 1.04
         }
       }
     },
+    "latency": {
+      "streaming_final_p50_s": 0.241,
+      "streaming_final_p95_s": 0.585,
+      "final_pass_p50_s": null,
+      "final_pass_p95_s": null,
+      "text_pipeline_p50_s": 0.001,
+      "text_pipeline_p95_s": 0.003,
+      "correction_p50_s": 0.587,
+      "correction_p95_s": 1.008,
+      "enrichment_p50_s": null,
+      "enrichment_p95_s": null,
+      "release_p50_s": 0.803,
+      "release_p95_s": 1.412,
+      "release_up_to_20s_p95_s": 1.412,
+      "takes_up_to_limit": 36
+    },
     "variant_app": "names"
+  },
+  "final_pass": {
+    "main": {
+      "enabled": false,
+      "model": "large-v3",
+      "beam_size": 10,
+      "temperature_fallback": false,
+      "condition_on_previous_text": false,
+      "vad_filter": false,
+      "trim": true,
+      "hints": true,
+      "timeout_s": 3.0
+    },
+    "candidates": {
+      "v3_beam10": {
+        "enabled": true,
+        "model": "large-v3",
+        "beam_size": 10,
+        "temperature_fallback": false,
+        "condition_on_previous_text": false,
+        "vad_filter": false,
+        "trim": true,
+        "hints": true,
+        "timeout_s": 3.0
+      },
+      "v3_beam5": {
+        "enabled": true,
+        "model": "large-v3",
+        "beam_size": 5,
+        "temperature_fallback": false,
+        "condition_on_previous_text": false,
+        "vad_filter": false,
+        "trim": true,
+        "hints": true,
+        "timeout_s": 3.0
+      },
+      "v3_beam10_fallback": {
+        "enabled": true,
+        "model": "large-v3",
+        "beam_size": 10,
+        "temperature_fallback": true,
+        "condition_on_previous_text": false,
+        "vad_filter": false,
+        "trim": true,
+        "hints": true,
+        "timeout_s": 3.0
+      },
+      "v3_beam10_vad": {
+        "enabled": true,
+        "model": "large-v3",
+        "beam_size": 10,
+        "temperature_fallback": false,
+        "condition_on_previous_text": false,
+        "vad_filter": true,
+        "trim": true,
+        "hints": true,
+        "timeout_s": 3.0
+      },
+      "turbo_beam10": {
+        "enabled": true,
+        "model": "large-v3-turbo",
+        "beam_size": 10,
+        "temperature_fallback": false,
+        "condition_on_previous_text": false,
+        "vad_filter": false,
+        "trim": true,
+        "hints": true,
+        "timeout_s": 3.0
+      }
+    },
+    "sets": {
+      "prompts": {
+        "streaming": {
+          "takes": 15,
+          "no_speech": 0,
+          "passes": {},
+          "reference_words": 304,
+          "word_errors": {
+            "transcription": 71,
+            "pipeline": 71,
+            "full": 68
+          },
+          "wer": {
+            "transcription": 0.2336,
+            "pipeline": 0.2336,
+            "full": 0.2237
+          },
+          "term_errors": {
+            "pipeline": 4,
+            "full": 2
+          },
+          "name_occurrences": 15,
+          "name_errors": {
+            "pipeline": 5,
+            "full": 5
+          },
+          "lost": 0,
+          "invented": 0,
+          "pack_outside_context": 0,
+          "enrichment_requests": 11,
+          "enriched": 9,
+          "latency": {
+            "streaming_final_p50_s": 0.24,
+            "streaming_final_p95_s": 0.294,
+            "final_pass_p50_s": null,
+            "final_pass_p95_s": null,
+            "text_pipeline_p50_s": 0.002,
+            "text_pipeline_p95_s": 0.002,
+            "correction_p50_s": 0.762,
+            "correction_p95_s": 0.88,
+            "enrichment_p50_s": 1.503,
+            "enrichment_p95_s": 1.884,
+            "release_p50_s": 2.292,
+            "release_p95_s": 2.916,
+            "release_up_to_20s_p95_s": 2.916,
+            "takes_up_to_limit": 15
+          }
+        },
+        "v3_beam10": {
+          "takes": 15,
+          "no_speech": 0,
+          "passes": {
+            "ok": 15
+          },
+          "reference_words": 304,
+          "word_errors": {
+            "transcription": 68,
+            "pipeline": 69,
+            "full": 69
+          },
+          "wer": {
+            "transcription": 0.2237,
+            "pipeline": 0.227,
+            "full": 0.227
+          },
+          "term_errors": {
+            "pipeline": 4,
+            "full": 4
+          },
+          "name_occurrences": 15,
+          "name_errors": {
+            "pipeline": 4,
+            "full": 4
+          },
+          "lost": 0,
+          "invented": 0,
+          "pack_outside_context": 0,
+          "enrichment_requests": 12,
+          "enriched": 10,
+          "latency": {
+            "streaming_final_p50_s": 0.24,
+            "streaming_final_p95_s": 0.294,
+            "final_pass_p50_s": 0.759,
+            "final_pass_p95_s": 1.026,
+            "text_pipeline_p50_s": 0.002,
+            "text_pipeline_p95_s": 0.003,
+            "correction_p50_s": 0.616,
+            "correction_p95_s": 0.815,
+            "enrichment_p50_s": 1.312,
+            "enrichment_p95_s": 1.715,
+            "release_p50_s": 2.84,
+            "release_p95_s": 5.587,
+            "release_up_to_20s_p95_s": 5.587,
+            "takes_up_to_limit": 15
+          }
+        },
+        "v3_beam5": {
+          "takes": 15,
+          "no_speech": 0,
+          "passes": {
+            "ok": 15
+          },
+          "reference_words": 304,
+          "word_errors": {
+            "transcription": 69,
+            "pipeline": 70,
+            "full": 70
+          },
+          "wer": {
+            "transcription": 0.227,
+            "pipeline": 0.2303,
+            "full": 0.2303
+          },
+          "term_errors": {
+            "pipeline": 4,
+            "full": 4
+          },
+          "name_occurrences": 15,
+          "name_errors": {
+            "pipeline": 4,
+            "full": 4
+          },
+          "lost": 0,
+          "invented": 0,
+          "pack_outside_context": 0,
+          "enrichment_requests": 12,
+          "enriched": 10,
+          "latency": {
+            "streaming_final_p50_s": 0.24,
+            "streaming_final_p95_s": 0.294,
+            "final_pass_p50_s": 0.601,
+            "final_pass_p95_s": 0.841,
+            "text_pipeline_p50_s": 0.002,
+            "text_pipeline_p95_s": 0.002,
+            "correction_p50_s": 0.625,
+            "correction_p95_s": 0.809,
+            "enrichment_p50_s": 1.374,
+            "enrichment_p95_s": 1.709,
+            "release_p50_s": 2.862,
+            "release_p95_s": 3.316,
+            "release_up_to_20s_p95_s": 3.316,
+            "takes_up_to_limit": 15
+          }
+        },
+        "v3_beam10_fallback": {
+          "takes": 15,
+          "no_speech": 0,
+          "passes": {
+            "ok": 15
+          },
+          "reference_words": 304,
+          "word_errors": {
+            "transcription": 68,
+            "pipeline": 69,
+            "full": 69
+          },
+          "wer": {
+            "transcription": 0.2237,
+            "pipeline": 0.227,
+            "full": 0.227
+          },
+          "term_errors": {
+            "pipeline": 4,
+            "full": 4
+          },
+          "name_occurrences": 15,
+          "name_errors": {
+            "pipeline": 4,
+            "full": 4
+          },
+          "lost": 0,
+          "invented": 0,
+          "pack_outside_context": 0,
+          "enrichment_requests": 12,
+          "enriched": 10,
+          "latency": {
+            "streaming_final_p50_s": 0.24,
+            "streaming_final_p95_s": 0.294,
+            "final_pass_p50_s": 0.745,
+            "final_pass_p95_s": 0.889,
+            "text_pipeline_p50_s": 0.002,
+            "text_pipeline_p95_s": 0.002,
+            "correction_p50_s": 0.554,
+            "correction_p95_s": 0.732,
+            "enrichment_p50_s": 1.247,
+            "enrichment_p95_s": 1.631,
+            "release_p50_s": 2.92,
+            "release_p95_s": 4.351,
+            "release_up_to_20s_p95_s": 4.351,
+            "takes_up_to_limit": 15
+          }
+        },
+        "v3_beam10_vad": {
+          "takes": 15,
+          "no_speech": 0,
+          "passes": {
+            "ok": 15
+          },
+          "reference_words": 304,
+          "word_errors": {
+            "transcription": 66,
+            "pipeline": 67,
+            "full": 67
+          },
+          "wer": {
+            "transcription": 0.2171,
+            "pipeline": 0.2204,
+            "full": 0.2204
+          },
+          "term_errors": {
+            "pipeline": 4,
+            "full": 4
+          },
+          "name_occurrences": 15,
+          "name_errors": {
+            "pipeline": 5,
+            "full": 5
+          },
+          "lost": 0,
+          "invented": 0,
+          "pack_outside_context": 0,
+          "enrichment_requests": 13,
+          "enriched": 11,
+          "latency": {
+            "streaming_final_p50_s": 0.24,
+            "streaming_final_p95_s": 0.294,
+            "final_pass_p50_s": 0.77,
+            "final_pass_p95_s": 1.045,
+            "text_pipeline_p50_s": 0.002,
+            "text_pipeline_p95_s": 0.003,
+            "correction_p50_s": 0.679,
+            "correction_p95_s": 0.992,
+            "enrichment_p50_s": 1.565,
+            "enrichment_p95_s": 1.917,
+            "release_p50_s": 3.071,
+            "release_p95_s": 4.271,
+            "release_up_to_20s_p95_s": 4.271,
+            "takes_up_to_limit": 15
+          }
+        },
+        "turbo_beam10": {
+          "takes": 15,
+          "no_speech": 0,
+          "passes": {
+            "ok": 15
+          },
+          "reference_words": 304,
+          "word_errors": {
+            "transcription": 70,
+            "pipeline": 70,
+            "full": 69
+          },
+          "wer": {
+            "transcription": 0.2303,
+            "pipeline": 0.2303,
+            "full": 0.227
+          },
+          "term_errors": {
+            "pipeline": 3,
+            "full": 2
+          },
+          "name_occurrences": 15,
+          "name_errors": {
+            "pipeline": 5,
+            "full": 5
+          },
+          "lost": 0,
+          "invented": 0,
+          "pack_outside_context": 0,
+          "enrichment_requests": 11,
+          "enriched": 9,
+          "latency": {
+            "streaming_final_p50_s": 0.24,
+            "streaming_final_p95_s": 0.294,
+            "final_pass_p50_s": 0.336,
+            "final_pass_p95_s": 0.42,
+            "text_pipeline_p50_s": 0.002,
+            "text_pipeline_p95_s": 0.002,
+            "correction_p50_s": 0.753,
+            "correction_p95_s": 0.88,
+            "enrichment_p50_s": 1.503,
+            "enrichment_p95_s": 1.884,
+            "release_p50_s": 2.653,
+            "release_p95_s": 3.265,
+            "release_up_to_20s_p95_s": 3.265,
+            "takes_up_to_limit": 15
+          }
+        }
+      },
+      "dictation": {
+        "streaming": {
+          "takes": 9,
+          "no_speech": 0,
+          "passes": {},
+          "reference_words": 253,
+          "word_errors": {
+            "transcription": 31,
+            "pipeline": 25,
+            "full": 25
+          },
+          "wer": {
+            "transcription": 0.1225,
+            "pipeline": 0.0988,
+            "full": 0.0988
+          },
+          "term_errors": null,
+          "name_occurrences": 4,
+          "name_errors": {
+            "pipeline": 0,
+            "full": 0
+          },
+          "lost": 0,
+          "invented": 0,
+          "pack_outside_context": 0,
+          "enrichment_requests": 7,
+          "enriched": 6,
+          "latency": {
+            "streaming_final_p50_s": 0.211,
+            "streaming_final_p95_s": 0.324,
+            "final_pass_p50_s": null,
+            "final_pass_p95_s": null,
+            "text_pipeline_p50_s": 0.002,
+            "text_pipeline_p95_s": 0.004,
+            "correction_p50_s": 0.718,
+            "correction_p95_s": 1.163,
+            "enrichment_p50_s": 0.986,
+            "enrichment_p95_s": 1.686,
+            "release_p50_s": 1.308,
+            "release_p95_s": 2.784,
+            "release_up_to_20s_p95_s": 2.784,
+            "takes_up_to_limit": 9
+          }
+        },
+        "v3_beam10": {
+          "takes": 9,
+          "no_speech": 0,
+          "passes": {
+            "ok": 9
+          },
+          "reference_words": 253,
+          "word_errors": {
+            "transcription": 31,
+            "pipeline": 26,
+            "full": 26
+          },
+          "wer": {
+            "transcription": 0.1225,
+            "pipeline": 0.1028,
+            "full": 0.1028
+          },
+          "term_errors": null,
+          "name_occurrences": 4,
+          "name_errors": {
+            "pipeline": 0,
+            "full": 0
+          },
+          "lost": 0,
+          "invented": 0,
+          "pack_outside_context": 0,
+          "enrichment_requests": 9,
+          "enriched": 7,
+          "latency": {
+            "streaming_final_p50_s": 0.211,
+            "streaming_final_p95_s": 0.324,
+            "final_pass_p50_s": 0.931,
+            "final_pass_p95_s": 1.305,
+            "text_pipeline_p50_s": 0.002,
+            "text_pipeline_p95_s": 0.003,
+            "correction_p50_s": 0.772,
+            "correction_p95_s": 1.049,
+            "enrichment_p50_s": 0.952,
+            "enrichment_p95_s": 3.463,
+            "release_p50_s": 3.071,
+            "release_p95_s": 5.501,
+            "release_up_to_20s_p95_s": 5.501,
+            "takes_up_to_limit": 9
+          }
+        },
+        "v3_beam5": {
+          "takes": 9,
+          "no_speech": 0,
+          "passes": {
+            "ok": 9
+          },
+          "reference_words": 253,
+          "word_errors": {
+            "transcription": 31,
+            "pipeline": 26,
+            "full": 26
+          },
+          "wer": {
+            "transcription": 0.1225,
+            "pipeline": 0.1028,
+            "full": 0.1028
+          },
+          "term_errors": null,
+          "name_occurrences": 4,
+          "name_errors": {
+            "pipeline": 0,
+            "full": 0
+          },
+          "lost": 0,
+          "invented": 0,
+          "pack_outside_context": 0,
+          "enrichment_requests": 9,
+          "enriched": 7,
+          "latency": {
+            "streaming_final_p50_s": 0.211,
+            "streaming_final_p95_s": 0.324,
+            "final_pass_p50_s": 0.674,
+            "final_pass_p95_s": 1.052,
+            "text_pipeline_p50_s": 0.002,
+            "text_pipeline_p95_s": 0.003,
+            "correction_p50_s": 0.911,
+            "correction_p95_s": 1.062,
+            "enrichment_p50_s": 1.05,
+            "enrichment_p95_s": 2.62,
+            "release_p50_s": 3.08,
+            "release_p95_s": 4.31,
+            "release_up_to_20s_p95_s": 4.31,
+            "takes_up_to_limit": 9
+          }
+        },
+        "v3_beam10_fallback": {
+          "takes": 9,
+          "no_speech": 0,
+          "passes": {
+            "ok": 9
+          },
+          "reference_words": 253,
+          "word_errors": {
+            "transcription": 31,
+            "pipeline": 26,
+            "full": 26
+          },
+          "wer": {
+            "transcription": 0.1225,
+            "pipeline": 0.1028,
+            "full": 0.1028
+          },
+          "term_errors": null,
+          "name_occurrences": 4,
+          "name_errors": {
+            "pipeline": 0,
+            "full": 0
+          },
+          "lost": 0,
+          "invented": 0,
+          "pack_outside_context": 0,
+          "enrichment_requests": 9,
+          "enriched": 7,
+          "latency": {
+            "streaming_final_p50_s": 0.211,
+            "streaming_final_p95_s": 0.324,
+            "final_pass_p50_s": 0.875,
+            "final_pass_p95_s": 1.339,
+            "text_pipeline_p50_s": 0.002,
+            "text_pipeline_p95_s": 0.003,
+            "correction_p50_s": 0.738,
+            "correction_p95_s": 0.967,
+            "enrichment_p50_s": 0.876,
+            "enrichment_p95_s": 1.998,
+            "release_p50_s": 3.202,
+            "release_p95_s": 5.466,
+            "release_up_to_20s_p95_s": 5.466,
+            "takes_up_to_limit": 9
+          }
+        },
+        "v3_beam10_vad": {
+          "takes": 9,
+          "no_speech": 0,
+          "passes": {
+            "ok": 9
+          },
+          "reference_words": 253,
+          "word_errors": {
+            "transcription": 27,
+            "pipeline": 22,
+            "full": 22
+          },
+          "wer": {
+            "transcription": 0.1067,
+            "pipeline": 0.087,
+            "full": 0.087
+          },
+          "term_errors": null,
+          "name_occurrences": 4,
+          "name_errors": {
+            "pipeline": 0,
+            "full": 0
+          },
+          "lost": 0,
+          "invented": 0,
+          "pack_outside_context": 0,
+          "enrichment_requests": 9,
+          "enriched": 7,
+          "latency": {
+            "streaming_final_p50_s": 0.211,
+            "streaming_final_p95_s": 0.324,
+            "final_pass_p50_s": 0.904,
+            "final_pass_p95_s": 1.387,
+            "text_pipeline_p50_s": 0.002,
+            "text_pipeline_p95_s": 0.003,
+            "correction_p50_s": 0.873,
+            "correction_p95_s": 1.777,
+            "enrichment_p50_s": 0.973,
+            "enrichment_p95_s": 1.99,
+            "release_p50_s": 3.885,
+            "release_p95_s": 5.255,
+            "release_up_to_20s_p95_s": 5.255,
+            "takes_up_to_limit": 9
+          }
+        },
+        "turbo_beam10": {
+          "takes": 9,
+          "no_speech": 0,
+          "passes": {
+            "ok": 9
+          },
+          "reference_words": 253,
+          "word_errors": {
+            "transcription": 31,
+            "pipeline": 25,
+            "full": 25
+          },
+          "wer": {
+            "transcription": 0.1225,
+            "pipeline": 0.0988,
+            "full": 0.0988
+          },
+          "term_errors": null,
+          "name_occurrences": 4,
+          "name_errors": {
+            "pipeline": 0,
+            "full": 0
+          },
+          "lost": 0,
+          "invented": 0,
+          "pack_outside_context": 0,
+          "enrichment_requests": 8,
+          "enriched": 7,
+          "latency": {
+            "streaming_final_p50_s": 0.211,
+            "streaming_final_p95_s": 0.324,
+            "final_pass_p50_s": 0.384,
+            "final_pass_p95_s": 0.543,
+            "text_pipeline_p50_s": 0.002,
+            "text_pipeline_p95_s": 0.004,
+            "correction_p50_s": 0.733,
+            "correction_p95_s": 0.972,
+            "enrichment_p50_s": 0.76,
+            "enrichment_p95_s": 1.686,
+            "release_p50_s": 2.126,
+            "release_p95_s": 3.167,
+            "release_up_to_20s_p95_s": 3.167,
+            "takes_up_to_limit": 9
+          }
+        }
+      }
+    },
+    "gpu": [
+      {
+        "label": "Whisper models loaded, before the replay",
+        "utilization_pct": 91,
+        "used_mib": 13241,
+        "free_mib": 2810,
+        "ollama_loaded": [
+          {
+            "name": "qwen3:8b",
+            "vram_mib": 5320
+          }
+        ],
+        "contention": [
+          "VRAM contention: qwen3:8b is loaded by another client (5320 MiB in VRAM)"
+        ]
+      },
+      {
+        "label": "Whisper models loaded, after the replay",
+        "utilization_pct": 100,
+        "used_mib": 7780,
+        "free_mib": 8271,
+        "ollama_loaded": [],
+        "contention": []
+      }
+    ],
+    "safety": {
+      "streaming": {
+        "takes": 36,
+        "no_speech": 0,
+        "passes": {},
+        "reference_words": 960,
+        "word_errors": {
+          "transcription": 127,
+          "pipeline": 102,
+          "full": 100
+        },
+        "wer": {
+          "transcription": 0.1323,
+          "pipeline": 0.1062,
+          "full": 0.1042
+        },
+        "term_errors": null,
+        "name_occurrences": 9,
+        "name_errors": {
+          "pipeline": 0,
+          "full": 0
+        },
+        "lost": 0,
+        "invented": 0,
+        "pack_outside_context": 0,
+        "enrichment_requests": 0,
+        "enriched": 0,
+        "latency": {
+          "streaming_final_p50_s": 0.241,
+          "streaming_final_p95_s": 0.585,
+          "final_pass_p50_s": null,
+          "final_pass_p95_s": null,
+          "text_pipeline_p50_s": 0.001,
+          "text_pipeline_p95_s": 0.003,
+          "correction_p50_s": 0.587,
+          "correction_p95_s": 1.008,
+          "enrichment_p50_s": null,
+          "enrichment_p95_s": null,
+          "release_p50_s": 0.803,
+          "release_p95_s": 1.412,
+          "release_up_to_20s_p95_s": 1.412,
+          "takes_up_to_limit": 36
+        }
+      },
+      "v3_beam10": {
+        "takes": 36,
+        "no_speech": 0,
+        "passes": {
+          "ok": 36
+        },
+        "reference_words": 960,
+        "word_errors": {
+          "transcription": 135,
+          "pipeline": 115,
+          "full": 115
+        },
+        "wer": {
+          "transcription": 0.1406,
+          "pipeline": 0.1198,
+          "full": 0.1198
+        },
+        "term_errors": null,
+        "name_occurrences": 9,
+        "name_errors": {
+          "pipeline": 0,
+          "full": 0
+        },
+        "lost": 0,
+        "invented": 0,
+        "pack_outside_context": 0,
+        "enrichment_requests": 0,
+        "enriched": 0,
+        "latency": {
+          "streaming_final_p50_s": 0.241,
+          "streaming_final_p95_s": 0.585,
+          "final_pass_p50_s": 0.861,
+          "final_pass_p95_s": 1.697,
+          "text_pipeline_p50_s": 0.002,
+          "text_pipeline_p95_s": 0.003,
+          "correction_p50_s": 0.583,
+          "correction_p95_s": 1.081,
+          "enrichment_p50_s": null,
+          "enrichment_p95_s": null,
+          "release_p50_s": 1.694,
+          "release_p95_s": 2.924,
+          "release_up_to_20s_p95_s": 2.924,
+          "takes_up_to_limit": 36
+        }
+      },
+      "v3_beam5": {
+        "takes": 36,
+        "no_speech": 0,
+        "passes": {
+          "ok": 36
+        },
+        "reference_words": 960,
+        "word_errors": {
+          "transcription": 134,
+          "pipeline": 117,
+          "full": 117
+        },
+        "wer": {
+          "transcription": 0.1396,
+          "pipeline": 0.1219,
+          "full": 0.1219
+        },
+        "term_errors": null,
+        "name_occurrences": 9,
+        "name_errors": {
+          "pipeline": 0,
+          "full": 0
+        },
+        "lost": 0,
+        "invented": 0,
+        "pack_outside_context": 0,
+        "enrichment_requests": 0,
+        "enriched": 0,
+        "latency": {
+          "streaming_final_p50_s": 0.241,
+          "streaming_final_p95_s": 0.585,
+          "final_pass_p50_s": 0.698,
+          "final_pass_p95_s": 1.832,
+          "text_pipeline_p50_s": 0.001,
+          "text_pipeline_p95_s": 0.003,
+          "correction_p50_s": 0.598,
+          "correction_p95_s": 1.138,
+          "enrichment_p50_s": null,
+          "enrichment_p95_s": null,
+          "release_p50_s": 1.486,
+          "release_p95_s": 3.231,
+          "release_up_to_20s_p95_s": 3.231,
+          "takes_up_to_limit": 36
+        }
+      },
+      "v3_beam10_fallback": {
+        "takes": 36,
+        "no_speech": 0,
+        "passes": {
+          "ok": 36
+        },
+        "reference_words": 960,
+        "word_errors": {
+          "transcription": 135,
+          "pipeline": 115,
+          "full": 115
+        },
+        "wer": {
+          "transcription": 0.1406,
+          "pipeline": 0.1198,
+          "full": 0.1198
+        },
+        "term_errors": null,
+        "name_occurrences": 9,
+        "name_errors": {
+          "pipeline": 0,
+          "full": 0
+        },
+        "lost": 0,
+        "invented": 0,
+        "pack_outside_context": 0,
+        "enrichment_requests": 0,
+        "enriched": 0,
+        "latency": {
+          "streaming_final_p50_s": 0.241,
+          "streaming_final_p95_s": 0.585,
+          "final_pass_p50_s": 0.884,
+          "final_pass_p95_s": 2.168,
+          "text_pipeline_p50_s": 0.001,
+          "text_pipeline_p95_s": 0.003,
+          "correction_p50_s": 0.576,
+          "correction_p95_s": 1.067,
+          "enrichment_p50_s": null,
+          "enrichment_p95_s": null,
+          "release_p50_s": 1.665,
+          "release_p95_s": 3.563,
+          "release_up_to_20s_p95_s": 3.563,
+          "takes_up_to_limit": 36
+        }
+      },
+      "v3_beam10_vad": {
+        "takes": 36,
+        "no_speech": 0,
+        "passes": {
+          "ok": 36
+        },
+        "reference_words": 960,
+        "word_errors": {
+          "transcription": 125,
+          "pipeline": 107,
+          "full": 107
+        },
+        "wer": {
+          "transcription": 0.1302,
+          "pipeline": 0.1115,
+          "full": 0.1115
+        },
+        "term_errors": null,
+        "name_occurrences": 9,
+        "name_errors": {
+          "pipeline": 0,
+          "full": 0
+        },
+        "lost": 0,
+        "invented": 0,
+        "pack_outside_context": 0,
+        "enrichment_requests": 0,
+        "enriched": 0,
+        "latency": {
+          "streaming_final_p50_s": 0.241,
+          "streaming_final_p95_s": 0.585,
+          "final_pass_p50_s": 0.874,
+          "final_pass_p95_s": 1.48,
+          "text_pipeline_p50_s": 0.001,
+          "text_pipeline_p95_s": 0.003,
+          "correction_p50_s": 0.56,
+          "correction_p95_s": 1.027,
+          "enrichment_p50_s": null,
+          "enrichment_p95_s": null,
+          "release_p50_s": 1.673,
+          "release_p95_s": 2.982,
+          "release_up_to_20s_p95_s": 2.982,
+          "takes_up_to_limit": 36
+        }
+      },
+      "turbo_beam10": {
+        "takes": 36,
+        "no_speech": 0,
+        "passes": {
+          "ok": 36
+        },
+        "reference_words": 960,
+        "word_errors": {
+          "transcription": 128,
+          "pipeline": 103,
+          "full": 102
+        },
+        "wer": {
+          "transcription": 0.1333,
+          "pipeline": 0.1073,
+          "full": 0.1062
+        },
+        "term_errors": null,
+        "name_occurrences": 9,
+        "name_errors": {
+          "pipeline": 0,
+          "full": 0
+        },
+        "lost": 0,
+        "invented": 0,
+        "pack_outside_context": 0,
+        "enrichment_requests": 0,
+        "enriched": 0,
+        "latency": {
+          "streaming_final_p50_s": 0.241,
+          "streaming_final_p95_s": 0.585,
+          "final_pass_p50_s": 0.386,
+          "final_pass_p95_s": 0.744,
+          "text_pipeline_p50_s": 0.001,
+          "text_pipeline_p95_s": 0.003,
+          "correction_p50_s": 0.562,
+          "correction_p95_s": 1.008,
+          "enrichment_p50_s": null,
+          "enrichment_p95_s": null,
+          "release_p50_s": 1.184,
+          "release_p95_s": 2.156,
+          "release_up_to_20s_p95_s": 2.156,
+          "takes_up_to_limit": 36
+        }
+      }
+    },
+    "choice": {
+      "runs": {
+        "streaming": {
+          "prompts_wer": 0.2237,
+          "term_errors": 2,
+          "lost": 0,
+          "invented": 0,
+          "release_p95_s": 2.916,
+          "qualifies": true
+        },
+        "v3_beam10": {
+          "prompts_wer": 0.227,
+          "term_errors": 4,
+          "lost": 0,
+          "invented": 0,
+          "release_p95_s": 5.587,
+          "qualifies": false
+        },
+        "v3_beam5": {
+          "prompts_wer": 0.2303,
+          "term_errors": 4,
+          "lost": 0,
+          "invented": 0,
+          "release_p95_s": 4.31,
+          "qualifies": false
+        },
+        "v3_beam10_fallback": {
+          "prompts_wer": 0.227,
+          "term_errors": 4,
+          "lost": 0,
+          "invented": 0,
+          "release_p95_s": 5.466,
+          "qualifies": false
+        },
+        "v3_beam10_vad": {
+          "prompts_wer": 0.2204,
+          "term_errors": 4,
+          "lost": 0,
+          "invented": 0,
+          "release_p95_s": 5.255,
+          "qualifies": false
+        },
+        "turbo_beam10": {
+          "prompts_wer": 0.227,
+          "term_errors": 2,
+          "lost": 0,
+          "invented": 0,
+          "release_p95_s": 3.265,
+          "qualifies": true
+        }
+      },
+      "chosen": "streaming",
+      "prompts_wer": 0.2237,
+      "prompts_wer_target_met": false
+    }
   },
   "common_sense_rule": {
     "compared": [
@@ -862,15 +1902,15 @@
     ],
     "word_errors": {
       "off": 193,
-      "on": 192
+      "on": 191
     },
     "sets": {
       "prompts": {
         "word_errors_off": 68,
-        "word_errors_on": 68,
+        "word_errors_on": 67,
         "lost": 0,
         "invented_beyond_fixes": 0,
-        "invented_fixes": 3,
+        "invented_fixes": 4,
         "invented_reference": 4
       },
       "dictation": {
@@ -898,6 +1938,8 @@
     "lost": true,
     "invented": true,
     "pack_outside_context": true,
-    "all": true
+    "release_p95": true,
+    "all": true,
+    "prompts_wer": false
   }
 }

@@ -325,10 +325,13 @@ focus_check = true
 # 0.5-30) the streaming text is used, so a dictation is never lost. The log
 # line "release to typed" shows the pass milliseconds and its reason code;
 # the startup log says whether the pass is on and its model.
-# Provisional values: the best configuration of the error diagnosis
-# (docs/research/asr-errors-summary.json); false turns the pass off.
+# Off: measured on the real recordings (docs/research/prompts-summary.json,
+# final_pass), no pass lowered the prompts word error rate while keeping the
+# domain-term errors at most 3 of 16, so mouse 5 types the streaming text.
+# true turns the pass on with the values below (large-v3, beam 10: the best
+# configuration of the error diagnosis, docs/research/asr-errors-summary.json).
 [final_pass]
-enabled = true
+enabled = false
 model = "large-v3"
 beam_size = 10
 temperature_fallback = false

@@ -31,6 +31,7 @@ from quill import autorewrite, enrich
 from quill.app import TextPipeline
 from quill.config import EXAMPLE_CONFIG, load_config
 from quill.context_pack import ContextPack
+from quill.finalpass import FinalPassSettings
 from quill.profiles import CLAUDE_CODE, Profiles
 from quill.projects import ProjectDetector, ProjectFolders
 from quill.whisper import SessionHints
@@ -95,11 +96,12 @@ class ScriptedModel:
 
 
 def make_product(root, model, packs=PACKS, projects=PROJECTS, likely_terms=autorewrite.LIKELY_TERMS, names=(),
-                 common_sense=None):
+                 common_sense=None, final_pass=None):
     """The app's text pipeline, project detection and rewriter with invented folders and packs.
 
     ``names`` are the personal-vocabulary names the rewriter's name fixes read; ``common_sense`` overrides the
-    example config's common-sense fixes (None: the config's, off).
+    example config's common-sense fixes (None: the config's, off); ``final_pass`` is the app's [final_pass]
+    (None: off).
     """
     config = load_config(None, EXAMPLE_CONFIG)
     folders = {}
@@ -124,7 +126,8 @@ def make_product(root, model, packs=PACKS, projects=PROJECTS, likely_terms=autor
             "enrich_timeout_s": config.autorewrite.enrich_timeout_s, "bench_timeout_s": P.BENCH_TIMEOUT_S,
             "cleanup": config.cleanup_mode}
     hints_for = P.app_hints(pipeline, lambda folder: by_folder.get(str(folder)), _vocabulary(), ())
-    return P.Product(pipeline, holder, rewriter, tuple(names), lookup, info, hints_for=hints_for)
+    return P.Product(pipeline, holder, rewriter, tuple(names), lookup, info, hints_for=hints_for,
+                     final_pass=final_pass)
 
 
 def _vocabulary():
@@ -141,40 +144,68 @@ class FakeStreamer:
     (here each growing prefix of the words that pass hears); the switches it chooses are returned with the text.
     """
 
-    def __init__(self, texts, hinted=None, heard=None):
+    def __init__(self, texts, hinted=None, heard=None, passed=None):
         self.texts = texts
         self.hinted = hinted or {}
         self.heard = heard or {}
+        # passed(settings, take id, streaming text): a final pass's text (None: it times out); default its text.
+        self.passed = passed or (lambda settings, take_id, text: text)
         self.hints = None
+        self.passes = None  # the final passes the factory was built with (None: without)
         self.closed = False
         self.calls = []  # (take ids, session hints or None) of each stream call
         self.asked = {}  # take id -> what its hint source was asked, in order
         self.chosen = {}  # take id -> the hints its source chose last
+        self.snapshots = []
 
-    def factory(self, hints):
+    def factory(self, hints, passes=None):
         self.hints = hints
+        self.passes = passes
 
         def stream(takes, session_hints=None):
-            self.calls.append(([take.id for take in takes], session_hints))
-            if session_hints is None:
-                return [(self.texts[take.id], 0.5) for take in takes]
-            out = []
-            for take, own in zip(takes, session_hints, strict=True):
-                if own is None:
-                    out.append((self.texts[take.id], 0.5))
-                elif isinstance(own, SessionHints):
-                    out.append((self.hinted.get(take.id, self.texts[take.id]), 0.6))
-                else:
-                    heard = self.heard.get(take.id, self.hinted.get(take.id, self.texts[take.id]))
-                    words = heard.split()
-                    self.asked[take.id] = [" ".join(words[:n]) for n in range(len(words) + 1)]
-                    chosen = [own(text) for text in self.asked[take.id]]
-                    self.chosen[take.id] = chosen[-1]
-                    out.append((heard, 0.7, sum(a != b for a, b in zip(chosen, chosen[1:]))))
-            return out
+            items = self._stream(takes, session_hints)
+            if not passes:
+                return items
+            # The fourth item: each pass's outcome (a take without hint switches counts none).
+            return [(*item[:2], item[2] if len(item) > 2 else 0,
+                     {key: self.outcome(settings, take.id, item[0]) for key, settings in passes.items()})
+                    for take, item in zip(takes, items, strict=True)]
+
+        def snapshot(label):
+            self.snapshots.append(label)
+            return {"label": label, "utilization_pct": 1, "used_mib": 9000, "free_mib": 7000,
+                    "ollama_loaded": [{"name": "fake-model", "vram_mib": 5000}], "contention": []}
 
         stream.close = self.close
+        stream.snapshot = snapshot
         return stream, {"model": "fake-engine"}
+
+    def outcome(self, settings, take_id, text):
+        from quill import finalpass
+
+        chosen = self.passed(settings, take_id, text)
+        if chosen is None:
+            return finalpass.FinalPassOutcome(text, finalpass.TIMEOUT, finalpass.HINTS_SOURCE, elapsed_s=3.0)
+        return finalpass.FinalPassOutcome(chosen, finalpass.OK, finalpass.HINTS_SOURCE, 1.2, 0.0, 0.8, 0.9)
+
+    def _stream(self, takes, session_hints=None):
+        self.calls.append(([take.id for take in takes], session_hints))
+        if session_hints is None:
+            return [(self.texts[take.id], 0.5) for take in takes]
+        out = []
+        for take, own in zip(takes, session_hints, strict=True):
+            if own is None:
+                out.append((self.texts[take.id], 0.5))
+            elif isinstance(own, SessionHints):
+                out.append((self.hinted.get(take.id, self.texts[take.id]), 0.6))
+            else:
+                heard = self.heard.get(take.id, self.hinted.get(take.id, self.texts[take.id]))
+                words = heard.split()
+                self.asked[take.id] = [" ".join(words[:n]) for n in range(len(words) + 1)]
+                chosen = [own(text) for text in self.asked[take.id]]
+                self.chosen[take.id] = chosen[-1]
+                out.append((heard, 0.7, sum(a != b for a, b in zip(chosen, chosen[1:]))))
+        return out
 
     def close(self):
         self.closed = True
@@ -482,7 +513,8 @@ class MeasureTest(Case):
         self.assertEqual(block["reasons"]["enrichment"], {enrich.ENRICHED: 3})
         self.assertIsNotNone(block["latency"]["total_p95_s"])
         self.assertEqual(summary["meets_targets"], {"complete": True, "term_errors": True, "lost": True,
-                                                    "invented": True, "pack_outside_context": True, "all": True})
+                                                    "invented": True, "pack_outside_context": True,
+                                                    "release_p95": True, "all": True, "prompts_wer": True})
         self.assertEqual(code, 0)
         # Today's call never saw a pack or context; the new one did, then asked for the enrichment.
         corrections = [call for call in model.calls if not call.enrich]
@@ -805,6 +837,25 @@ class ProjectHintsTest(Case):
         self.assertEqual(code, 1)
         self.assertFalse(summary.exists())
         self.assertIn("not written", lines[-1])
+
+    def test_a_pack_listing_a_whisper_model_name_still_writes_the_summary(self):
+        self.assertEqual(P.refused_project_words({"large-v3", "Large-V3-turbo", "QuasarSync", "board"}),
+                         ["QuasarSync"])
+        self.record()
+        packs = {**PACKS, "nimbus-deck": ContextPack("A board.", ("Kwartz", "large-v3", "board"))}
+        right = {row.id: spoken(row) for row in self.rows()}
+        summary = self.results / "committed-summary.json"
+        vocabulary = self.root / "vocabulary.toml"
+        vocabulary.write_text("", encoding="utf-8")
+        lines = []
+        code = P.main(["--config", str(self.config), "--summary", str(summary), "--vocabulary", str(vocabulary),
+                       "--set", "prompts"],
+                      product_factory=lambda vocab, generic: make_product(self.root, ScriptedModel(), packs=packs),
+                      streamer_factory=FakeStreamer(self.heard(), right).factory, results_dir=self.results,
+                      out=lines.append)
+        self.assertEqual(code, 0, lines[-1])
+        # The summary names the model of its final pass, a public name the pack happens to list.
+        self.assertIn('"model": "large-v3"', summary.read_text(encoding="utf-8"))
 
     def test_relevance_and_heard_hints_of_a_take(self):
         product = make_product(self.root, ScriptedModel())
@@ -1367,7 +1418,7 @@ class SafetyTest(VariantsCase):
         self.assertEqual(set(summary["common_sense_rule"]["sets"]), {"safety"})
         self.assertTrue(summary["common_sense_rule"]["met"])
         self.assertEqual(set(summary["meets_targets"]), {"complete", "term_errors", "lost", "invented",
-                                                        "pack_outside_context", "all"})
+                                                        "pack_outside_context", "release_p95", "all", "prompts_wer"})
         # Transcribed with today's hints (no project) and never enriched; no today's mouse 5 for the safety set.
         self.assertIn((["dt-01", "dt-02", "dt-03"], None), streamer.calls)
         safety_calls = [call for call in model.calls if "Quero usar" in call.user or "Olá" in call.user]
@@ -1418,6 +1469,231 @@ class SafetyTest(VariantsCase):
         self.assertIn("safety set: 3 valid dictation takes, each correction variant into Claude Code without a project",
                       lines)
         self.assertFalse(any("Quero" in line or "verja" in line for line in lines))
+
+
+class FinalPassTest(VariantsCase):
+    """The mouse 5 final pass: the product's quill.finalpass outcome replaces the streaming text, per run."""
+
+    DICTATION = SafetyTest.DICTATION
+    takes = SafetyTest.takes
+    extra_heard = SafetyTest.extra_heard
+    load = SafetyTest.load
+
+    def said(self):
+        return {**{row.id: spoken(row) for row in self.rows()}, **{t: text for t, text, _ in self.DICTATION}}
+
+    def passed(self, settings, take_id, text):
+        """large-v3 at beam 10 hears what was said; at beam 5 it times out; turbo hears as the streaming text."""
+        if not text.strip():
+            return text
+        if settings.model == "large-v3" and settings.beam_size == 10:
+            return self.said()[take_id]
+        return None if settings.model == "large-v3" else text
+
+    def run_pass(self, *args, final_pass=None, load=None):
+        model = SenseModel()
+        streamer = FakeStreamer({**{row.id: misheard(spoken(row)) for row in self.rows()}, **self.extra_heard()},
+                                passed=self.passed)
+
+        def factory(vocab, generic, **options):
+            return make_product(self.root, model, names=(VOCABULARY_NAME,), final_pass=final_pass)
+
+        summary = self.results / "committed-summary.json"
+        vocabulary = self.root / "vocabulary.toml"
+        vocabulary.write_text("", encoding="utf-8")
+        lines = []
+        patch = mock.patch.object(P, "load_sets", load) if load is not None else contextlib.nullcontext()
+        with patch, mock.patch("bench.audio_mme.WinMM", side_effect=AssertionError("the microphone was opened")):
+            code = P.main(["--config", str(self.config), "--summary", str(summary), "--vocabulary", str(vocabulary),
+                           "--set", "prompts", *args], product_factory=factory, streamer_factory=streamer.factory,
+                          results_dir=self.results, out=lines.append)
+        data = json.loads(summary.read_text(encoding="utf-8")) if summary.exists() else None
+        return code, data, lines, model, streamer
+
+    def test_off_by_default_without_a_section_and_without_a_gpu_snapshot(self):
+        self.record()
+        code, summary, _, _, streamer = self.run_pass()
+        self.assertEqual(code, 0)
+        self.assertIsNone(streamer.passes)
+        self.assertEqual(streamer.snapshots, [])
+        self.assertEqual(set(summary["final_pass"]), {"main"})
+        self.assertFalse(summary["final_pass"]["main"]["enabled"])
+        self.assertEqual(summary["sets"]["prompts"]["latency"]["final_pass_p95_s"], None)
+
+    def test_the_apps_section_turns_it_on_and_the_switch_off(self):
+        self.record()
+        # The example ships it off; a user's section turns it on with the example's values.
+        self.assertFalse(load_config(None, EXAMPLE_CONFIG).final_pass.enabled)
+        section = replace(load_config(None, EXAMPLE_CONFIG).final_pass, enabled=True)
+        _, summary, _, _, streamer = self.run_pass(final_pass=section)
+        self.assertEqual(streamer.passes, {P.APP: section})
+        self.assertEqual(summary["final_pass"]["main"], P.pass_settings(section))
+        self.assertEqual(summary["final_pass"]["sets"]["prompts"][P.APP]["passes"], {"ok": 3})
+        _, summary, _, _, streamer = self.run_pass("--no-final-pass", final_pass=section)
+        self.assertIsNone(streamer.passes)
+        self.assertFalse(summary["final_pass"]["main"]["enabled"])
+
+    def test_the_main_run_and_each_candidate_against_the_streaming_text(self):
+        self.record()
+        code, summary, lines, model, streamer = self.run_pass(
+            "--final-pass", "--pass-beam", "10", "--pass-candidates", "v3_beam10,v3_beam5,turbo_beam10", "--require")
+        self.assertEqual(code, 0)
+        # The candidate with the main run's settings decodes once, under the main run's key.
+        self.assertEqual(set(streamer.passes), {P.APP, "v3_beam5", "turbo_beam10"})
+        self.assertEqual(streamer.passes[P.APP], FinalPassSettings(model="large-v3", beam_size=10))
+        self.assertEqual(streamer.passes["turbo_beam10"].model, "large-v3-turbo")
+        section = summary["final_pass"]
+        runs = section["sets"]["prompts"]
+        self.assertEqual(list(runs), [P.STREAMING, P.APP, "v3_beam10", "v3_beam5", "turbo_beam10"])
+        streaming, app = runs[P.STREAMING], runs[P.APP]
+        self.assertEqual(streaming["passes"], {})
+        self.assertEqual(app["passes"], {"ok": 3})
+        self.assertEqual(app["word_errors"]["transcription"], 0)
+        self.assertGreater(streaming["word_errors"]["transcription"], 0)
+        self.assertLess(app["wer"]["full"], streaming["wer"]["full"])
+        self.assertEqual(app["term_errors"], {"pipeline": 0, "full": 0})
+        self.assertEqual((app["lost"], app["invented"]), (0, 0))
+        self.assertEqual(runs["v3_beam10"]["wer"], app["wer"])
+        # A pass that times out types the streaming text; one that hears the same changes nothing.
+        self.assertEqual(runs["v3_beam5"]["passes"], {"timeout": 3})
+        self.assertEqual(runs["v3_beam5"]["latency"]["final_pass_p95_s"], 3.0)
+        for name in ("v3_beam5", "turbo_beam10"):
+            self.assertEqual(runs[name]["word_errors"], streaming["word_errors"])
+        # Stage timings: the pass adds its own seconds to release to text.
+        latency = app["latency"]
+        self.assertEqual((latency["streaming_final_p95_s"], latency["final_pass_p95_s"]), (0.7, 0.9))
+        self.assertGreaterEqual(latency["release_p95_s"], 1.6)
+        self.assertEqual(latency["takes_up_to_limit"], 3)
+        self.assertIsNotNone(latency[P.RELEASE_KEY])
+        self.assertIsNone(streaming["latency"]["final_pass_p95_s"])
+        # The main set block is the main run's: with the pass.
+        block = summary["sets"]["prompts"]
+        self.assertEqual(block["against_reference"]["word_errors"]["transcription"], 0)
+        self.assertEqual(block["latency"]["final_pass_p95_s"], 0.9)
+        self.assertTrue(summary["meets_targets"]["prompts_wer"])
+        self.assertTrue(summary["meets_targets"]["release_p95"])
+        # The heard-hint comparison stays on the streaming text.
+        self.assertEqual(block["heard_hints"]["heard_changed"], 0)
+        choice = section["choice"]
+        self.assertEqual(choice["chosen"], "v3_beam10")
+        self.assertTrue(choice["prompts_wer_target_met"])
+        self.assertEqual({k for k, row in choice["runs"].items() if row["qualifies"]},
+                         {P.STREAMING, P.APP, "v3_beam10", "v3_beam5", "turbo_beam10"})
+        self.assertEqual(section["candidates"]["v3_beam5"]["beam_size"], 5)
+        self.assertEqual([state["label"] for state in section["gpu"]], streamer.snapshots)
+        self.assertEqual(len(streamer.snapshots), 2)
+        self.assertTrue(any(line.startswith("  choice: v3_beam10") for line in lines))
+        self.assertTrue(any(line.startswith("met: prompts WER after the full mouse 5 pipeline") for line in lines))
+        # Counts only in the summary and the report; per-take text under results/.
+        serialized = json.dumps(summary).casefold()
+        for secret in ("verza", "verja", "kwartz", "quartz", "tudo cedo", "nimbus"):
+            self.assertNotIn(secret, serialized)
+            self.assertNotIn(secret, "\n".join(lines).casefold())
+        run = self.run_dir()
+        rows = json.loads((run / "takes.json").read_text(encoding="utf-8"))
+        self.assertEqual({row["pass_reason"] for row in rows}, {"ok"})
+        self.assertTrue((run / "takes-pass-turbo_beam10.json").is_file())
+        self.assertFalse((run / f"takes-pass-{P.APP}.json").exists())  # the main run is takes.json
+
+    def test_a_take_heard_as_before_asks_the_model_nothing_more(self):
+        self.record()
+        _, _, _, alone, _ = self.run_pass("--final-pass", "--pass-beam", "10")
+        _, _, _, with_candidates, _ = self.run_pass("--final-pass", "--pass-beam", "10", "--pass-candidates",
+                                                    "v3_beam5,turbo_beam10")
+        self.assertEqual(len(with_candidates.calls), len(alone.calls))
+
+    def test_the_safety_set_with_each_pass(self):
+        self.record()
+        code, summary, _, _, _ = self.run_pass("--safety", "--final-pass", "--pass-beam", "10", "--pass-candidates",
+                                               "turbo_beam10", load=self.load())
+        self.assertEqual(code, 0)
+        safety = summary["final_pass"]["safety"]
+        self.assertEqual(list(safety), [P.STREAMING, P.APP, "turbo_beam10"])
+        self.assertEqual(safety[P.APP]["passes"], {"ok": 3})
+        self.assertEqual(safety[P.APP]["no_speech"], 1)  # no speech stays no speech
+        self.assertLess(safety[P.APP]["word_errors"]["transcription"],
+                        safety[P.STREAMING]["word_errors"]["transcription"])
+        self.assertIsNone(safety[P.APP]["term_errors"])
+        self.assertIn(P.RELEASE_KEY, summary["safety"]["latency"])
+        self.assertTrue((self.run_dir() / "takes-safety-pass-streaming.json").is_file())
+
+    def test_bad_candidates_and_overrides_stop_before_any_model(self):
+        self.record()
+        for args, needle in ((("--pass-candidates", "v3_beam99"), "--pass-candidates"),
+                             (("--pass-candidates", ","), "--pass-candidates"),
+                             (("--final-pass", "--pass-beam", "11"), "beam_size"),
+                             (("--final-pass", "--pass-timeout", "0"), "timeout_s")):
+            with self.subTest(args=args):
+                code, summary, lines, model, streamer = self.run_pass(*args)
+                self.assertEqual(code, 2)
+                self.assertIn(needle, lines[-1])
+                self.assertIsNone(summary)
+                self.assertEqual((streamer.calls, model.calls), ([], []))
+
+    def test_check_reports_the_wer_target_without_failing_and_fails_a_slow_release(self):
+        self.record()
+        _, _, _, _, _ = self.run_pass("--final-pass", "--pass-beam", "10")
+        path = self.results / "committed-summary.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        reference = data["sets"]["prompts"]["against_reference"]
+        reference["wer"]["corrected"] = 0.2237
+        path.write_text(json.dumps(data), encoding="utf-8")
+        lines = []
+        self.assertEqual(P.main(["--check", str(path)], out=lines.append), 0)
+        self.assertTrue(any(line.startswith("NOT met: prompts WER after the full mouse 5 pipeline: 22.4%")
+                            and "target at most 12%" in line for line in lines))
+        data["sets"]["prompts"]["latency"][P.RELEASE_KEY] = 6.5
+        path.write_text(json.dumps(data), encoding="utf-8")
+        lines = []
+        self.assertEqual(P.main(["--check", str(path)], out=lines.append), 1)
+        self.assertTrue(any(line.startswith("NOT met: release-to-text p95") for line in lines))
+        del data["sets"]["prompts"]["latency"][P.RELEASE_KEY]
+        path.write_text(json.dumps(data), encoding="utf-8")
+        lines = []
+        self.assertEqual(P.main(["--check", str(path)], out=lines.append), 1)  # an unmeasured release fails too
+
+    def test_candidates_keep_the_apps_section_with_their_overrides(self):
+        section = load_config(None, EXAMPLE_CONFIG).final_pass
+        candidate = P.candidate_pass(replace(section, enabled=False), "v3_beam10_vad")
+        self.assertEqual((candidate.enabled, candidate.model, candidate.beam_size, candidate.vad_filter,
+                          candidate.timeout_s, candidate.hints), (True, "large-v3", 10, True, section.timeout_s, True))
+        self.assertFalse(P.candidate_pass(None, "turbo_beam10").vad_filter)
+        self.assertEqual(P.pass_candidates("all"), list(P.PASS_CANDIDATES))
+        self.assertEqual(P.pass_candidates(None), [])
+
+
+class PassChoiceTest(unittest.TestCase):
+    """Which final pass may ship: computed from the numbers of each run."""
+
+    def view(self, wer, terms=1, lost=0, invented=0, p95=4.0):
+        return {"wer": {"full": wer}, "term_errors": {"full": terms}, "lost": lost, "invented": invented,
+                "pack_outside_context": 0, "latency": {P.RELEASE_KEY: p95}}
+
+    def section(self, prompts, safety=None):
+        safe = {key: {k: v for k, v in self.view(0.1).items() if k != "term_errors"} for key in prompts}
+        return {"sets": {"prompts": prompts, "dictation": safe}, "safety": safety if safety is not None else safe}
+
+    def test_the_lowest_qualifying_wer_below_the_streaming_text_wins(self):
+        prompts = {P.STREAMING: self.view(0.22), "a": self.view(0.18), "b": self.view(0.15, lost=1),
+                   "c": self.view(0.10, p95=6.5), "d": self.view(0.11, terms=4), "e": self.view(0.19)}
+        choice = P.pass_choice(self.section(prompts), term_errors_today=7)
+        self.assertEqual(choice["chosen"], "a")
+        self.assertEqual({k for k, row in choice["runs"].items() if not row["qualifies"]}, {"b", "c", "d"})
+        self.assertFalse(choice["prompts_wer_target_met"])
+        # A safety set that loses a word disqualifies the run as well.
+        safety = {key: {**self.view(0.1), "term_errors": None} for key in prompts}
+        safety["a"]["invented"] = 1
+        self.assertEqual(P.pass_choice(self.section(prompts, safety), 7)["chosen"], "e")
+
+    def test_no_better_run_ships_the_streaming_text(self):
+        prompts = {P.STREAMING: self.view(0.22), "a": self.view(0.22), "b": self.view(0.30)}
+        self.assertEqual(P.pass_choice(self.section(prompts), 7)["chosen"], P.STREAMING)
+        self.assertEqual(P.pass_choice(self.section({P.STREAMING: self.view(0.2), "a": self.view(0.1)}), None)
+                         ["chosen"], P.STREAMING)  # without today's term errors nothing qualifies
+        tie = {P.STREAMING: self.view(0.22), P.APP: self.view(0.12), "a": self.view(0.12)}
+        choice = P.pass_choice(self.section(tie), 7)
+        self.assertEqual(choice["chosen"], "a")  # the candidate's name, not the main run's
+        self.assertTrue(choice["prompts_wer_target_met"])
 
 
 class ReferenceCountsTest(unittest.TestCase):

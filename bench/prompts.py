@@ -5,6 +5,9 @@ Usage:
     .venv\\Scripts\\python -m bench.prompts [--set all|prompts|dictation] [--summary PATH] [--require]
         [--timeouts bench|product] [--correction-candidates | --no-correction-candidates]
         [--common-sense | --no-common-sense] [--variants] [--safety]
+        [--final-pass | --no-final-pass] [--pass-model M] [--pass-beam N]
+        [--pass-temperature-fallback | --no-pass-temperature-fallback] [--pass-hints | --no-pass-hints]
+        [--pass-timeout S] [--pass-candidates all|NAME,...]
     py -3.12 -m bench.prompts --check SUMMARY
 
 Two sets are measured. ``prompts`` (``bench/dictation/guiao-prompts-pt.md``,
@@ -92,6 +95,27 @@ and in no set more) with lost, invented beyond the fixes and invented
 against the reference 0 in every set; the Phase 9 measurement runs
 ``--variants --safety``.
 
+Mouse 5 into Claude Code then decodes the released audio once more (the
+final pass, ``quill.finalpass``) when the app's ``[final_pass]`` is on:
+the main run (``sets``, the targets) types that pass's text, or the
+streaming text it falls back to, exactly as the app. ``--final-pass`` and
+``--no-final-pass`` override the section's ``enabled``, and ``--pass-model``,
+``--pass-beam``, ``--pass-temperature-fallback``, ``--pass-hints`` and
+``--pass-timeout`` its other keys. ``--pass-candidates`` also measures each
+named candidate of ``PASS_CANDIDATES`` (the config's section with the
+candidate's overrides) on the same streaming replay: each released take is
+decoded by ``quill.finalpass.run_session`` with its session's hints and hint
+source, on the engine model's worker or one second transcriber of the other
+model, as the app runs it. Per set (and the safety set), ``final_pass``
+reports the streaming text alone and each pass (``pass_block``): WER after
+the transcription, after the text pipeline and after the full mouse 5,
+domain-term errors, names, lost and invented words, enrichment, the pass
+reason codes and p50/p95 of each stage (streaming final, final pass, text
+pipeline, correction, enrichment, release to text) with the release-to-text
+p95 of the takes up to ``LONG_TAKE_S``; ``gpu`` holds read-only snapshots
+(nvidia-smi and Ollama's /api/ps) with the Whisper models loaded; ``choice``
+names the pass that may ship (``pass_choice``).
+
 Measured, against targets that are never lowered here:
 
 - domain-term errors (prompts set): occurrences of the take's real terms in
@@ -114,7 +138,13 @@ Measured, against targets that are never lowered here:
   today's correction, and the new pack
   lookup, correction, enrichment and their total. The model calls get a
   measurement timeout of ``BENCH_TIMEOUT_S`` so the counts do not depend on
-  the machine's load; calls slower than the product timeouts are counted.
+  the machine's load; calls slower than the product timeouts are counted;
+- release to text p95 of the takes up to ``LONG_TAKE_S`` of audio in every
+  set: at most ``TARGET_RELEASE_P95_S``;
+- prompts WER after the full mouse 5 (the corrected text against the clean
+  reference): at most ``TARGET_PROMPTS_WER``. Reported as met or NOT met
+  beside the others, but not an exit code: the goal ships the best safe
+  improvement when it is not met.
 
 Spoken text goes only under ``bench/results/prompts/<run>/``: the per-take
 JSON (``takes.json`` after, ``takes-before.json`` before,
@@ -148,8 +178,9 @@ from bench.metrics import invented_against, percentile_nearest_rank, term_recall
 from bench.normalize import normalize_words
 from bench.settings import REPO_ROOT, RESULTS_DIR, Settings, SettingsError, load_settings
 from quill import autorewrite, enrich
+from quill.finalpass import FinalPassOutcome, FinalPassSettings
 from quill.profiles import CLAUDE_CODE, WindowInfo
-from quill.whisper import distinctive_term
+from quill.whisper import MODELS, distinctive_term
 
 SET_NAME = "prompts"
 DICTATION = "dictation"
@@ -161,6 +192,10 @@ DEFAULT_SUMMARY = REPO_ROOT / "docs" / "research" / "prompts-summary.json"
 TARGET_TERM_ERROR_RATIO = 0.5  # new domain-term errors at most half of today's
 TARGET_LOST = 0
 TARGET_INVENTED = 0
+# Targets of the Phase 11 goal. Never lowered here.
+TARGET_PROMPTS_WER = 0.12  # prompts WER after the full mouse 5 pipeline (reported; the goal ships the best safe gain)
+TARGET_RELEASE_P95_S = 6.0  # release-to-text p95 of the takes up to LONG_TAKE_S of audio
+LONG_TAKE_S = 20.0
 
 CASES = ("termo", "restrição", "números")
 NONE_MARK = "—"
@@ -180,6 +215,20 @@ PHASE8 = "phase8"  # AutoRewriter(name_fixes=False), common sense off: the Phase
 NAMES = "names"  # name fixes only
 COMMON_SENSE = "common_sense"  # name fixes and common-sense fixes
 VARIANTS = {PHASE8: (False, False), NAMES: (True, False), COMMON_SENSE: (True, True)}
+
+# The mouse 5 final pass (quill.finalpass): the runs compared per set. STREAMING is the streaming text alone; APP the
+# main run's [final_pass] (the config's, or as --final-pass and the --pass-* overrides set it).
+STREAMING = "streaming"
+APP = "app"
+# The candidates (--pass-candidates): overrides of the config's [final_pass] section, each on the model it names as
+# the app would decode it (large-v3 on the second model's worker, large-v3-turbo on the engine's).
+PASS_CANDIDATES: dict[str, dict] = {
+    "v3_beam10": {"model": "large-v3", "beam_size": 10},
+    "v3_beam5": {"model": "large-v3", "beam_size": 5},
+    "v3_beam10_fallback": {"model": "large-v3", "beam_size": 10, "temperature_fallback": True},
+    "v3_beam10_vad": {"model": "large-v3", "beam_size": 10, "vad_filter": True},
+    "turbo_beam10": {"model": "large-v3-turbo", "beam_size": 10},
+}
 
 
 class PromptScriptError(DatasetError):
@@ -501,7 +550,8 @@ class Product:
     read before the first model call (None: unknown). ``hints_for(info)``
     returns the (decoding hints or hint source, or None; reason code) the
     app gives mouse 5 in the window ``info`` (``quill.app.project_hints``; None:
-    no take gets project hints).
+    no take gets project hints). ``final_pass`` is the app's ``[final_pass]``
+    for mouse 5 into Claude Code (off when mouse 5 is not bound; None: off).
     """
 
     pipeline: Callable[[str, object], object]
@@ -514,6 +564,7 @@ class Product:
     hold_start: Callable[[], None] | None = None
     model_loaded: Callable[[], bool | None] | None = None
     hints_for: Callable[[WindowInfo], tuple[object | None, str]] | None = None
+    final_pass: FinalPassSettings | None = None
 
 
 @dataclass(frozen=True)
@@ -568,6 +619,11 @@ class TakeResult:
     invented_reference: int = 0  # content words the correction brought that the reference does not hold
     invented_fixes: int = 0  # invented content words (against the input) the correction itself brought
     invented_beyond: int = 0  # invented content words of the output beyond the input and the corrected text
+    audio_s: float = 0.0  # seconds of the take's audio
+    word_errors_heard: int = 0  # word edits of the transcription (before the text pipeline) against the reference
+    pipeline_s: float = 0.0  # the text pipeline
+    pass_s: float = 0.0  # the final pass, call to outcome (0 without one)
+    pass_reason: str = ""  # the final pass's reason code ("": no pass asked)
 
     @property
     def spoken(self) -> bool:
@@ -580,6 +636,11 @@ class TakeResult:
     @property
     def total_s(self) -> float:
         return self.pack_s + self.correction_s + self.enrich_s
+
+    @property
+    def release_s(self) -> float:
+        """Release to the text mouse 5 types: streaming final, final pass, text pipeline and the new mouse 5."""
+        return self.asr_s + self.pass_s + self.pipeline_s + self.total_s
 
 
 def _today_fields(result: TakeResult) -> dict:
@@ -606,8 +667,11 @@ def run_take(take: Take, set_name: str, case: str, heard: str, asr_s: float, pro
     info = window(project)
     product.window.info = info
     base = {"id": take.id, "set": set_name, "case": case, "reference": take.clean, "heard": heard, "asr_s": asr_s,
-            "hints": hints, "variant": variant}
+            "hints": hints, "variant": variant, "audio_s": take.duration_s,
+            "word_errors_heard": text_edits(take.clean, heard).errors}
+    started = product.clock()
     processed = product.pipeline(heard, Target(0, 0)) if heard.strip() else None
+    base["pipeline_s"] = max(0.0, product.clock() - started)
     if processed is None or not processed.text.strip():
         today_fields = (_today_fields(today_from) if today_from is not None
                         else {"today_reason": NO_SPEECH if today else ""})
@@ -713,29 +777,55 @@ def hint_terms(hints: object | None) -> set[str]:
 def measure_after(set_name: str, takes: Sequence[Take], cases: dict[str, str],
                   transcripts: Sequence[tuple[str, float]], reasons: Sequence[str],
                   before: Sequence[TakeResult], product: Product, *, switches: Sequence[int] | None = None,
-                  reuse: Sequence[Sequence[TakeResult]] = ()) -> list[TakeResult]:
+                  reuse: Sequence[Sequence[TakeResult]] = (),
+                  passes: Sequence[tuple[float, str]] | None = None) -> list[TakeResult]:
     """Each take's run with project hints, against its run with today's hints (``before``).
 
     Today's mouse 5 is the earlier run's. A take heard exactly as in an
     earlier pass (each of ``reuse`` in order, then ``before``) gets the same
     text, so that pass's mouse 5 is kept (with this pass's transcription
     time, hint reason and ``switches``) rather than asked of the model again.
+    ``passes`` gives each take's final pass (seconds, reason code) when its
+    text is a final pass outcome's (``pass_rows``).
     """
     from dataclasses import replace
 
     counts = list(switches) if switches is not None else [0] * len(takes)
+    finals = list(passes) if passes is not None else [(0.0, "")] * len(takes)
     earlier_passes = [list(results) for results in reuse]
     results = []
-    for index, (take, (heard, asr_s), reason, earlier, switched) in enumerate(
-            zip(takes, transcripts, reasons, before, counts, strict=True)):
+    for index, (take, (heard, asr_s), reason, earlier, switched, (pass_s, pass_reason)) in enumerate(
+            zip(takes, transcripts, reasons, before, counts, finals, strict=True)):
         same = next((runs[index] for runs in (*earlier_passes, before) if runs[index].heard == heard), None)
         if same is not None:
-            results.append(replace(same, asr_s=asr_s, hints=reason, hint_switches=switched))
+            results.append(replace(same, asr_s=asr_s, hints=reason, hint_switches=switched, pass_s=pass_s,
+                                   pass_reason=pass_reason))
         else:
             result = run_take(take, set_name, cases.get(take.id, take.case), heard, asr_s, product,
                               today_from=earlier, hints=reason)
-            results.append(replace(result, hint_switches=switched))
+            results.append(replace(result, hint_switches=switched, pass_s=pass_s, pass_reason=pass_reason))
     return results
+
+
+def pass_rows(transcripts: Sequence[tuple[str, float]], outcomes: Sequence[dict],
+              key: str | None) -> tuple[list[tuple[str, float]], list[tuple[float, str]]]:
+    """((text, streaming seconds), (pass seconds, reason code)) of each take with the final pass ``key``.
+
+    ``outcomes`` holds each take's ``FinalPassOutcome`` by pass key; the
+    outcome's text is the pass text, or the streaming text it fell back to.
+    ``key`` None, or a take without that outcome, keeps the streaming text
+    without a pass.
+    """
+    texts, finals = [], []
+    for (text, asr_s), chosen in zip(transcripts, outcomes, strict=True):
+        outcome = chosen.get(key) if key is not None else None
+        if isinstance(outcome, FinalPassOutcome):
+            texts.append((outcome.text, asr_s))
+            finals.append((outcome.elapsed_s, outcome.reason))
+        else:
+            texts.append((text, asr_s))
+            finals.append((0.0, ""))
+    return texts, finals
 
 
 @contextmanager
@@ -781,21 +871,48 @@ def measure_variants(set_name: str, takes: Sequence[Take], cases: dict[str, str]
     return runs
 
 
-def measure_safety(takes: Sequence[Take], transcripts: Sequence[tuple[str, float]],
-                   product: Product) -> dict[str, list[TakeResult]]:
+def measure_safety(takes: Sequence[Take], transcripts: Sequence[tuple[str, float]], product: Product,
+                   passes: Sequence[tuple[float, str]] | None = None) -> dict[str, list[TakeResult]]:
     """Each correction variant on every dictation take as if dictated into Claude Code without a project.
 
     Context mode without a project or pack, no enrichment and no today's
     mouse 5: a safety set for what the corrections change in ordinary
-    dictation.
+    dictation. ``passes``: each take's final pass (seconds, reason code).
     """
+    from dataclasses import replace
+
+    finals = list(passes) if passes is not None else [(0.0, "")] * len(takes)
     runs: dict[str, list[TakeResult]] = {}
     for variant in VARIANTS:
         with rewriter_variant(product.rewriter, variant):
-            runs[variant] = [run_take(take, SAFETY, take.case, heard, asr_s, product, project="", enrich_prompt=False,
-                                      today=False, variant=variant)
-                             for take, (heard, asr_s) in zip(takes, transcripts, strict=True)]
+            runs[variant] = [replace(run_take(take, SAFETY, take.case, heard, asr_s, product, project="",
+                                              enrich_prompt=False, today=False, variant=variant),
+                                     pass_s=pass_s, pass_reason=reason)
+                             for take, (heard, asr_s), (pass_s, reason) in zip(takes, transcripts, finals,
+                                                                               strict=True)]
     return runs
+
+
+def measure_safety_pass(takes: Sequence[Take], transcripts: Sequence[tuple[str, float]],
+                        passes: Sequence[tuple[float, str]], product: Product,
+                        reuse: Sequence[Sequence[TakeResult]] = ()) -> list[TakeResult]:
+    """The safety set with the app's correction variant on one final pass's texts (``pass_rows``).
+
+    A take heard exactly as in an earlier run (each of ``reuse`` in order)
+    keeps that run's mouse 5, with this run's pass time and reason.
+    """
+    from dataclasses import replace
+
+    variant = app_variant(product.rewriter) or ""
+    earlier_runs = [list(results) for results in reuse]
+    results = []
+    for index, (take, (heard, asr_s), (pass_s, reason)) in enumerate(zip(takes, transcripts, passes, strict=True)):
+        same = next((runs[index] for runs in earlier_runs if runs[index].heard == heard), None)
+        if same is None:
+            same = run_take(take, SAFETY, take.case, heard, asr_s, product, project="", enrich_prompt=False,
+                            today=False, variant=variant)
+        results.append(replace(same, asr_s=asr_s, pass_s=pass_s, pass_reason=reason))
+    return results
 
 
 def model_state(product: Product) -> bool | None:
@@ -836,10 +953,12 @@ def _ratio(errors: int, words: int) -> float | None:
 def reference_block(spoken: Sequence[TakeResult]) -> dict:
     """Names, word errors and invented words of the new corrected text against the clean reference; counts only.
 
-    ``source`` is mouse 5's input, ``corrected`` the text after the
-    correction (before enrichment); ``names_fixed`` is source minus corrected.
+    ``transcription`` is the text heard, ``source`` mouse 5's input (after
+    the text pipeline), ``corrected`` the text after the correction (before
+    enrichment); ``names_fixed`` is source minus corrected.
     """
     words = sum(r.reference_words for r in spoken)
+    heard = sum(r.word_errors_heard for r in spoken)
     source = sum(r.word_errors_source for r in spoken)
     corrected = sum(r.word_errors_new for r in spoken)
     names_source = sum(r.name_errors_source for r in spoken)
@@ -851,8 +970,9 @@ def reference_block(spoken: Sequence[TakeResult]) -> dict:
             "common_sense_fixes": sum(r.sensible for r in spoken),
             "kept_as_dictated": sum(r.kept for r in spoken),
             "reference_words": words,
-            "word_errors": {"source": source, "corrected": corrected},
-            "wer": {"source": _ratio(source, words), "corrected": _ratio(corrected, words)},
+            "word_errors": {"transcription": heard, "source": source, "corrected": corrected},
+            "wer": {"transcription": _ratio(heard, words), "source": _ratio(source, words),
+                    "corrected": _ratio(corrected, words)},
             "invented_reference": sum(r.invented_reference for r in spoken)}
 
 
@@ -888,10 +1008,119 @@ def variants_block(runs: dict[str, Sequence[TakeResult]], terms: bool = False) -
     return {name: variant_block(results, terms) for name, results in runs.items()}
 
 
-def safety_block(runs: dict[str, Sequence[TakeResult]], dataset: dict) -> dict:
-    """The safety set: every dictation take into Claude Code without a project, per variant; counts only."""
-    return {"status": "measured", "dataset": dataset, "takes": len(next(iter(runs.values()), ())),
-            "enrichment": False, "variants": variants_block(runs)}
+def safety_block(runs: dict[str, Sequence[TakeResult]], dataset: dict, app: str | None = None) -> dict:
+    """The safety set: every dictation take into Claude Code without a project, per variant; counts only.
+
+    ``latency`` holds the stage timings of the variant ``app`` (the app's settings), when given.
+    """
+    block = {"status": "measured", "dataset": dataset, "takes": len(next(iter(runs.values()), ())),
+             "enrichment": False, "variants": variants_block(runs)}
+    if app in runs:
+        block["latency"] = stage_latency(runs[app])
+    return block
+
+
+RELEASE_KEY = f"release_up_to_{LONG_TAKE_S:g}s_p95_s"
+
+
+def stage_latency(results: Sequence[TakeResult]) -> dict:
+    """p50/p95 seconds of each stage after the release and of release to text; counts only.
+
+    Stages: the streaming final, the final pass (takes that asked one), the
+    text pipeline, the correction, the enrichment (takes that asked one) and
+    release to the text mouse 5 types (``TakeResult.release_s``), also as the
+    p95 of the takes of at most ``LONG_TAKE_S`` of audio (``RELEASE_KEY``).
+    """
+    spoken = [r for r in results if r.spoken]
+    called = [r for r in spoken if r.enrich_called]
+    short = [r for r in spoken if r.audio_s <= LONG_TAKE_S]
+    stages = {"streaming_final": [r.asr_s for r in results], "final_pass": [r.pass_s for r in results if r.pass_reason],
+              "text_pipeline": [r.pipeline_s for r in spoken], "correction": [r.correction_s for r in spoken],
+              "enrichment": [r.enrich_s for r in called], "release": [r.release_s for r in spoken]}
+    latency = {f"{name}_p{percent}_s": _seconds(values, percent)
+               for name, values in stages.items() for percent in (50, 95)}
+    latency[RELEASE_KEY] = _seconds([r.release_s for r in short], 95)
+    latency["takes_up_to_limit"] = len(short)
+    return latency
+
+
+def pass_block(results: Sequence[TakeResult], terms: bool = False) -> dict:
+    """One final-pass run of a set (or the streaming text alone); counts and timings, never text.
+
+    Word errors against the clean reference after the transcription, after
+    the text pipeline (mouse 5's input) and after the full mouse 5 (the
+    corrected text, before enrichment, as the Phase 9 WER).
+    """
+    spoken = [r for r in results if r.spoken]
+    called = [r for r in spoken if r.enrich_called]
+    words = sum(r.reference_words for r in spoken)
+    errors = {"transcription": sum(r.word_errors_heard for r in spoken),
+              "pipeline": sum(r.word_errors_source for r in spoken), "full": sum(r.word_errors_new for r in spoken)}
+    return {
+        "takes": len(results),
+        "no_speech": len(results) - len(spoken),
+        "passes": dict(sorted(Counter(r.pass_reason for r in results if r.pass_reason).items())),
+        "reference_words": words,
+        "word_errors": errors,
+        "wer": {stage: _ratio(count, words) for stage, count in errors.items()},
+        "term_errors": {"pipeline": sum(r.term_errors_pipeline for r in spoken),
+                        "full": sum(r.term_errors_new for r in spoken)} if terms else None,
+        "name_occurrences": sum(r.name_occurrences for r in spoken),
+        "name_errors": {"pipeline": sum(r.name_errors_source for r in spoken),
+                        "full": sum(r.name_errors_new for r in spoken)},
+        "lost": sum(r.lost_new for r in spoken),
+        "invented": sum(r.invented_new for r in spoken),
+        "pack_outside_context": sum(r.pack_outside_context for r in spoken),
+        "enrichment_requests": len(called),
+        "enriched": sum(r.enrichment == enrich.ENRICHED for r in spoken),
+        "latency": stage_latency(results),
+    }
+
+
+def pass_settings(settings: FinalPassSettings) -> dict:
+    """A final pass's settings as the summary reports them."""
+    from dataclasses import asdict
+
+    return asdict(settings)
+
+
+def pass_choice(section: dict, term_errors_today: int | None) -> dict:
+    """Which final pass may ship, from the numbers of each run; ``chosen`` is STREAMING when none qualifies.
+
+    A run qualifies with prompts domain-term errors after the full mouse 5 at
+    most ``TARGET_TERM_ERROR_RATIO`` x today's, content words lost, invented
+    and pack words outside the context part 0 in every set (and the safety
+    set) and release-to-text p95 of the takes up to ``LONG_TAKE_S`` at most
+    ``TARGET_RELEASE_P95_S`` in every set. Of the qualifying passes with a
+    prompts WER below the streaming text's, the lowest WER wins (then the
+    lower p95). The voice commands are measured apart (``bench.voice_commands``).
+    """
+    sets = section.get("sets") or {}
+    safety = section.get(SAFETY) or {}
+    prompts = sets.get(SET_NAME) or {}
+    keys = list(dict.fromkeys(key for runs in (*sets.values(), safety) for key in runs))
+    rows = {}
+    for key in keys:
+        blocks = [runs[key] for runs in (*sets.values(), safety) if key in runs]
+        terms = (prompts.get(key) or {}).get("term_errors")
+        p95 = [block["latency"].get(RELEASE_KEY) for block in blocks]
+        term_ok = terms is not None and term_errors_today is not None and (
+            terms["full"] <= TARGET_TERM_ERROR_RATIO * term_errors_today)
+        lost = sum(block["lost"] for block in blocks)
+        invented = sum(block["invented"] + block["pack_outside_context"] for block in blocks)
+        latency_ok = bool(p95) and all(value is not None and value <= TARGET_RELEASE_P95_S for value in p95)
+        rows[key] = {"prompts_wer": ((prompts.get(key) or {}).get("wer") or {}).get("full"),
+                     "term_errors": terms["full"] if terms else None, "lost": lost, "invented": invented,
+                     "release_p95_s": max((v for v in p95 if v is not None), default=None),
+                     "qualifies": term_ok and lost <= TARGET_LOST and invented <= TARGET_INVENTED and latency_ok}
+    baseline = (rows.get(STREAMING) or {}).get("prompts_wer")
+    better = [key for key, row in rows.items() if key != STREAMING and row["qualifies"]
+              and row["prompts_wer"] is not None and baseline is not None and row["prompts_wer"] < baseline]
+    chosen = min(better, key=lambda key: (rows[key]["prompts_wer"], rows[key]["release_p95_s"] or 0.0, key == APP,
+                                          key)) if better else STREAMING
+    wer = rows.get(chosen, {}).get("prompts_wer")
+    return {"runs": rows, "chosen": chosen, "prompts_wer": wer,
+            "prompts_wer_target_met": wer is not None and wer <= TARGET_PROMPTS_WER}
 
 
 def common_sense_rule(blocks: dict[str, dict]) -> dict | None:
@@ -983,6 +1212,7 @@ def set_block(results: Sequence[TakeResult], dataset: dict, product_timeouts: di
             "enrichment_p95_s": _seconds([r.enrich_s for r in called], 95),
             "total_p50_s": _seconds([r.total_s for r in spoken], 50),
             "total_p95_s": _seconds([r.total_s for r in spoken], 95),
+            **stage_latency(results),
         },
         "over_product_timeout": {
             "correction_calls": 2 * len(spoken),
@@ -1044,7 +1274,9 @@ def pending_block(dataset: dict) -> dict:
 
 def targets() -> dict:
     return {"term_errors_ratio_max": TARGET_TERM_ERROR_RATIO, "lost_max": TARGET_LOST,
-            "invented_max": TARGET_INVENTED, "pack_outside_context_max": TARGET_INVENTED}
+            "invented_max": TARGET_INVENTED, "pack_outside_context_max": TARGET_INVENTED,
+            "release_p95_s_max": TARGET_RELEASE_P95_S, "release_takes_audio_s_max": LONG_TAKE_S,
+            "prompts_wer_max": TARGET_PROMPTS_WER}
 
 
 def complete(block: dict | None) -> bool:
@@ -1085,23 +1317,55 @@ def check_targets(summary: dict) -> list[tuple[bool, str]]:
                   f"invented content words (new mouse 5): {invented}, target {TARGET_INVENTED}"))
     lines.append((takes > 0 and from_pack <= TARGET_INVENTED,
                   f"pack words outside the context part: {from_pack}, target {TARGET_INVENTED}"))
+    safety = summary.get(SAFETY)
+    releases = [(name, (block.get("latency") or {}).get(RELEASE_KEY)) for name, block in
+                (*measured.items(), *([(SAFETY, safety)] if isinstance(safety, dict) else []))]
+    known = [(name, value) for name, value in releases if value is not None]
+    lines.append((bool(known) and len(known) == len(releases) and all(v <= TARGET_RELEASE_P95_S for _, v in known),
+                  f"release-to-text p95 (takes up to {LONG_TAKE_S:g} s): "
+                  + (", ".join(f"{name} {value:g} s" for name, value in known) if known else "not measured")
+                  + f"; target at most {TARGET_RELEASE_P95_S:g} s"))
     return lines
 
 
-def build_summary(blocks: dict[str, dict], engine: dict, rewrite: dict, safety: dict | None = None) -> dict:
+def prompts_wer_line(summary: dict) -> tuple[bool, str]:
+    """The prompts WER after the full mouse 5 against its target: reported, not an exit-code target.
+
+    The goal ships the best safe improvement when the target is not met; the
+    target itself is never lowered.
+    """
+    prompts = (summary.get("sets") or {}).get(SET_NAME)
+    reference = prompts.get("against_reference") if isinstance(prompts, dict) else None
+    if not isinstance(reference, dict) or reference.get("wer", {}).get("corrected") is None:
+        return False, "prompts WER after the full mouse 5 pipeline: not measured"
+    wer, errors = reference["wer"], reference["word_errors"]
+    heard = wer.get("transcription")
+    return (wer["corrected"] <= TARGET_PROMPTS_WER,
+            f"prompts WER after the full mouse 5 pipeline: {wer['corrected']:.1%} ({errors['corrected']} of "
+            f"{reference['reference_words']} words; after the text pipeline {wer['source']:.1%}"
+            + (f", after transcription {heard:.1%}" if heard is not None else "")
+            + f"); target at most {TARGET_PROMPTS_WER:.0%} (reported, not an exit code)")
+
+
+def build_summary(blocks: dict[str, dict], engine: dict, rewrite: dict, safety: dict | None = None,
+                  final_pass: dict | None = None) -> dict:
     summary: dict = {"schema": SUMMARY_SCHEMA, "kind": "mouse5_prompts",
                      "status": "measured" if any(b.get("status") == "measured" for b in blocks.values())
                      else "pending_recordings",
                      "targets": targets(), "sets": blocks, "engine": engine, "rewrite": rewrite}
     if safety is not None:
         summary[SAFETY] = safety
+    if final_pass is not None:
+        summary["final_pass"] = final_pass
     rule = common_sense_rule({**blocks, **({SAFETY: safety} if safety is not None else {})})
     if rule is not None:
         summary["common_sense_rule"] = rule
     checks = check_targets(summary)
-    names = ("complete", "term_errors", "lost", "invented", "pack_outside_context")
-    summary["meets_targets"] = {name: met for name, (met, _) in zip(names, checks)}
+    names = ("complete", "term_errors", "lost", "invented", "pack_outside_context", "release_p95")
+    summary["meets_targets"] = {name: met for name, (met, _) in zip(names, checks, strict=True)}
+    # "all": the exit-code targets of --require; the prompts WER target is reported beside them.
     summary["meets_targets"]["all"] = all(summary["meets_targets"].values())
+    summary["meets_targets"]["prompts_wer"] = prompts_wer_line(summary)[0]
     return summary
 
 
@@ -1137,7 +1401,9 @@ def _rows(results: Sequence[TakeResult]) -> list[dict]:
              "name_errors_new": r.name_errors_new, "names_prestep": r.names_prestep, "sensible": r.sensible,
              "kept": r.kept, "reference_words": r.reference_words, "word_errors_source": r.word_errors_source,
              "word_errors_new": r.word_errors_new, "invented_reference": r.invented_reference,
-             "invented_fixes": r.invented_fixes, "invented_beyond": r.invented_beyond} for r in results]
+             "invented_fixes": r.invented_fixes, "invented_beyond": r.invented_beyond, "audio_s": round(r.audio_s, 3),
+             "word_errors_heard": r.word_errors_heard, "pipeline_s": round(r.pipeline_s, 3),
+             "pass_s": round(r.pass_s, 3), "pass_reason": r.pass_reason} for r in results]
 
 
 def write_private(run_dir: Path, results: Sequence[TakeResult], results_dir: Path = RESULTS_DIR,
@@ -1199,12 +1465,25 @@ def private_texts(results: Sequence[TakeResult]) -> list[str]:
     return [text for r in results for text in (r.reference, r.heard, r.source, r.today, r.corrected, r.final) if text]
 
 
+def refused_project_words(words: Iterable[str]) -> list[str]:
+    """The project hint words the summary refuses: the distinctive ones, except the Whisper model names.
+
+    The summary names its models (``[final_pass] model``, the engine); a
+    project whose pack lists a public model name would otherwise refuse
+    every summary.
+    """
+    public = {" ".join(normalize_words(name)) for name in MODELS}
+    return sorted(word for word in words if distinctive_term(word) and " ".join(normalize_words(word)) not in public)
+
+
 # ---------------------------------------------------------------- defaults (GPU, Ollama and the app's config)
 
 
 # stream(takes, hints=None): the final text, release-to-final seconds and hint switches of each take (a pair
 # counts no switch); ``hints`` (one per take, None: the vocabulary hints; plain hints or a hint source) open
-# each take's session as the app gives mouse 5 its decoding hints.
+# each take's session as the app gives mouse 5 its decoding hints. A streamer built with final passes adds to each
+# take a fourth item: its ``FinalPassOutcome`` by pass key. ``stream.snapshot(label)`` (optional) returns a read-only
+# GPU and Ollama snapshot.
 Streamer = Callable[..., list[tuple]]
 
 
@@ -1215,13 +1494,49 @@ def split_streamed(items: Sequence[tuple]) -> tuple[list[tuple[str, float]], lis
     return pairs, switches
 
 
-def default_streamer(hints: Sequence[str]) -> tuple[Streamer, dict]:
-    """The product streaming path with the app's engine model and vocabulary ``hints``; ``stream.close`` frees it."""
+def split_passes(items: Sequence[tuple]) -> list[dict]:
+    """Each take's final pass outcomes by pass key from a streamer's output ({} without passes)."""
+    return [dict(item[3]) if len(item) > 3 and isinstance(item[3], dict) else {} for item in items]
+
+
+def replay_session(transcriber: object, pcm: bytes, hints: object | None = None) -> tuple[object, object]:
+    """``bench.streaming.replay_deterministic``, keeping the released session for its final pass."""
+    from bench.streaming import CHUNK_S, FINAL_TIMEOUT_S, chunks
+
+    session = transcriber.open() if hints is None else transcriber.open(hints=hints)
+    for chunk in chunks(pcm, CHUNK_S):
+        session.feed(chunk)
+        if not transcriber.drain(FINAL_TIMEOUT_S):
+            raise TimeoutError("streaming worker did not become idle")
+    result = session.release().wait(FINAL_TIMEOUT_S)
+    if result is None:
+        raise TimeoutError("final text not ready in time")
+    return session, result
+
+
+def gpu_snapshot(label: str) -> dict:
+    """GPU memory and utilization and the models loaded in the shared Ollama; read-only (nvidia-smi, /api/ps)."""
+    from bench.streaming import gpu_state
+
+    state = gpu_state()
+    state.pop("time", None)
+    return {"label": label, **state}
+
+
+def default_streamer(hints: Sequence[str], passes: dict[str, FinalPassSettings] | None = None) -> tuple[Streamer, dict]:
+    """The product streaming path with the app's engine model and vocabulary ``hints``; ``stream.close`` frees it.
+
+    With ``passes`` each released take also gets each final pass
+    (``quill.finalpass.run`` with the session's hints and hint source), as
+    the app runs it: a pass on the engine model decodes on the streaming
+    transcriber's worker, a pass on the other model on one second
+    transcriber of that model (one instance, loaded at the first take).
+    """
     from dataclasses import asdict
 
     from bench.engines.base import EngineError, EngineUnavailable, wav_pcm
     from bench.pipeline import ENGINE_COMPUTE, STREAM_MODEL
-    from bench.streaming import replay_deterministic
+    from quill import finalpass
     from quill.config import load_config
     from quill.streaming import StreamingTranscriber, options_for
     from quill.whisper import Whisper
@@ -1230,6 +1545,23 @@ def default_streamer(hints: Sequence[str]) -> tuple[Streamer, dict]:
     options = options_for(name)
     model = Whisper(name, compute_type=ENGINE_COMPUTE)
     vocabulary = list(hints)
+    passes = dict(passes or {})
+    others = sorted({settings.model for settings in passes.values()} - {name})
+    if len(others) > 1:
+        raise ValueError("the final passes may use one model besides the engine model")
+    second: dict[str, StreamingTranscriber] = {}
+
+    def pass_transcriber(model_name: str) -> StreamingTranscriber:
+        if model_name not in second:
+            transcriber = StreamingTranscriber(Whisper(model_name, compute_type=ENGINE_COMPUTE),
+                                               options_for(model_name), vocabulary)
+            transcriber.start()
+            second[model_name] = transcriber
+        transcriber = second[model_name]
+        transcriber.ready.wait()
+        if transcriber.load_error:
+            raise EngineUnavailable(transcriber.load_error)
+        return transcriber
 
     def stream(takes: Sequence[Take], session_hints: Sequence[object | None] | None = None) -> list[tuple]:
         per_take = list(session_hints) if session_hints is not None else [None] * len(takes)
@@ -1239,17 +1571,29 @@ def default_streamer(hints: Sequence[str]) -> tuple[Streamer, dict]:
             transcriber.ready.wait()
             if transcriber.load_error:
                 raise EngineUnavailable(transcriber.load_error)
+            workers = {key: transcriber if settings.model == name else pass_transcriber(settings.model)
+                       for key, settings in passes.items()}
             out = []
             for take, take_hints in zip(takes, per_take, strict=True):
-                result = replay_deterministic(transcriber, wav_pcm(take.path.read_bytes())[0], hints=take_hints)
+                session, result = replay_session(transcriber, wav_pcm(take.path.read_bytes())[0], take_hints)
                 if not result.ok:
                     raise EngineError(f"streamed final failed: {result.error}")
-                out.append((result.text, result.latency_s, result.hint_switches))
+                item = (result.text, result.latency_s, result.hint_switches)
+                if passes:
+                    item += ({key: finalpass.run_session(workers[key], session, result, settings)
+                              for key, settings in passes.items()},)
+                out.append(item)
             return out
         finally:
             transcriber.stop(close_model=False)
 
-    stream.close = model.close
+    def close() -> None:
+        for transcriber in second.values():
+            transcriber.stop()
+        model.close()
+
+    stream.close = close
+    stream.snapshot = gpu_snapshot
     return stream, {"model": name, **asdict(options)}
 
 
@@ -1314,10 +1658,13 @@ def default_product(vocabulary: object, generic_terms: Sequence[str], product_ti
             "timeouts": "product" if product_timeouts else "bench", "cleanup": config.cleanup_mode}
     if product_timeouts:
         info.update(keep_alive=config.autorewrite.keep_alive, load_wait_s=config.autorewrite.load_wait_s)
+    from quill.app import final_pass_on
+
+    final_pass = config.final_pass if final_pass_on(config) else replace(config.final_pass, enabled=False)
     return Product(pipeline, holder, rewriter, names, packs.lookup, info,
                    hold_start=(lambda: warmer.warm("mouse 5 hold")) if warmer is not None else None,
                    model_loaded=lambda: config.ollama_model in client.loaded(),
-                   hints_for=app_hints(pipeline, packs.get, vocabulary, generic_terms))
+                   hints_for=app_hints(pipeline, packs.get, vocabulary, generic_terms), final_pass=final_pass)
 
 
 def app_hints(pipeline: object, pack_for: Callable[[object], object | None], vocabulary: object,
@@ -1330,6 +1677,45 @@ def app_hints(pipeline: object, pack_for: Callable[[object], object | None], voc
                              vocabulary=vocabulary, generic_terms=generic_terms)
 
     return hints_for
+
+
+def pass_candidates(text: str | None) -> list[str]:
+    """The candidate names of ``--pass-candidates`` ('all' or a comma list); ValueError names an unknown one."""
+    if text is None:
+        return []
+    if text.strip() == "all":
+        return list(PASS_CANDIDATES)
+    names = [part.strip() for part in text.split(",") if part.strip()]
+    unknown = [name for name in names if name not in PASS_CANDIDATES]
+    if unknown or not names:
+        raise ValueError(f"--pass-candidates takes 'all' or names among {', '.join(PASS_CANDIDATES)}")
+    return list(dict.fromkeys(names))
+
+
+def config_pass(settings: FinalPassSettings | None) -> FinalPassSettings:
+    """The app's ``[final_pass]`` (``Product.final_pass``); None is off with the section's defaults."""
+    return settings if isinstance(settings, FinalPassSettings) else FinalPassSettings(enabled=False)
+
+
+def main_pass_settings(settings: FinalPassSettings | None, args: argparse.Namespace) -> FinalPassSettings:
+    """The main run's final pass: the app's ``[final_pass]`` with ``--final-pass`` and the ``--pass-*`` overrides.
+
+    ValueError when an override is out of the section's range.
+    """
+    from dataclasses import replace
+
+    overrides = {field_name: value for field_name, value in (
+        ("enabled", args.final_pass), ("model", args.pass_model), ("beam_size", args.pass_beam),
+        ("temperature_fallback", args.pass_temperature_fallback), ("hints", args.pass_hints),
+        ("timeout_s", args.pass_timeout)) if value is not None}
+    return replace(config_pass(settings), **overrides)
+
+
+def candidate_pass(settings: FinalPassSettings | None, name: str) -> FinalPassSettings:
+    """The candidate ``name`` of ``PASS_CANDIDATES``: the app's ``[final_pass]`` on, with the candidate's overrides."""
+    from dataclasses import replace
+
+    return replace(config_pass(settings), enabled=True, **PASS_CANDIDATES[name])
 
 
 @dataclass(frozen=True)
@@ -1593,6 +1979,7 @@ def report_lines(summary: dict) -> list[str]:
         lines.append(f"common-sense rule: {'met' if rule['met'] else 'NOT met'} (word errors with name fixes only "
                      f"{rule['word_errors']['off']}, with common sense {rule['word_errors']['on']}; lost, invented "
                      "beyond the fixes and invented vs reference must be 0 in every set)")
+    lines += final_pass_lines(summary.get("final_pass"))
     rewrite = summary.get("rewrite") or {}
     if isinstance(rewrite.get("common_sense_fixes"), bool):
         lines.append(f"correction settings: name fixes {'on' if rewrite.get('name_fixes') else 'off'}, common-sense "
@@ -1607,11 +1994,67 @@ def report_lines(summary: dict) -> list[str]:
     return lines
 
 
+def settings_text(settings: dict) -> str:
+    """A final pass's settings on one line (``pass_settings`` shape)."""
+    if not settings.get("enabled"):
+        return "off"
+    switches = [name for name in ("temperature_fallback", "condition_on_previous_text", "vad_filter")
+                if settings.get(name)]
+    return (f"{settings.get('model')}, beam {settings.get('beam_size')}, hints "
+            f"{'on' if settings.get('hints') else 'off'}, timeout {settings.get('timeout_s')} s"
+            + "".join(f", {name}" for name in switches))
+
+
+def pass_view_line(name: str, view: dict) -> str:
+    """One final-pass run of a set (``pass_block`` shape) on one line."""
+    wer, errors, latency = view["wer"], view["word_errors"], view.get("latency") or {}
+    terms = view.get("term_errors")
+
+    def pair(stage: str) -> str:
+        return f"{_pct(latency.get(stage + '_p50_s'))} / {_pct(latency.get(stage + '_p95_s'))}"
+
+    return (f"{name}: WER transcription {_pct(wer['transcription'])}, text pipeline {_pct(wer['pipeline'])}, full "
+            f"mouse 5 {_pct(wer['full'])} ({errors['full']} of {view['reference_words']}); "
+            + (f"domain-term errors {terms['full']}; " if terms else "")
+            + f"names missing {view['name_errors']['full']} of {view['name_occurrences']}; lost {view['lost']}, "
+              f"invented {view['invented']}; enrichment requested {view['enrichment_requests']}, accepted "
+              f"{view['enriched']}; passes " + (", ".join(f"{k} {v}" for k, v in view["passes"].items()) or "none")
+            + f"; p50/p95 s: streaming final {pair('streaming_final')}, final pass {pair('final_pass')}, text "
+              f"pipeline {pair('text_pipeline')}, correction {pair('correction')}, enrichment {pair('enrichment')}, "
+              f"release to text {pair('release')} (p95 up to {LONG_TAKE_S:g} s {_pct(latency.get(RELEASE_KEY))})")
+
+
+def final_pass_lines(section: object) -> list[str]:
+    """The final pass part of the report: settings, each run per set, GPU snapshots and the choice."""
+    if not isinstance(section, dict):
+        return []
+    lines = [f"final pass (main run): {settings_text(section.get('main') or {})}"]
+    for name, settings in (section.get("candidates") or {}).items():
+        lines.append(f"  candidate {name}: {settings_text(settings)}")
+    for set_name, runs in [*(section.get("sets") or {}).items(), (SAFETY, section.get(SAFETY) or {})]:
+        if runs:
+            lines.append(f"  {set_name}:")
+            lines += [f"    {pass_view_line(key, view)}" for key, view in runs.items()]
+    for state in section.get("gpu") or []:
+        loaded = ", ".join(f"{m.get('name')} {m.get('vram_mib')} MiB" for m in state.get("ollama_loaded") or [])
+        lines.append(f"  GPU {state.get('label')}: " + (
+            f"used {state.get('used_mib')} MiB, free {state.get('free_mib')} MiB; Ollama loaded: {loaded or 'none'}"
+            if "used_mib" in state else str(state.get("error"))))
+    choice = section.get("choice")
+    if isinstance(choice, dict):
+        lines.append(f"  choice: {choice['chosen']} (prompts WER {_pct(choice['prompts_wer'])}; qualifying: "
+                     + (", ".join(k for k, row in choice["runs"].items() if row["qualifies"]) or "none") + ")")
+    return lines
+
+
 def require_lines(summary: dict, out: Callable[[str], None]) -> int:
+    """Each target met or NOT met; exit 1 when an exit-code target is unmet (the prompts WER is only reported)."""
     code = 0
     for met, text in check_targets(summary):
         out(f"{'met' if met else 'NOT met'}: {text}")
         code = code or (0 if met else 1)
+    met, text = prompts_wer_line(summary)
+    out(f"{'met' if met else 'NOT met'}: {text}")
     return code
 
 
@@ -1659,6 +2102,28 @@ def main(
     parser.add_argument("--safety", action="store_true",
                         help="also run each correction variant on every valid dictation take, into Claude Code "
                              "without a project (no enrichment)")
+    final = parser.add_mutually_exclusive_group()
+    final.add_argument("--final-pass", dest="final_pass", action="store_const", const=True, default=None,
+                       help="the main run decodes mouse 5 once more on release (overrides [final_pass] enabled)")
+    final.add_argument("--no-final-pass", dest="final_pass", action="store_const", const=False,
+                       help="the main run types the streaming text (overrides [final_pass] enabled)")
+    parser.add_argument("--pass-model", choices=tuple(MODELS), default=None,
+                        help="the main run's final pass model (overrides [final_pass] model)")
+    parser.add_argument("--pass-beam", type=int, default=None, help="overrides [final_pass] beam_size (1-10)")
+    fallback = parser.add_mutually_exclusive_group()
+    fallback.add_argument("--pass-temperature-fallback", dest="pass_temperature_fallback", action="store_const",
+                          const=True, default=None, help="overrides [final_pass] temperature_fallback")
+    fallback.add_argument("--no-pass-temperature-fallback", dest="pass_temperature_fallback", action="store_const",
+                          const=False, help="overrides [final_pass] temperature_fallback")
+    pass_hints = parser.add_mutually_exclusive_group()
+    pass_hints.add_argument("--pass-hints", dest="pass_hints", action="store_const", const=True, default=None,
+                            help="overrides [final_pass] hints")
+    pass_hints.add_argument("--no-pass-hints", dest="pass_hints", action="store_const", const=False,
+                            help="overrides [final_pass] hints")
+    parser.add_argument("--pass-timeout", type=float, default=None, help="overrides [final_pass] timeout_s")
+    parser.add_argument("--pass-candidates", default=None,
+                        help="also measure these final passes against the streaming text: 'all' or a comma list of "
+                             + ", ".join(PASS_CANDIDATES))
     args = parser.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -1675,6 +2140,11 @@ def main(
             return 2
         return require_lines(summary, out)
 
+    try:
+        candidates = pass_candidates(args.pass_candidates)
+    except ValueError as exc:
+        out(f"error: {exc}")
+        return 2
     try:
         settings = load_settings(args.config)
         if args.dry_run:
@@ -1723,39 +2193,75 @@ def main(
     except SettingsError as exc:
         out(f"error: {exc}")
         return 2
+    try:
+        main_pass = main_pass_settings(product.final_pass, args)
+        candidate_settings = {name: candidate_pass(product.final_pass, name) for name in candidates}
+    except ValueError as exc:
+        out(f"error: {exc}")
+        return 2
+    # Every final pass to decode: the main run's and the candidates' (identical settings decode once).
+    decode: dict[str, FinalPassSettings] = {}
+    alias: dict[str, str] = {}
+    for key, wanted in {**({APP: main_pass} if main_pass.enabled else {}), **candidate_settings}.items():
+        alias[key] = next((known for known, value in decode.items() if value == wanted), key)
+        decode.setdefault(alias[key], wanted)
+    main_key = alias.get(APP)
+
     streamer = None
     transcripts: dict[str, list[tuple[str, float]]] = {}  # today's hints
     relevance: dict[str, list[tuple[str, float]]] = {}  # the Phase 7 project hints: before
     heard: dict[str, list[tuple[str, float]]] = {}  # the heard-term hint source: after
+    outcomes: dict[str, list[dict]] = {}  # each take's final passes, in the replay of the app's hints
     switches: dict[str, list[int]] = {}
     sources: dict[str, int] = {}
     reasons: dict[str, list[str]] = {}
     safety: list[tuple[str, float]] = []  # every dictation take with today's hints (--safety)
+    safety_outcomes: list[dict] = []
     project_chars: list[int] = []
     project_words: set[str] = set()  # the project hints' words: the pack's terms are real project terms
+    gpu: list[dict] = []
 
-    def replay(takes: Sequence[Take], per_take: Sequence[object | None],
-               otherwise: Sequence[tuple[str, float]]) -> tuple[list[tuple[str, float]], list[int]]:
-        """Each take with its own hints; a take without any keeps ``otherwise`` (no replay)."""
+    def replay(takes: Sequence[Take], per_take: Sequence[object | None], otherwise: Sequence[tuple[str, float]],
+               otherwise_passes: Sequence[dict]) -> tuple[list[tuple[str, float]], list[int], list[dict]]:
+        """Each take with its own hints; a take without any keeps ``otherwise`` and its passes (no replay)."""
         chosen = [(take, h) for take, h in zip(takes, per_take, strict=True) if h is not None]
-        pairs, counts = split_streamed(streamer([t for t, _ in chosen], [h for _, h in chosen]) if chosen else [])
-        again, switched = iter(pairs), iter(counts)
-        return ([next(again) if h is not None else earlier for h, earlier in zip(per_take, otherwise, strict=True)],
-                [next(switched) if h is not None else 0 for h in per_take])
+        items = streamer([t for t, _ in chosen], [h for _, h in chosen]) if chosen else []
+        pairs, counts = split_streamed(items)
+        again, switched, passed = iter(pairs), iter(counts), iter(split_passes(items))
+        texts, moves, finals = [], [], []
+        for h, before_pair, before_passes in zip(per_take, otherwise, otherwise_passes, strict=True):
+            texts.append(next(again) if h is not None else before_pair)
+            moves.append(next(switched) if h is not None else 0)
+            finals.append(next(passed) if h is not None else before_passes)
+        return texts, moves, finals
+
+    def snapshot(label: str) -> None:
+        take = getattr(streamer, "snapshot", None)
+        if decode and take is not None:
+            try:
+                gpu.append(take(label))
+            except Exception as exc:  # noqa: BLE001 - a snapshot is only reported
+                gpu.append({"label": label, "error": type(exc).__name__})
 
     try:
-        streamer, stream_options = streamer_factory(hints)
-        streamer((work[0][1] if work else loaded.safety_takes)[:1])  # warm-up: loads the model and fills the caches
+        streamer, stream_options = streamer_factory(hints, decode) if decode else streamer_factory(hints)
+        streamer((work[0][1] if work else loaded.safety_takes)[:1])  # warm-up: loads the models and fills the caches
+        snapshot("Whisper models loaded, before the replay")
+        today_passes: dict[str, list[dict]] = {}
         for name, takes, _ in work:
-            transcripts[name] = split_streamed(streamer(takes))[0]
+            items = streamer(takes)
+            transcripts[name] = split_streamed(items)[0]
+            today_passes[name] = split_passes(items)
         if loaded.safety_takes:
             # Into Claude Code without a project the app gives today's hints: a take already heard so is reused.
-            known = {take.id: pair for name, takes, _ in work if name == DICTATION
-                     for take, pair in zip(takes, transcripts[name], strict=True)}
+            known = {take.id: (pair, passed) for name, takes, _ in work if name == DICTATION
+                     for take, pair, passed in zip(takes, transcripts[name], today_passes[name], strict=True)}
             missing = [take for take in loaded.safety_takes if take.id not in known]
+            items = streamer(missing) if missing else []
             known.update(zip((take.id for take in missing),
-                             split_streamed(streamer(missing))[0] if missing else [], strict=True))
-            safety = [known[take.id] for take in loaded.safety_takes]
+                             zip(split_streamed(items)[0], split_passes(items), strict=True), strict=True))
+            safety = [known[take.id][0] for take in loaded.safety_takes]
+            safety_outcomes = [known[take.id][1] for take in loaded.safety_takes]
         for name, takes, _ in work:
             per_take = take_hints(takes, product)
             reasons[name] = [reason for _, reason in per_take]
@@ -1764,8 +2270,10 @@ def main(
             sources[name] = sum(h is not None for h in after_hints)
             project_chars += [len(getattr(h, "hotwords", "") or "") for h in before_hints if h is not None]
             project_words.update(word for h, _ in per_take for word in hint_terms(h))
-            relevance[name] = replay(takes, before_hints, transcripts[name])[0]
-            heard[name], switches[name] = replay(takes, after_hints, relevance[name])
+            relevance[name], _, relevance_passes = replay(takes, before_hints, transcripts[name], today_passes[name])
+            heard[name], switches[name], outcomes[name] = replay(takes, after_hints, relevance[name],
+                                                                 relevance_passes)
+        snapshot("Whisper models loaded, after the replay")
     except (EngineUnavailable, EngineError) as exc:
         out(f"error: {' '.join(str(exc).split())[:200]}")
         return 2
@@ -1774,16 +2282,22 @@ def main(
         if close is not None:
             close()
 
-    results: list[TakeResult] = []  # after: the heard-term hints
+    results: list[TakeResult] = []  # after: the heard-term hints (with the main run's final pass when on)
     previous: list[TakeResult] = []  # before: the Phase 7 project hints
     earlier: list[TakeResult] = []  # today's hints
-    extra: dict[str, list[TakeResult]] = {}  # the correction variants and the safety set, by output name
+    extra: dict[str, list[TakeResult]] = {}  # the correction variants, the final passes and the safety set
+    pass_sets: dict[str, dict] = {}
     loaded_before = model_state(product)
     for name, takes, cases in work:
         today = measure(name, takes, cases, transcripts[name], product)
         before = measure_after(name, takes, cases, relevance[name], reasons[name], today, product)
-        after = measure_after(name, takes, cases, heard[name], reasons[name], today, product,
-                              switches=switches[name], reuse=(before,))
+        streaming = measure_after(name, takes, cases, heard[name], reasons[name], today, product,
+                                  switches=switches[name], reuse=(before,))
+        after, main_texts = streaming, heard[name]
+        if main_key is not None:
+            main_texts, main_finals = pass_rows(heard[name], outcomes[name], main_key)
+            after = measure_after(name, takes, cases, main_texts, reasons[name], today, product,
+                                  switches=switches[name], reuse=(streaming, before), passes=main_finals)
         earlier.extend(today)
         previous.extend(before)
         results.extend(after)
@@ -1794,19 +2308,46 @@ def main(
         blocks[name] = set_block(after, counts, product.info, terms=name == SET_NAME)
         blocks[name]["relevance_hints"] = before_block(before, terms=name == SET_NAME)
         blocks[name]["today_hints"] = before_block(today, terms=name == SET_NAME)
-        blocks[name]["heard_hints"] = heard_block(after, before, sources[name])
+        blocks[name]["heard_hints"] = heard_block(streaming, before, sources[name])
+        if decode:
+            runs = {STREAMING: streaming, **({APP: after} if main_key is not None else {})}
+            for candidate in candidate_settings:
+                texts, finals = pass_rows(heard[name], outcomes[name], alias[candidate])
+                runs[candidate] = measure_after(name, takes, cases, texts, reasons[name], today, product,
+                                                switches=switches[name], reuse=(after, streaming, before),
+                                                passes=finals)
+            pass_sets[name] = {key: pass_block(rows, terms=name == SET_NAME) for key, rows in runs.items()}
+            for key, rows in runs.items():
+                if key != APP:
+                    extra.setdefault(f"pass-{key}", []).extend(rows)
         if args.variants:
-            runs = measure_variants(name, takes, cases, heard[name], reasons[name], after, product)
+            runs = measure_variants(name, takes, cases, main_texts, reasons[name], after, product)
             blocks[name]["variants"] = variants_block(runs, terms=name == SET_NAME)
             blocks[name]["variant_app"] = app_variant(product.rewriter)
             for variant, rows in runs.items():
                 extra.setdefault(variant, []).extend(rows)
     safety_summary = None
+    safety_passes: dict[str, dict] = {}
     if loaded.safety_takes:
-        runs = measure_safety(loaded.safety_takes, safety, product)
-        safety_summary = safety_block(runs, dataset_counts(loaded.dictation))
-        safety_summary["variant_app"] = app_variant(product.rewriter)
+        app = app_variant(product.rewriter)
+        main_texts, main_finals = (pass_rows(safety, safety_outcomes, main_key) if main_key is not None
+                                   else (safety, None))
+        runs = measure_safety(loaded.safety_takes, main_texts, product, passes=main_finals)
+        safety_summary = safety_block(runs, dataset_counts(loaded.dictation), app)
+        safety_summary["variant_app"] = app
         extra.update({f"{SAFETY}-{variant}": rows for variant, rows in runs.items()})
+        if decode:
+            main_run = runs.get(app) or []
+            streaming = (main_run if main_key is None else
+                         measure_safety_pass(loaded.safety_takes, *pass_rows(safety, safety_outcomes, None),
+                                             product, reuse=(main_run,)))
+            pass_runs = {STREAMING: streaming, **({APP: main_run} if main_key is not None else {})}
+            for candidate in candidate_settings:
+                pass_runs[candidate] = measure_safety_pass(
+                    loaded.safety_takes, *pass_rows(safety, safety_outcomes, alias[candidate]), product,
+                    reuse=(main_run, streaming))
+            safety_passes = {key: pass_block(rows) for key, rows in pass_runs.items()}
+            extra.update({f"{SAFETY}-pass-{key}": rows for key, rows in pass_runs.items() if key != APP})
     ordered = {name: blocks[name] for name in SETS if name in blocks}
     engine = {**stream_options, "hints": {"count": len(hints), "chars": sum(len(h) for h in hints)},
               "project_hints": {"takes": len(project_chars),
@@ -1819,7 +2360,15 @@ def main(
     rewrite["name_fixes"] = bool(getattr(product.rewriter, "name_fixes", autorewrite.NAME_FIXES))
     rewrite["common_sense_fixes"] = bool(getattr(product.rewriter, "common_sense_fixes", False))
     rewrite["first_call"] = first_call(earlier, loaded_before)
-    summary = build_summary(ordered, engine, rewrite, safety_summary)
+    final_pass: dict = {"main": pass_settings(main_pass)}
+    if decode:
+        final_pass.update(candidates={name: pass_settings(value) for name, value in candidate_settings.items()},
+                          sets={name: pass_sets[name] for name in SETS if name in pass_sets}, gpu=gpu)
+        if safety_passes:
+            final_pass[SAFETY] = safety_passes
+        prompts_errors = (ordered.get(SET_NAME) or {}).get("term_errors")
+        final_pass["choice"] = pass_choice(final_pass, prompts_errors["today"] if prompts_errors else None)
+    summary = build_summary(ordered, engine, rewrite, safety_summary, final_pass)
 
     texts = private_texts([*results, *previous, *earlier, *(r for rows in extra.values() for r in rows)])
     names = [entry.text for entry in vocabulary.names]
@@ -1836,7 +2385,7 @@ def main(
     texts += phrases
     names += sorted(projects) + sorted(terms)
     # A pack term spelled as only the project writes it is refused too; common words would refuse at random.
-    names += sorted(word for word in project_words if distinctive_term(word))
+    names += refused_project_words(project_words)
     run_dir = Path(results_dir) / "prompts" / time.strftime("%Y%m%d-%H%M%S")
     try:
         write_private(run_dir, results, results_dir, before=previous, today=earlier, extra=extra)

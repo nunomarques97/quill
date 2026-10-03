@@ -1589,6 +1589,12 @@ class FinalPassAppTest(RewriteCase):
         self.ollama.error = OllamaError("Ollama unreachable: URLError")  # the correction types its input as it is
         self.pass_model = PassModel()
 
+    def make_config(self, **changes):
+        # The example ships the pass off; these tests turn it on as a user would.
+        config = super().make_config(**changes)
+        return config if "final_pass" in changes else dataclasses.replace(
+            config, final_pass=dataclasses.replace(config.final_pass, enabled=True))
+
     def pass_app(self, config=None, **parts):
         config = config or self.make_config(autorewrite=dataclasses.replace(self.config.autorewrite, min_words=10))
         return self.make_app(config, rewrite_client=self.ollama, layout=FakeLayout(),
@@ -2265,6 +2271,9 @@ class CheckTest(unittest.TestCase):
 
     def test_the_final_pass_model_is_checked_but_not_required(self):
         self.ready_files()
+        self.assertEqual({line.name: line for line in self.check()}["final pass"].detail, "off")  # the example's
+        self.config = dataclasses.replace(self.config, final_pass=dataclasses.replace(
+            self.config.final_pass, enabled=True))
         line = {line.name: line for line in self.check()}["final pass"]
         self.assertEqual((line.ok, line.required), (False, False))
         self.assertIn("large-v3: files missing in models/faster-whisper-large-v3; mouse 5 types the streaming "

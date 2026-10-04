@@ -290,6 +290,31 @@ Para a desligar, apague a linha ou escreva `enabled = false` e desligue e volte 
 - Em cada ditado com o botão 5 no Claude Code, com a passagem ligada: `final pass ok, hints source, audio … s, wait … ms, compute … ms, total … ms`, e a linha `release to typed` acrescenta `final pass ok … ms`.
 - `ok` quer dizer que foi enviado o texto da passagem. Qualquer outro motivo quer dizer que foi enviado o texto do streaming: `not_claude_code` (outra janela), `not_ready` (o modelo ainda está a carregar), `timeout` (passou do tempo máximo), `no_speech` (não ouviu fala), `empty` ou `pass_empty_text` (a passagem não deu texto), `load_error`, `model_error` ou `pass_failed` (erro do modelo), `stopped` (o Quill estava a desligar).
 
+### Última mensagem do Claude como contexto (Fase 12, ligada)
+
+Quando responde ao Claude Code com o botão 5, muitas vezes está a responder ao que o Claude acabou de dizer e repete palavras dele. Por isso, com o botão 5 no Claude Code e o projeto reconhecido, o Quill lê a última mensagem do Claude nessa conversa e usa as palavras dela para ouvir e corrigir melhor o que disse. **Nunca copia a mensagem do Claude para o seu texto.**
+
+- **O que muda:** o Whisper pode usar uma palavra da mensagem do Claude como dica, mas só depois de ouvir algo parecido, e no mesmo espaço das dicas de hoje. A correção pode trocar uma palavra mal ouvida por uma palavra da mensagem do Claude que soe parecido e faça sentido na frase. Nunca acrescenta palavras que não disse e nunca mexe em nomes, números, negações («não», «sem») nem condições («se»).
+- **Respostas curtas:** se a última mensagem do Claude fazia uma pergunta ou dava opções (por exemplo «1, 2 ou 3?») e a sua resposta tem até 25 palavras, o texto é só corrigido, sem ser organizado em «Objetivo», «Pedido» e as outras partes. O indicador mostra "Resposta ao Claude; foi o texto corrigido, sem enriquecer".
+- **O que lê e o que não lê:** só lê, no seu PC e sem alterar nada, os ficheiros das conversas que o próprio Claude Code guarda na pasta de definições dele. Para saber qual é a conversa certa, usa a nota que o aviso «Claude acabou» deixa em `local\claude-pointers` (só para as conversas em que está a trabalhar, não para as execuções automáticas). Sem essa nota, usa a conversa mais recente desse projeto; se no mesmo projeto estiver a correr uma execução automática (por exemplo a FORJA), essa pode ser a mais recente, e então as palavras vêm dessa execução. Lê só o fim da conversa e só o texto que o Claude lhe mostrou (sem ferramentas nem resultados), no máximo 4000 caracteres e 40 palavras. Uma conversa sem atividade há mais de 12 horas não conta. Nada sai do PC e o registo nunca guarda o texto, o título nem a pasta.
+- **Onde não muda nada:** o botão 5 noutras janelas, o botão 4, o botão do meio, o modo comando e os comandos de voz (F9) nunca leem a mensagem do Claude. Sem projeto reconhecido, também não.
+
+Para a desligar, escreva em `local\quill.toml` e desligue e volte a ligar o Quill:
+
+    [claude_code]
+    last_reply_context = false
+
+Desligada, o botão 5 fica exatamente como antes e o aviso «Claude acabou» deixa de deixar notas. Para a voltar a ligar, apague a linha ou escreva `true`, e desligue e volte a ligar o Quill. Os limites (`last_reply_max_chars`, `last_reply_max_terms`, `last_reply_max_age_h`) estão explicados em `quill.example.toml`. Não é preciso instalar outra vez o aviso do Claude Code.
+
+**O que o registo diz** (`local\logs\quill.log`, só motivos, contagens e tempos, nunca o texto):
+
+- Em cada ditado com o botão 5 no Claude Code: `last reply ok (source pointer, 40 terms, 2 options, 31 ms)`. `source pointer` quer dizer que encontrou a conversa pela nota do aviso; `source newest`, pela conversa mais recente do projeto. Outros motivos querem dizer que o ditado seguiu sem a mensagem do Claude: `no_project` (projeto não reconhecido), `stale` (conversa com mais de 12 horas), `no_session_dir` ou `no_session_file` (o Claude Code não tem conversas desse projeto), `no_text` ou `no_terms` (a mensagem não tinha palavras úteis), `linked`, `outside` ou `bad_path` (ficheiro recusado por segurança), `timeout` (demorou demais).
+- A linha `autorewrite:` acrescenta `N reply terms` quando a correção recebeu palavras da mensagem do Claude.
+- `.venv\Scripts\python -m quill --check` mostra a linha `last reply context`: `off` (desligada) ou `on; Claude Code projects folder readable, N project folders`.
+- Para ver, sem ditar, o que cada projeto conhecido daria (só números, os projetos aparecem numerados): `.venv\Scripts\python -m quill.claude_reply --dry-run`.
+
+Detalhes e números em [research/FASE12.md](research/FASE12.md).
+
 ## Acrescentar palavras ao vocabulário
 
 O vocabulário pessoal fica em `local\vocabulary.toml`, que nunca vai para o Git. Serve para nomes de projeto e termos técnicos que o Quill ouve mal (por exemplo, termos de trading).

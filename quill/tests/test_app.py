@@ -2751,6 +2751,18 @@ class ReplyAppTest(RewriteCase):
                              context_packs=self.packs if packs else None,
                              reply_reader=self.reader if reader else None)
 
+    def hold_with_hints(self, quill):
+        """Hold mouse 5 into ``quill`` and speak only once its session decodes with its hints."""
+        clicks, made, done = len(self.api.mouse_calls), len(self.captures.made), len(quill.sessions.outcomes)
+        self.assertEqual(self.button(True, XBUTTON2), 1)
+        wait_for(lambda: len(self.captures.made) > made, "the capture to start")
+        wait_for(lambda: len(self.api.mouse_calls) > clicks, "the click to focus")
+        hold = quill.sessions._active
+        wait_for(lambda: getattr(hold.asr, "hints", None) is not None, "the project hints")
+        self.captures.made[-1].push(speech(WORDS))
+        self.assertEqual(self.button(False, XBUTTON2), 1)
+        self.outcomes(done + 1, quill)
+
     def assert_private(self, text):
         for private in (*REPLY_WORDS, "invented", "carteira", str(self.project), self.HUB_TITLE, "Code.exe"):
             self.assertNotIn(private.casefold(), text.casefold())
@@ -2834,7 +2846,7 @@ class ReplyAppTest(RewriteCase):
                 self.in_the_panel()
                 self.start(quill)
                 prompts, calls, typed = len(self.model.calls), len(self.ollama.calls), len(self.api.events)
-                self.hold(WORDS, which=XBUTTON2, quill=quill)
+                self.hold_with_hints(quill)
                 quill.stop()
                 outcome = quill.sessions.outcomes[-1]
                 runs.append(((outcome.reason, outcome.enrichment), set(self.prompts()[prompts:]),  # partials vary

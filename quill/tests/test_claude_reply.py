@@ -102,6 +102,7 @@ class Case(unittest.TestCase):
         kwargs.setdefault("config_dir", self.config)
         kwargs.setdefault("pointers_dir", self.pointers)
         kwargs.setdefault("wall", lambda: self.now)
+        kwargs.setdefault("clock", lambda: 0.0)  # a fixed clock: a loaded machine never times the lookup out
         return R.last_reply(folder, **kwargs)
 
 
@@ -525,7 +526,7 @@ class ReplyContextTest(Case):
 
         def read(folder: object, **kwargs: object) -> R.ReplyLookup:
             return R.last_reply(folder, config_dir=self.config, pointers_dir=self.pointers,
-                                wall=lambda: self.now, **kwargs)
+                                wall=lambda: self.now, clock=lambda: 0.0, **kwargs)
 
         found = R.reply_context(FOLDER, self.settings(), reader=read)
         self.assertEqual((found.reason, found.source, found.options), (R.OK, R.SOURCE_NEWEST, 2))

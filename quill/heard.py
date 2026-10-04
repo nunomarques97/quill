@@ -6,6 +6,13 @@ streaming session (``quill.streaming.Session``) calls it with the text heard
 so far (committed and tentative words) after each partial and decodes the
 later windows with the hints it returns.
 
+With the last Claude Code reply of the target's session (``reply_terms``,
+from ``quill.reply_terms``), its terms are heard-only candidates: they are
+matched like the pack terms but enter the project part only once heard
+(after the pack terms they tie with), never with nothing heard. A source
+without a pack (``project`` empty, no pack terms) then gives exactly today's
+vocabulary hints until a reply term is heard.
+
 The hints are today's mouse 5 hints (``quill.whisper.project_terms``: the
 project name, its distinctive pack terms, then the others in the pack's
 relevance order, at most ``PROJECT_HINT_MAX_CHARS``, inside the whole
@@ -145,16 +152,19 @@ class HeardHints:
     ``initial`` (also ``prompt``, ``hotwords`` and ``language``) are the hints
     with nothing heard: today's project hints. Every term heard so far stays
     heard (see the module docstring), so one source serves one session.
+    ``reply_terms`` (the last Claude Code reply's) are matched after ``terms``
+    and reach the hints only once heard.
     """
 
     def __init__(self, project: str, terms: Sequence[str], vocabulary: object, generic_terms: Sequence[str] = (),
-                 *, matcher: HeardMatcher | None = None) -> None:
+                 *, matcher: HeardMatcher | None = None, reply_terms: Sequence[str] = ()) -> None:
         self.project = project
         self.terms = tuple(terms)
+        self.reply_terms = tuple(reply_terms)  # heard-only: never in the hints until heard
         self.vocabulary = vocabulary
         self.generic_terms = tuple(generic_terms)
         self.today = whisper_hints(vocabulary, (), self.generic_terms)
-        self.matcher = matcher if matcher is not None else HeardMatcher(self.terms)
+        self.matcher = matcher if matcher is not None else HeardMatcher(self.terms + self.reply_terms)
         self._heard: dict[int, int] = {}  # every term heard in this session (by index): the fewest edits
         self._lock = threading.Lock()  # asked from the hint thread and the transcription worker
         self.initial = self("")

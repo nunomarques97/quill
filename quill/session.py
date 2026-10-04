@@ -59,6 +59,20 @@ the number of hint switches is logged, never the hints. Every other session keep
 the transcriber's vocabulary hints. Hints that cannot be built never stop
 the capture.
 
+With ``last_reply(folder)`` (``quill.claude_reply.reply_context``: the last
+reply of the folder's Claude Code session as a
+``quill.reply_terms.ReplyContext``; None: no reply context), a mouse 5 hold
+looks the reply up at most once: on the hint thread, through the lookup
+``send_hints(target, lookup)`` is given (its terms are heard-only hint
+candidates), else at the release, for a target in Claude Code with a project
+folder. The release waits for a lookup the hint thread started at most
+``REPLY_WAIT_S`` and goes on without the reply after that; it never looks up
+again. The reply reaches the correction and the enrichment
+(``rewriter.rewrite(..., reply=...)``) of that hold only. One line per hold
+gives the lookup's reason code, source, counts and milliseconds; no other
+trigger and no other window ever looks a reply up, and a failing lookup
+leaves the dictation on its path without a reply.
+
 A ``send_polished`` (mouse 5) session may get a final pass
 (``final_pass(asr, final, target)``, ``quill.finalpass``): after its
 streaming final it returns the text to use (the pass text, or the streaming
@@ -184,6 +198,10 @@ PREVIOUS_PENDING = "previous_pending"  # a press while an earlier session is sti
 # Final pass reasons the session adds to those of ``quill.finalpass`` (the streaming text is typed).
 PASS_FAILED = "pass_failed"  # the final pass raised or returned no outcome
 PASS_EMPTY_TEXT = "pass_empty_text"  # the pass text left nothing to type after the text pipeline
+# Reason code of a mouse 5 hold into Claude Code without a project folder: no reply is looked up.
+REPLY_NO_PROJECT = "no_project"
+# How long the release waits for the last reply lookup the hint thread started.
+REPLY_WAIT_S = 0.3
 
 # What the indicator says (European Portuguese); the reason codes stay in the logs.
 MESSAGES = {
@@ -362,6 +380,18 @@ class _Hold:
     audio_bytes: int = 0
     reviewing: bool = False
     enriching: bool = False
+    reply: _Reply = field(default_factory=lambda: _Reply())
+
+
+@dataclass(eq=False)
+class _Reply:
+    """The last Claude Code reply of one mouse 5 hold: looked up at most once (hint thread or release)."""
+
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    done: threading.Event = field(default_factory=threading.Event)
+    claimed: bool = False  # a lookup started (or was decided against): never a second one
+    folder: object | None = field(default=None, repr=False)
+    context: object | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -458,6 +488,11 @@ class SessionManager:
     returns ``(outcome, window)``: a ``quill.finalpass.FinalPassOutcome`` (text,
     reason, ``log_fields()``) and the target window it described (given to the
     pipeline as ``window``).
+    ``last_reply(folder)`` (None: no reply context) returns the reply context
+    of a project folder (``quill.claude_reply.ReplyFound``: ``context`` and
+    ``log_fields()``); with it ``send_hints`` is called as
+    ``send_hints(target, lookup)``, where ``lookup(folder)`` gives the hold's
+    reply context (see the module docstring).
     """
 
     def __init__(self, *, transcriber: object, capture_factory: Callable[[Callable[[bytes], None]], object],
@@ -475,6 +510,7 @@ class SessionManager:
                  send_hints: Callable[[Target], object | None] | None = None,
                  run_hints: Callable[[Callable[[], None]], None] | None = None,
                  final_pass: Callable[[object, object, Target], tuple[object, object]] | None = None,
+                 last_reply: Callable[[Path], object] | None = None, reply_wait_s: float = REPLY_WAIT_S,
                  pending_limit_s: float = PENDING_LIMIT_S,
                  clock: Callable[[], float] = time.perf_counter,
                  final_timeout_s: float = FINAL_TIMEOUT_S, poll_s: float = POLL_S) -> None:
@@ -501,6 +537,8 @@ class SessionManager:
         self.send_hints = send_hints
         self.run_hints = run_hints or _in_thread
         self.final_pass = final_pass
+        self.last_reply = last_reply
+        self.reply_wait_s = reply_wait_s
         self.pending_limit_s = pending_limit_s
         self.clock = clock
         self.final_timeout_s = final_timeout_s
@@ -766,7 +804,10 @@ class SessionManager:
     def _apply_hints(self, hold: _Hold, target: Target) -> None:
         """The project hints of a mouse 5 session, given to its transcription unless it was released (hint thread)."""
         try:
-            hints = self.send_hints(target)
+            if self.last_reply is not None:
+                hints = self.send_hints(target, lambda folder: self._reply_for(hold, folder))
+            else:
+                hints = self.send_hints(target)
         except Exception as exc:  # noqa: BLE001 - the vocabulary hints decode instead
             log.error("session %d: decoding hints failed (%s)", hold.number, type(exc).__name__)
             return
@@ -781,6 +822,43 @@ class SessionManager:
                 log.error("session %d: decoding hints not applied (%s)", hold.number, type(exc).__name__)
                 return
         log.info("session %d: project hints %s", hold.number, "applied" if applied else "too late")
+
+    def _reply_for(self, hold: _Hold, folder: Path | None) -> object | None:
+        """The reply context of ``hold`` for project ``folder`` (hint thread or finalizer); None: no reply.
+
+        The first call looks it up (``folder`` None: none, logged as
+        ``REPLY_NO_PROJECT``); a later call waits for that lookup at most
+        ``reply_wait_s`` and gets its context only for the same folder.
+        """
+        slot = hold.reply
+        with slot.lock:
+            first = not slot.claimed
+            if first:
+                slot.claimed, slot.folder = True, folder
+        if not first:
+            if not slot.done.wait(self.reply_wait_s):
+                log.info("session %d: last reply not ready after %.0f ms; going on without it", hold.number,
+                         self.reply_wait_s * 1000)
+                return None
+            if slot.context is not None and slot.folder != folder:
+                log.info("session %d: last reply of another project folder; going on without it", hold.number)
+                return None
+            return slot.context
+        context = None
+        try:
+            if folder is None:
+                log.info("session %d: last reply %s", hold.number, REPLY_NO_PROJECT)
+            else:
+                found = self.last_reply(folder)
+                log.info("session %d: %s", hold.number, found.log_fields())
+                context = found.context or None
+        except Exception as exc:  # noqa: BLE001 - never lose the dictation for its context
+            log.error("session %d: last reply failed (%s)", hold.number, type(exc).__name__)
+            context = None
+        finally:
+            slot.context = context
+            slot.done.set()
+        return context
 
     def _cancel(self, reason: str) -> None:
         with self._lock:
@@ -928,8 +1006,11 @@ class SessionManager:
             force = hold.action == SEND_POLISHED
             # Mouse 5 into Claude Code: the project's context pack, then the enrichment.
             polish = force and processed.claude_code
+            reply = None
+            if polish and self.rewriter is not None and self.last_reply is not None:
+                reply = self._reply_for(hold, processed.project_folder)
             if self.rewriter is not None and (force or self._wants_rewrite(hold, processed)):
-                rewrite = self._rewrite(hold, processed, force, polish)
+                rewrite = self._rewrite(hold, processed, force, polish, reply)
                 if rewrite.rewritten:
                     # The original is always the dictation before correction and enrichment.
                     text, original = rewrite.text, processed.text
@@ -1018,10 +1099,11 @@ class SessionManager:
             return False
 
     def _rewrite(self, hold: _Hold, processed: Processed, force: bool = False,
-                 polish: bool = False) -> autorewrite.AutoRewrite:
+                 polish: bool = False, reply: object | None = None) -> autorewrite.AutoRewrite:
         """The rewrite of a long dictation (any dictation with ``force``); the original text on every failure.
 
-        ``polish`` (mouse 5 into Claude Code) adds the project's context pack and the enrichment.
+        ``polish`` (mouse 5 into Claude Code) adds the project's context pack and the enrichment, and
+        ``reply`` (the last Claude Code reply's context, when there is one) goes with them.
         """
         with self._lock:
             hold.reviewing = True
@@ -1032,6 +1114,8 @@ class SessionManager:
             if polish:
                 extra = {"pack": self._pack(hold, processed), "enrich_prompt": True, "context": True,
                          "on_enrich": lambda: self._enriching(hold)}
+                if reply:
+                    extra["reply"] = reply
             result = self.rewriter.rewrite(processed.text, audio_s=hold.audio_bytes / AUDIO_BYTES_PER_S,
                                            profile=processed.rewrite_profile or processed.profile,
                                            keep=processed.keep, project=processed.project, force=force, **extra)

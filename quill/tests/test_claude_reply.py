@@ -444,5 +444,186 @@ class PrivacyTest(Case):
         self.assertEqual((found.reason, found.text), (R.FAILED, None))
 
 
+OFFER = ("Encontrei dois caminhos no brumaflex_loader.py.\n\n"
+         "1. Reescrever o Travolino agora\n2. Deixar o Mirquelo para depois\n\nQual preferes?")
+
+
+class Clock:
+    def __init__(self, step: float = 0.012) -> None:
+        self.now, self.step = 100.0, step
+
+    def __call__(self) -> float:
+        self.now += self.step
+        return self.now
+
+
+class ReplyContextTest(Case):
+    """``reply_context``: the derived context of a mouse 5 hold with the ``[claude_code]`` caps."""
+
+    def settings(self, **changes: object) -> SimpleNamespace:
+        values = dict(last_reply_context=True, last_reply_max_chars=4000, last_reply_max_terms=40,
+                      last_reply_max_age_h=12)
+        values.update(changes)
+        return SimpleNamespace(**values)
+
+    def reader(self, text: str | None = OFFER, reason: str = R.OK, source: str | None = R.SOURCE_POINTER):
+        calls = []
+
+        def read(folder: object, **kwargs: object) -> R.ReplyLookup:
+            calls.append((folder, kwargs))
+            return R.ReplyLookup(reason, source, text=text)
+
+        return read, calls
+
+    def test_a_reply_gives_its_terms_options_and_a_log_line_of_counts(self) -> None:
+        read, calls = self.reader()
+        found = R.reply_context(FOLDER, self.settings(), reader=read, clock=Clock())
+        self.assertEqual(calls, [(FOLDER, {"max_chars": 4000, "max_age_s": 12 * 3600.0})])
+        self.assertEqual((found.reason, found.source, found.options, found.ms), (R.OK, R.SOURCE_POINTER, 2, 12))
+        self.assertTrue(found.context.asks)
+        self.assertEqual(found.terms, len(found.context.terms))
+        self.assertIn("Travolino", found.context.terms)
+        self.assertEqual(found.log_fields(),
+                         f"last reply ok (source pointer, {found.terms} terms, 2 options, 12 ms)")
+        for shown in (found.log_fields(), repr(found), str(found)):
+            self.assertNotIn("brumaflex", shown.casefold())
+            self.assertNotIn("travolino", shown.casefold())
+            self.assertNotIn("invented", shown.casefold())
+
+    def test_the_caps_come_from_the_settings(self) -> None:
+        read, calls = self.reader()
+        found = R.reply_context(FOLDER, self.settings(last_reply_max_chars=200, last_reply_max_terms=2,
+                                                      last_reply_max_age_h=1), reader=read)
+        self.assertEqual(calls[0][1], {"max_chars": 200, "max_age_s": 3600.0})
+        self.assertEqual(found.terms, 2)
+        self.assertEqual(len(found.context.terms), 2)
+
+    def test_no_reply_or_no_terms_gives_none_with_its_reason(self) -> None:
+        cases = {
+            "no session file": (dict(text=None, reason=R.NO_FILE, source=None), R.NO_FILE, None),
+            "stale": (dict(text=None, reason=R.STALE, source=R.SOURCE_NEWEST), R.STALE, R.SOURCE_NEWEST),
+            "a reply without terms": (dict(text="Ok."), R.NO_TERMS, R.SOURCE_POINTER),
+        }
+        for label, (kwargs, reason, source) in cases.items():
+            with self.subTest(label):
+                read, _ = self.reader(**kwargs)
+                found = R.reply_context(FOLDER, self.settings(), reader=read)
+                self.assertEqual((found.reason, found.source, found.context, found.terms, found.options),
+                                 (reason, source, None, 0, 0))
+
+    def test_a_failing_reader_gives_none_and_never_raises(self) -> None:
+        def broken(folder: object, **kwargs: object) -> R.ReplyLookup:
+            raise OSError("fake")
+
+        found = R.reply_context(FOLDER, self.settings(), reader=broken)
+        self.assertEqual((found.reason, found.context), (R.FAILED, None))
+        found = R.reply_context(FOLDER, object(), reader=self.reader()[0])  # settings without the caps
+        self.assertEqual((found.reason, found.context), (R.FAILED, None))
+
+    def test_the_real_reader_on_a_temporary_config(self) -> None:
+        self.session("a.jsonl", lines(user("Pergunta inventada"), assistant(text(OFFER))))
+
+        def read(folder: object, **kwargs: object) -> R.ReplyLookup:
+            return R.last_reply(folder, config_dir=self.config, pointers_dir=self.pointers,
+                                wall=lambda: self.now, **kwargs)
+
+        found = R.reply_context(FOLDER, self.settings(), reader=read)
+        self.assertEqual((found.reason, found.source, found.options), (R.OK, R.SOURCE_NEWEST, 2))
+        found = R.reply_context("C:\\Invented\\other", self.settings(), reader=read)
+        self.assertEqual((found.reason, found.context), (R.NO_SESSIONS, None))
+
+
+class ProjectsStatusTest(Case):
+    def test_a_readable_projects_folder_gives_its_directory_count(self) -> None:
+        (self.projects / "C--Invented-second").mkdir()
+        (self.projects / "loose.txt").write_text("x", "ascii")
+        self.assertEqual(R.projects_status(self.config), (R.OK, 2))
+
+    def test_a_missing_linked_or_bad_folder_is_not_readable(self) -> None:
+        self.assertEqual(R.projects_status(self.base / "missing"), (R.NO_PROJECTS, 0))
+        self.assertEqual(R.projects_status("relative\\claude"), (R.BAD_CONFIG, 0))
+        self.assertEqual(R.projects_status("\\\\server\\share\\claude"), (R.BAD_CONFIG, 0))
+
+        def linked(path: str) -> os.stat_result:
+            info = os.lstat(path)
+            return SimpleNamespace(st_mode=stat.S_IFLNK | 0o777, st_file_attributes=0, st_mtime=info.st_mtime)
+
+        self.assertEqual(R.projects_status(self.config, lstat=linked), (R.LINKED, 0))
+
+    def test_the_default_is_the_users_folder_which_tests_forbid(self) -> None:
+        with self.assertRaises(AssertionError):
+            R.projects_status()
+
+
+class FakeFolders:
+    def __init__(self, shortcuts: tuple = ()) -> None:
+        self.shortcuts = shortcuts
+
+    def shortcut_folders(self) -> tuple:
+        return self.shortcuts
+
+
+class DryRunTest(Case):
+    """``python -m quill.claude_reply --dry-run``: reason codes and counts per known folder, never text or paths."""
+
+    def settings_with(self, folders: tuple = (), on: bool = True) -> object:
+        import dataclasses
+
+        from quill.config import EXAMPLE_CONFIG, load_config
+
+        config = load_config(None, EXAMPLE_CONFIG)
+        return dataclasses.replace(
+            config, project_context=dataclasses.replace(config.project_context, folders=folders),
+            claude_code=dataclasses.replace(config.claude_code, last_reply_context=on))
+
+    def reader(self, seen: list):
+        def read(folder: object, **kwargs: object) -> R.ReplyLookup:
+            seen.append(folder)
+            if str(folder).casefold() == FOLDER.casefold():
+                return R.ReplyLookup(R.OK, R.SOURCE_POINTER, text=OFFER)
+            return R.ReplyLookup(R.NO_SESSIONS)
+
+        return read
+
+    def test_each_known_folder_once_with_counts_only(self) -> None:
+        seen, out = [], []
+        config = self.settings_with((("zorblat-kit", Path(FOLDER)), ("Zorblat Twin", Path(FOLDER.upper()))))
+        shortcuts = FakeFolders((("Quarnel Hub", "C:\\Invented\\quarnel-hub"), ("dup", FOLDER),
+                                 ("network", "\\\\server\\share\\x")))
+        code = R.dry_run(config, out=out.append, reader=self.reader(seen), folders=shortcuts)
+        self.assertEqual(code, 0)
+        self.assertEqual([str(folder).casefold() for folder in seen],
+                         [FOLDER.casefold(), "c:\\invented\\quarnel-hub"])  # once each, no UNC path
+        self.assertEqual(out[0], "last reply context: on in the settings; 2 known project folders")
+        self.assertRegex(out[1], r"^folder 1: ok \(source pointer, \d+ terms, 2 options, \d+ ms\)$")
+        self.assertRegex(out[2], r"^folder 2: no_session_dir \(source none, 0 terms, 0 options, \d+ ms\)$")
+        self.assertEqual(out[3], "1 of 2 folders have a reply context")
+        printed = "\n".join(out).casefold()
+        for private in ("zorblat", "quarnel", "invented", "brumaflex", "travolino", "server", "\\"):
+            self.assertNotIn(private, printed)
+
+    def test_off_in_the_settings_is_said_and_no_folder_gives_no_line(self) -> None:
+        out = []
+        R.dry_run(self.settings_with(on=False), out=out.append, reader=self.reader([]), folders=FakeFolders())
+        self.assertEqual(out, ["last reply context: off in the settings; 0 known project folders",
+                               "0 of 0 folders have a reply context"])
+
+    def test_main_needs_the_dry_run_flag_and_reads_the_given_settings(self) -> None:
+        settings = self.base / "quill.toml"
+        settings.write_text("[project_context.folders]\n\"zorblat-kit\" = 'C:\\Invented\\zorblat-kit'\n", "utf-8")
+        with mock.patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
+            R.main(["--config", str(settings)])
+        seen, out = [], []
+        self.assertEqual(R.main(["--dry-run", "--config", str(settings)], out=out.append, reader=self.reader(seen),
+                                folders=FakeFolders()), 0)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(out[-1], "1 of 1 folders have a reply context")
+        settings.write_text("[claude_code]\nlast_reply_max_terms = 0\n", "utf-8")
+        out = []
+        self.assertEqual(R.main(["--dry-run", "--config", str(settings)], out=out.append, reader=self.reader([]),
+                                folders=FakeFolders()), 2)
+        self.assertEqual(len(out), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

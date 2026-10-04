@@ -33,6 +33,12 @@ into Claude Code decodes the released hold's audio once more
 (``quill.finalpass``) and its text replaces the streaming text; mouse 5 into
 another window and every other trigger keep the streaming text, and so does
 every pass that cannot give a text.
+When ``[claude_code] last_reply_context`` is on, mouse 5 into Claude Code with
+a detected project folder reads, once per hold, the last reply of that
+folder's Claude Code session (``Parts.reply_reader``, ``quill.claude_reply``)
+and derives its terms (``quill.reply_terms``): heard-only decoding hint
+candidates, sound-close replacements the correction guard may accept, and the
+reply's shape for the enrichment. Off, or with no reader, mouse 5 is as before.
 When the voice trigger is bound, ``quill.voice`` runs spoken commands ("abre
 VS Code no <projeto>" opens the matching shortcut of ``[voice_commands]``
 through ``Parts.launcher``); its holds are decoded in Portuguese with the
@@ -70,6 +76,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from quill import claude_reply
 from quill import clips as own_voice
 from quill import finalpass
 from quill import startup
@@ -115,6 +122,7 @@ PROJECT_HINTS = "project_hints"
 HINTS_NOT_CLAUDE_CODE = "not_claude_code"
 HINTS_NO_PROJECT = "no_project"
 HINTS_NO_PACK = "no_pack"
+HINTS_REPLY = "reply_hints"  # no pack: the last Claude Code reply's terms only
 HINTS_FAILED = "failed"
 # Reason code of a mouse 5 final pass not asked because the target is not Claude Code.
 PASS_NOT_CLAUDE_CODE = "not_claude_code"
@@ -415,7 +423,8 @@ class TextPipeline:
 
 def project_hints(info: WindowInfo | None, pid: int, *, profiles: Profiles, projects: ProjectDetector | None,
                   pack_for: Callable[[Path], object | None] | None, vocabulary: Vocabulary,
-                  generic_terms: Sequence[str]) -> tuple[HeardHints | None, str]:
+                  generic_terms: Sequence[str],
+                  reply: Callable[[Path], object | None] | None = None) -> tuple[HeardHints | None, str]:
     """(decoding hint source, reason code) of mouse 5 into the window ``info`` of process ``pid``.
 
     Only Claude Code with a detected project and a context pack gets hints of
@@ -428,6 +437,13 @@ def project_hints(info: WindowInfo | None, pid: int, *, profiles: Profiles, proj
     heard then come first in the project part. One source per session. Any
     other window, no project, no pack or a failure gives None: today's
     vocabulary hints. Reads only; never raises.
+
+    ``reply(folder)`` (the hold's lookup of the last Claude Code reply, a
+    ``quill.reply_terms.ReplyContext`` or None) is asked for Claude Code with
+    a detected project only, before the pack: its terms are heard-only
+    candidates of the source (``HeardHints(reply_terms=...)``). Without a pack
+    a reply with terms gives a source with an empty project and no pack terms
+    (``HINTS_REPLY``): today's vocabulary hints until a reply term is heard.
     """
     try:
         if profiles.select(info) != CLAUDE_CODE:
@@ -435,11 +451,16 @@ def project_hints(info: WindowInfo | None, pid: int, *, profiles: Profiles, proj
         found = projects.detect(info, pid, claude_code=True) if projects is not None else None
         if found is None:
             return None, HINTS_NO_PROJECT
+        context = reply(found.folder) if reply is not None else None
+        replied = tuple(term for term in getattr(context, "terms", ()) if isinstance(term, str)) if context else ()
         pack = pack_for(found.folder) if pack_for is not None else None
         terms = getattr(pack, "terms", None)
         if pack is None or not isinstance(terms, (tuple, list)):
+            if replied:
+                source = HeardHints("", (), vocabulary, generic_terms, reply_terms=replied)
+                return (source, HINTS_REPLY) if source.initial is not None else (None, HINTS_NO_PACK)
             return None, HINTS_NO_PACK
-        source = HeardHints(found.name, terms, vocabulary, generic_terms)
+        source = HeardHints(found.name, terms, vocabulary, generic_terms, reply_terms=replied)
         return (source, PROJECT_HINTS) if source.initial is not None else (None, HINTS_NO_PACK)
     except Exception as exc:  # noqa: BLE001 - hints are optional: today's hints decode instead
         log.warning("project hints: %s (%s)", HINTS_FAILED, type(exc).__name__)
@@ -477,6 +498,8 @@ class Parts:
     # How the decoding hints of a mouse 5 session are built (tests: at once); None: on a daemon thread.
     run_hints: Callable[[Callable[[], None]], None] | None = None
     focus_probe: object | None = None  # focus verdict of a VS Code window (quill.uia.FocusProbe); None: titles only
+    # Reads the last Claude Code reply of a project folder (quill.claude_reply.last_reply); None: no reply context.
+    reply_reader: Callable[..., object] | None = None
     vocabulary: Vocabulary = field(default_factory=Vocabulary)
     generic_terms: Sequence[str] = ()
     vocabulary_file: VocabularyFile | None = None  # read again before each dictation; None: never reloaded
@@ -561,6 +584,10 @@ class QuillApp:
         self.undo = RewriteUndo(self.injector, self.edits.tracker if self.edits is not None else None,
                                 api.foreground_window, config.autorewrite.undo_window_s,
                                 clock=self.edits.clock if self.edits is not None else time.monotonic)
+        # Mouse 5 into Claude Code reads the last reply of the project's Claude Code session (once per hold).
+        self.reply_on = (config.claude_code.last_reply_context and parts.reply_reader is not None
+                         and config.trigger("send_polished").enabled)
+        hints_on = parts.context_packs is not None or self.reply_on
         self.sessions = SessionManager(
             transcriber=self.transcriber, capture_factory=parts.capture_factory, focus=self.focus,
             injector=self.injector, indicator=parts.indicator, pipeline=self.pipeline, command=self.command,
@@ -569,9 +596,9 @@ class QuillApp:
             housekeeping=self._housekeeping, player=parts.player if config.claude_alert.sound else None,
             speaker=parts.speaker if config.claude_alert.sound and config.claude_alert.speak_project else None,
             context_pack=parts.context_packs.get if parts.context_packs is not None else None,
-            enter_check=self._enter_check, send_hints=self._send_hints if parts.context_packs is not None else None,
+            enter_check=self._enter_check, send_hints=self._send_hints if hints_on else None,
             run_hints=parts.run_hints, final_pass=self._final_pass if final_pass_on(config) else None,
-            clock=parts.clock,
+            last_reply=self._last_reply if self.reply_on else None, clock=parts.clock,
         )
         self.alerts: AlertListener | None = None
         if config.claude_alert.enabled and parts.alert_events is not None:
@@ -813,11 +840,13 @@ class QuillApp:
         else:
             self.undo.remember(dictation, original, target, newline)
 
-    def _send_hints(self, target: Target) -> HeardHints | None:
+    def _send_hints(self, target: Target,
+                    reply: Callable[[Path], object | None] | None = None) -> HeardHints | None:
         """Decoding hint source of a mouse 5 session once its window is known (hint thread); None: today's hints.
 
-        Reads the window (title, class, process and the focused element) and
-        the project's context pack; never clicks, types or moves the focus.
+        Reads the window (title, class, process and the focused element), the
+        project's context pack and, through ``reply`` (the hold's lookup), the
+        last Claude Code reply; never clicks, types or moves the focus.
         """
         if target is None or not target.hwnd:
             return None
@@ -826,9 +855,14 @@ class QuillApp:
         packs = self.parts.context_packs
         hints, reason = project_hints(info, target.pid, profiles=profiles, projects=self.projects,
                                       pack_for=packs.get if packs is not None else None,
-                                      vocabulary=self.vocabulary, generic_terms=self.parts.generic_terms)
+                                      vocabulary=self.vocabulary, generic_terms=self.parts.generic_terms,
+                                      reply=reply)
         log.info("decoding hints: %s", reason)
         return hints
+
+    def _last_reply(self, folder: Path) -> claude_reply.ReplyFound:
+        """The last Claude Code reply of project ``folder`` with the ``[claude_code]`` caps (never raises)."""
+        return claude_reply.reply_context(folder, self.config.claude_code, reader=self.parts.reply_reader)
 
     def _final_pass(self, asr: object, final: object, target: Target) -> tuple[FinalPassOutcome, WindowInfo | None]:
         """(the text a mouse 5 hold types, the target window) once its streaming final is in (session thread).
@@ -1029,6 +1063,7 @@ def real_parts(config: Config) -> Parts:
         focus_probe=FocusProbe() if config.claude_code.focus_check else None,
         context_packs=(ContextPacks.from_settings(config.project_context)
                        if config.trigger("send_polished").enabled else None),
+        reply_reader=claude_reply.last_reply if config.claude_code.last_reply_context else None,
     )
 
 
@@ -1049,10 +1084,12 @@ def venv_site_packages(venv: Path = VENV_DIR) -> Path:
 
 def check_readiness(config: Config, *, models_dir: Path | None = None, venv: Path = VENV_DIR,
                     devices: Callable[[], list[str]] | None = None, client: object | None = None,
-                    registry: object | None = None, now: float | None = None) -> list[CheckLine]:
+                    registry: object | None = None, now: float | None = None,
+                    claude_dir: Path | None = None) -> list[CheckLine]:
     """Readiness of every part, without hooks, windows or the microphone being opened.
 
     ``devices`` lists the MME input names (names only; no device is opened).
+    ``claude_dir`` is the Claude Code config folder (None: the user's).
     Lines name parts and states only: never the microphone name, a path
     outside the repository or any personal value.
     """
@@ -1099,6 +1136,7 @@ def check_readiness(config: Config, *, models_dir: Path | None = None, venv: Pat
     lines.append(voice_line(config))
     lines.append(voice_model_line(config, folder))
     lines.append(final_pass_line(config, folder))
+    lines.append(last_reply_line(config, claude_dir))
 
     needed = config.cleanup_mode == "llm"
     if client is None:
@@ -1169,6 +1207,22 @@ def final_pass_line(config: Config, models_dir: Path) -> CheckLine:
     return CheckLine("final pass", present, f"{model}: " + (
         "files present" if present else f"files missing in models/{MODELS[model]}; mouse 5 types the streaming "
         "text"), required=False)
+
+
+def last_reply_line(config: Config, claude_dir: Path | None = None) -> CheckLine:
+    """The last reply context of mouse 5: off, or on with whether the Claude Code projects folder is
+    readable and how many project directories it holds (counts and reason codes only, never a path)."""
+    if not (config.claude_code.last_reply_context and config.trigger("send_polished").enabled):
+        return CheckLine("last reply context", True, "off", required=False)
+    try:
+        reason, count = claude_reply.projects_status(claude_dir)
+    except (OSError, RuntimeError, KeyError, ValueError) as exc:
+        reason, count = f"{claude_reply.UNREADABLE} ({type(exc).__name__})", 0
+    if reason == claude_reply.OK:
+        return CheckLine("last reply context", True, f"on; Claude Code projects folder readable, {count} project "
+                         "folders", required=False)
+    return CheckLine("last reply context", False, f"on; Claude Code projects folder not readable ({reason}); mouse 5 "
+                     "corrects without the last reply", required=False)
 
 
 def print_check(lines: Sequence[CheckLine], out: Callable[[str], None] = print) -> int:

@@ -2363,3 +2363,189 @@ class FinalPassSessionTest(SessionCase):
         self.assertEqual(len(self.command.instructions), 1)
         self.assertEqual(len(self.voice.texts), 1)
         self.assert_released()
+
+
+class FakeReplies:
+    """``last_reply(folder)`` stand-in: records the folders; a ``ReplyFound``-like answer, an error or a wait."""
+
+    CONTEXT = SimpleNamespace(terms=("Travolino", "Mirquelo"), options=(), asks=True, words=9)
+
+    def __init__(self):
+        self.folders = []
+        self.context = self.CONTEXT
+        self.error = None
+        self.gate = None  # a threading.Event the lookup waits for
+        self.entered = threading.Event()
+
+    def __call__(self, folder):
+        self.folders.append(folder)
+        self.entered.set()
+        if self.gate is not None:
+            self.gate.wait(5)
+        if self.error is not None:
+            raise self.error
+        terms = len(self.context.terms) if self.context else 0
+        return SimpleNamespace(context=self.context,
+                               log_fields=lambda: f"last reply ok (source pointer, {terms} terms, 0 options, 3 ms)")
+
+
+class ReplyContextTest(SessionCase):
+    """Mouse 5 into Claude Code looks the last reply up once per hold and gives it to the rewrite."""
+
+    FOLDER = Path("C:/Invented/projeto")
+    PLAIN = {"pack", "enrich_prompt", "context", "on_enrich"}  # the rewrite arguments without a reply
+
+    def setUp(self):
+        super().setUp()
+        self.ready()
+        self.focus.targets = [CLAUDE]
+        self.pipeline.folder = self.FOLDER
+        self.replies = FakeReplies()
+        self.manager.last_reply = self.replies
+        self.jobs = []
+        self.hint_calls = []  # (target, the lookup given) of each send_hints call
+        self.hint_folder = self.FOLDER  # the project folder of the window the hint thread sees; None: none
+        self.hint_replies = []  # what the lookup gave the hint thread
+        self.manager.send_hints = self._send_hints
+        self.manager.run_hints = self.jobs.append
+
+    def make_rewriter(self):
+        return FakeRewriter()
+
+    def make_voice(self):
+        return FakeVoice()
+
+    def make_command(self):
+        self.command = FakeCommand()
+        return self.command
+
+    def _send_hints(self, target, lookup=None):
+        self.hint_calls.append((target, lookup))
+        if lookup is not None and self.hint_folder is not None:
+            self.hint_replies.append(lookup(self.hint_folder))
+        return None
+
+    def run_jobs(self):
+        jobs, self.jobs[:] = list(self.jobs), []
+        for job in jobs:
+            job()
+
+    def hold(self, text="frase curta", run_hints=True):
+        self.settle()
+        self.press("send_polished", "xbutton2")
+        if run_hints:
+            self.run_jobs()
+        self.captures.made[-1].push(PCM)
+        self.release("send_polished", "xbutton2")
+        self.transcriber.sessions[-1].handle.resolve(text)
+
+    def test_the_hint_thread_looks_it_up_once_and_the_rewrite_gets_the_same_context(self):
+        with self.assertLogs("quill", level="INFO") as logs:
+            self.hold()
+            outcome = self.wait_outcomes(1)[-1]
+        self.assertEqual(outcome.reason, S.SENT_ENTER)
+        self.assertEqual(self.replies.folders, [self.FOLDER])  # once per hold
+        self.assertEqual(self.hint_replies, [FakeReplies.CONTEXT])
+        self.assertIs(self.rewriter.polished[0]["reply"], FakeReplies.CONTEXT)
+        text = "\n".join(logs.output)
+        self.assertEqual(text.count("last reply"), 1)
+        self.assertIn("session 1: last reply ok (source pointer, 2 terms, 0 options, 3 ms)", text)
+        for private in ("travolino", "mirquelo", "invented", "projeto", "frase"):
+            self.assertNotIn(private, text.casefold())
+
+    def test_without_the_hint_thread_the_release_looks_it_up_itself_once(self):
+        self.hold(run_hints=False)
+        self.wait_outcomes(1)
+        self.assertEqual(self.replies.folders, [self.FOLDER])
+        self.assertIs(self.rewriter.polished[0]["reply"], FakeReplies.CONTEXT)
+        self.run_jobs()  # the hint job after the release: the hold's reply is not looked up again
+        self.assertEqual(self.replies.folders, [self.FOLDER])
+        self.assertEqual(self.hint_replies, [FakeReplies.CONTEXT])
+
+    def test_the_release_waits_for_a_slow_hint_lookup_only_up_to_the_cap(self):
+        self.manager.reply_wait_s = 0.05
+        self.replies.gate = threading.Event()
+        self.addCleanup(self.replies.gate.set)
+        self.settle()
+        self.press("send_polished", "xbutton2")
+        jobs, self.jobs[:] = list(self.jobs), []
+        hint = threading.Thread(target=jobs[0], name="test-hints", daemon=True)
+        hint.start()
+        self.assertTrue(self.replies.entered.wait(5))
+        self.captures.made[-1].push(PCM)
+        with self.assertLogs("quill", level="INFO") as logs:
+            self.release("send_polished", "xbutton2")
+            self.transcriber.sessions[-1].handle.resolve("frase curta")
+            outcome = self.wait_outcomes(1)[-1]
+        self.assertEqual(outcome.reason, S.SENT_ENTER)
+        self.assertEqual(set(self.rewriter.polished[0]), self.PLAIN)  # went on without the reply
+        self.assertEqual(self.replies.folders, [self.FOLDER])  # never a second lookup
+        self.assertIn("session 1: last reply not ready after 50 ms; going on without it", "\n".join(logs.output))
+        self.replies.gate.set()
+        hint.join(5)
+        self.assertEqual(self.hint_replies, [FakeReplies.CONTEXT])
+
+    def test_a_failing_or_empty_lookup_leaves_the_dictation_on_todays_path(self):
+        cases = {"failure": (OSError("fake"), FakeReplies.CONTEXT), "none": (None, None)}
+        for number, (label, (error, context)) in enumerate(cases.items(), 1):
+            with self.subTest(label), self.assertLogs("quill", level="INFO") as logs:
+                self.replies.error, self.replies.context = error, context
+                self.hold()
+                outcome = self.wait_outcomes(number)[-1]
+                self.assertEqual((outcome.reason, outcome.rewrite), (S.SENT_ENTER, R.REWRITTEN))
+                self.assertEqual(set(self.rewriter.polished[-1]), self.PLAIN)
+                self.assertEqual(self.injector.typed[-1], ("FRASE CURTA.", CLAUDE))
+                if label == "failure":
+                    self.assertIn(f"session {number}: last reply failed (OSError)", "\n".join(logs.output))
+        self.assertEqual(len(self.replies.folders), 2)
+
+    def test_no_project_folder_is_logged_and_never_looked_up(self):
+        self.pipeline.folder = self.hint_folder = None
+        with self.assertLogs("quill", level="INFO") as logs:
+            self.hold()
+            self.wait_outcomes(1)
+        self.assertEqual(self.replies.folders, [])
+        self.assertEqual(set(self.rewriter.polished[0]), self.PLAIN)
+        text = "\n".join(logs.output)
+        self.assertEqual(text.count("last reply"), 1)
+        self.assertIn("session 1: last reply no_project", text)
+
+    def test_another_folder_at_the_release_gets_no_reply(self):
+        self.hint_folder = Path("C:/Invented/outro")
+        self.hold()
+        self.wait_outcomes(1)
+        self.assertEqual(self.replies.folders, [Path("C:/Invented/outro")])
+        self.assertEqual(set(self.rewriter.polished[0]), self.PLAIN)
+
+    def test_each_hold_looks_up_its_own_reply(self):
+        self.hold()
+        self.hold()
+        self.wait_outcomes(2)
+        self.assertEqual(self.replies.folders, [self.FOLDER, self.FOLDER])
+        self.assertEqual([polish["reply"] for polish in self.rewriter.polished], [FakeReplies.CONTEXT] * 2)
+
+    def test_other_triggers_windows_command_and_voice_never_look_up(self):
+        self.dictate(LONG)  # mouse 4, long: the automatic rewrite
+        self.dictate(LONG, action="send_claude")
+        self.dictate("frase curta", action="send_raw")
+        self.dictate("frase curta", action="command")
+        self.dictate("abre o projeto", action="voice")
+        self.run_jobs()
+        self.focus.targets = [TARGET]
+        self.hint_folder = None  # the app finds no Claude Code project in another window
+        self.hold()  # mouse 5, not Claude Code
+        self.wait_outcomes(6)
+        self.assertEqual(self.replies.folders, [])
+        self.assertEqual(len(self.hint_calls), 1)  # mouse 5 only
+        self.assertEqual(len(self.command.instructions), 1)
+        self.assertEqual(len(self.voice.texts), 1)
+        for polish in self.rewriter.polished:
+            self.assertNotIn("reply", polish)
+
+    def test_off_calls_send_hints_as_today_and_never_looks_up(self):
+        self.manager.last_reply = None
+        self.hold()
+        self.wait_outcomes(1)
+        self.assertEqual(self.hint_calls, [(CLAUDE, None)])
+        self.assertEqual(self.replies.folders, [])
+        self.assertEqual(set(self.rewriter.polished[0]), self.PLAIN)

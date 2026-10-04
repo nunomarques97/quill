@@ -23,6 +23,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from quill import app as A
+from quill import claude_reply as CR
 from quill import clips as C
 from quill import finalpass as FP
 from quill import notify as N
@@ -2235,7 +2236,8 @@ class CheckTest(unittest.TestCase):
 
     def check(self, devices=("Invented Microphone (USB)",), client=None):
         return A.check_readiness(self.config, models_dir=self.models, venv=self.venv, devices=lambda: list(devices),
-                                 client=client or FakeOllama(down=False), registry=FakeRegistry(), now=0.0)
+                                 client=client or FakeOllama(down=False), registry=FakeRegistry(), now=0.0,
+                                 claude_dir=self.folder / "claude")
 
     def test_ready(self):
         self.ready_files()
@@ -2621,6 +2623,268 @@ class ProjectHintsTest(unittest.TestCase):
         self.assertEqual(project_terms("orchard", ("one", "two"), known=("Orchard",)), ["one", "two"])
         self.assertEqual(project_terms("orchard", ("abcdefghij",), max_chars=12), ["orchard"])  # the list ends there
         self.assertEqual(project_terms("orchard", (), max_chars=3), [])
+
+
+
+# ---------------------------------------------------------------- the last Claude Code reply (mouse 5)
+
+REPLY_TEXT = "Queres que use o Travolino ou o Mirquelo no ficheiro `plumbatix.py`?"  # invented
+REPLY_WORDS = ("travolino", "mirquelo", "plumbatix", "queres", "ficheiro")
+
+
+class FakeReplyReader:
+    """``quill.claude_reply.last_reply`` stand-in: records (folder, caps); a reply, no reply or an error."""
+
+    def __init__(self, text=REPLY_TEXT):
+        self.calls = []
+        self.text = text
+        self.error = None
+
+    def __call__(self, folder, *, max_chars, max_age_s):
+        self.calls.append((folder, max_chars, max_age_s))
+        if self.error is not None:
+            raise self.error
+        if self.text is None:
+            return CR.ReplyLookup(CR.NO_FILE, CR.SOURCE_NEWEST)
+        return CR.ReplyLookup(CR.OK, CR.SOURCE_POINTER, text=self.text)
+
+
+class ReplyHintsTest(unittest.TestCase):
+    """``project_hints(reply=...)``: the reply's terms are heard-only candidates of the source."""
+
+    GENERIC = ProjectHintsTest.GENERIC
+    NAMES = ProjectHintsTest.NAMES
+    detector = ProjectHintsTest.detector
+
+    def setUp(self):
+        ProjectHintsTest.setUp(self)
+        from quill.reply_terms import derive
+
+        self.context = derive(REPLY_TEXT, 30)
+        self.asked = []
+
+    def reply(self, context=None):
+        def lookup(folder):
+            self.asked.append(folder)
+            return self.context if context is None else context
+        return lookup
+
+    def hints(self, info=None, *, projects=None, pack_for=None, reply=None):
+        return A.project_hints(info or self.panel, 7, profiles=self.profiles,
+                               projects=projects if projects is not None else self.detector(),
+                               pack_for=pack_for or (lambda folder: self.pack), vocabulary=self.vocabulary,
+                               generic_terms=self.GENERIC, reply=reply if reply is not None else self.reply())
+
+    def listed(self, hints):
+        from quill.whisper import HINTS_PREFIX
+
+        return hints.prompt[len(HINTS_PREFIX):-1].split(", ")
+
+    def test_with_a_pack_nothing_heard_gives_todays_project_hints(self):
+        plain, reason = ProjectHintsTest.hints(self)
+        source, replied = self.hints()
+        self.assertEqual((reason, replied), (A.PROJECT_HINTS, A.PROJECT_HINTS))
+        self.assertEqual(self.asked, [self.found.folder])
+        self.assertEqual(source.initial, plain.initial)
+        self.assertEqual(source.reply_terms, self.context.terms)
+        heard = self.listed(source("usa o travolino"))
+        self.assertEqual(heard[:3], [*self.NAMES, "Travolino"])  # heard: first in the project part
+        self.assertNotIn("Mirquelo", heard)  # not heard: never a hint
+
+    def test_without_a_pack_a_reply_gives_a_source_with_an_empty_project(self):
+        from quill.whisper import session_hints
+
+        source, reason = self.hints(pack_for=lambda folder: None)
+        self.assertEqual(reason, A.HINTS_REPLY)
+        self.assertEqual((source.project, source.terms), ("", ()))
+        self.assertEqual(source.initial, session_hints(V.whisper_hints(self.vocabulary, (), self.GENERIC)))
+        self.assertEqual(self.listed(source("o mirquelo"))[:3], [*self.NAMES, "Mirquelo"])
+
+    def test_no_reply_or_no_terms_keeps_todays_reasons(self):
+        from quill.reply_terms import EMPTY
+
+        plain, _ = ProjectHintsTest.hints(self)
+        for label, context in {"none": False, "empty": EMPTY}.items():
+            with self.subTest(label):
+                lookup = self.reply(context)
+                source, reason = self.hints(reply=lookup)
+                self.assertEqual((reason, source.initial, source.reply_terms), (A.PROJECT_HINTS, plain.initial, ()))
+                self.assertEqual(self.hints(pack_for=lambda folder: None, reply=lookup), (None, A.HINTS_NO_PACK))
+
+    def test_other_windows_and_no_project_never_ask_for_the_reply(self):
+        self.assertEqual(self.hints(info=self.editor), (None, A.HINTS_NOT_CLAUDE_CODE))
+        self.assertEqual(self.hints(projects=self.detector(found=False)), (None, A.HINTS_NO_PROJECT))
+        self.assertEqual(self.asked, [])
+
+    def test_a_failing_lookup_gives_todays_hints(self):
+        self.assertEqual(self.hints(reply=mock.Mock(side_effect=OSError("fake"))), (None, A.HINTS_FAILED))
+
+
+class ReplyAppTest(RewriteCase):
+    """Mouse 5 into Claude Code reads the last reply once per hold: hints, correction and enrichment skip."""
+
+    HUB_TITLE = PolishAppTest.HUB_TITLE
+    PROJECT_PROMPT = PolishAppTest.PROJECT_PROMPT
+    ENRICHED = PolishAppTest.ENRICHED
+    in_the_panel = PolishAppTest.in_the_panel
+    prompts = PolishAppTest.prompts
+    hold_after_hints = PolishAppTest.hold_after_hints
+
+    def setUp(self):
+        super().setUp()
+        self.project = self.folder / "invented"
+        self.project.mkdir()
+        self.packs = FakePacks()
+        self.reader = FakeReplyReader()
+        self.ollama = SequenceOllama(REWRITTEN, self.ENRICHED)
+        self.app = self.reply_app()
+        self.api.under_pointer = CLAUDE_HWND
+        self.api.foreground = CLAUDE_HWND
+
+    def reply_app(self, on=True, reader=True, packs=True):
+        context = dataclasses.replace(self.config.project_context, folders=(("invented", self.project),))
+        rewrite = dataclasses.replace(self.config.autorewrite, min_words=10)
+        claude = dataclasses.replace(self.config.claude_code, last_reply_context=on)
+        self.ollama.replies = [REWRITTEN, self.ENRICHED]
+        return self.make_app(self.make_config(autorewrite=rewrite, project_context=context, claude_code=claude),
+                             rewrite_client=self.ollama, layout=FakeLayout(),
+                             context_packs=self.packs if packs else None,
+                             reply_reader=self.reader if reader else None)
+
+    def assert_private(self, text):
+        for private in (*REPLY_WORDS, "invented", "carteira", str(self.project), self.HUB_TITLE, "Code.exe"):
+            self.assertNotIn(private.casefold(), text.casefold())
+
+    def test_the_reply_is_read_once_and_reaches_the_correction_and_the_enrichment_skip(self):
+        caps = self.app.config.claude_code
+        self.in_the_panel()
+        self.start()
+        with self.assertLogs("quill", level="INFO") as logs:
+            self.hold_after_hints()
+        self.assertEqual(self.reader.calls,
+                         [(self.project, caps.last_reply_max_chars, caps.last_reply_max_age_h * 3600.0)])
+        self.assertEqual(set(self.prompts()), {self.PROJECT_PROMPT})  # nothing of the reply heard: today's hints
+        outcome = self.app.sessions.outcomes[-1]
+        self.assertEqual((outcome.reason, outcome.rewrite, outcome.enrichment),
+                         (S.SENT_ENTER, R.REWRITTEN, "enrich_reply"))
+        (system, user, _), = self.ollama.calls  # the correction only: a short answer to a question
+        self.assertIn(R.REPLY_RULE, system)
+        block = user[user.index(R.REPLY_OPEN):user.index(R.REPLY_CLOSE)]
+        for term in ("Travolino", "Mirquelo", "plumbatix.py"):
+            self.assertIn(term, block)
+        self.assertNotIn(REPLY_TEXT, user)  # terms only, never the message
+        self.assertEqual(sent_segments(self.api), [REWRITTEN, ""])  # the corrected text, nothing of the reply
+        text = "\n".join(logs.output)
+        self.assertEqual(text.count("last reply ok (source pointer, 5 terms, 0 options, "), 1)
+        self.assertIn("decoding hints: project_hints", text)
+        self.assert_private(text)
+
+    def test_without_a_pack_the_reply_still_reaches_the_correction(self):
+        self.packs.pack = None
+        self.in_the_panel()
+        self.start()
+        with self.assertLogs("quill", level="INFO") as logs:
+            self.hold(WORDS, which=XBUTTON2)
+        self.assertEqual(len(self.reader.calls), 1)
+        self.assertEqual(set(self.prompts()), {None})  # no vocabulary here: no hints at all, as today
+        self.assertIn(R.REPLY_OPEN, self.ollama.calls[0][1])
+        self.assertEqual(self.app.sessions.outcomes[-1].enrichment, "enrich_reply")
+        self.assert_private("\n".join(logs.output))
+
+    def test_a_failing_or_missing_reply_keeps_todays_mouse_5(self):
+        cases = {"error": OSError("fake"), "no reply": None}
+        self.in_the_panel()
+        self.start()
+        for label, error in cases.items():
+            with self.subTest(label), self.assertLogs("quill", level="INFO") as logs:
+                self.reader.error, self.reader.text = error, (REPLY_TEXT if error else None)
+                self.ollama.replies = [REWRITTEN, self.ENRICHED]
+                calls = len(self.ollama.calls)
+                self.hold(WORDS, which=XBUTTON2)
+                outcome = self.app.sessions.outcomes[-1]
+                self.assertEqual((outcome.reason, outcome.enrichment), (S.SENT_ENTER, "enrich_enriched"))
+                self.assertNotIn(R.REPLY_OPEN, self.ollama.calls[calls][1])
+                self.assertEqual(sent_segments(self.api)[-2:], [self.ENRICHED, ""])
+                reason = CR.FAILED if error else CR.NO_FILE
+                self.assertIn(f"last reply {reason} (source", "\n".join(logs.output))
+        self.assertEqual(len(self.reader.calls), 2)
+
+    def test_other_triggers_windows_and_mouse_5_elsewhere_never_read_it(self):
+        self.in_the_panel()
+        self.start()
+        self.hold(WORDS)  # mouse 4 into the panel
+        self.hold(WORDS, which=MIDDLE)  # the middle button into the panel
+        self.api.under_pointer = self.api.foreground = TARGET.hwnd
+        self.hold(WORDS, which=XBUTTON2)  # mouse 5 outside Claude Code
+        self.assertEqual(self.app.sessions.outcomes[-1].reason, S.NOT_CLAUDE)
+        self.api.under_pointer = self.api.foreground = CLAUDE_HWND
+        self.in_the_panel("unknown | notes.md - Visual Studio Code [Claude Code]")
+        self.hold(WORDS, which=XBUTTON2)  # Claude Code without a known project folder
+        self.assertEqual(self.reader.calls, [])
+        for _, user, _ in self.ollama.calls:
+            self.assertNotIn(R.REPLY_OPEN, user)
+
+    def test_off_or_without_a_reader_mouse_5_is_exactly_todays(self):
+        runs = []
+        for on, reader in ((False, True), (True, False)):
+            with self.subTest(on=on, reader=reader):
+                quill = self.reply_app(on=on, reader=reader)
+                self.assertFalse(quill.reply_on)
+                self.assertIsNone(quill.sessions.last_reply)
+                self.in_the_panel()
+                self.start(quill)
+                prompts, calls, typed = len(self.model.calls), len(self.ollama.calls), len(self.api.events)
+                self.hold(WORDS, which=XBUTTON2, quill=quill)
+                quill.stop()
+                outcome = quill.sessions.outcomes[-1]
+                runs.append(((outcome.reason, outcome.enrichment), set(self.prompts()[prompts:]),  # partials vary
+                             [call[:2] for call in self.ollama.calls[calls:]], self.api.events[typed:]))
+        self.assertEqual(self.reader.calls, [])
+        self.assertEqual(runs[0][0], (S.SENT_ENTER, "enrich_enriched"))
+        self.assertEqual(runs[0], runs[1])
+
+    def test_without_packs_the_hint_thread_still_reads_the_reply(self):
+        quill = self.reply_app(packs=False)
+        self.assertIsNotNone(quill.sessions.send_hints)
+        self.in_the_panel()
+        self.start(quill)
+        self.hold(WORDS, which=XBUTTON2, quill=quill)
+        self.assertEqual(len(self.reader.calls), 1)
+        self.assertEqual(quill.sessions.outcomes[-1].enrichment, "enrich_reply")
+
+
+class LastReplyCheckTest(unittest.TestCase):
+    """``python -m quill --check``: the last reply context, on or off, and its folder (counts only)."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.claude = Path(folder.name) / "claude"
+        self.config = load_config(None, EXAMPLE_CONFIG)
+
+    def line(self, on=True):
+        config = dataclasses.replace(self.config, claude_code=dataclasses.replace(self.config.claude_code,
+                                                                                  last_reply_context=on))
+        return A.last_reply_line(config, self.claude)
+
+    def test_off(self):
+        self.assertEqual(self.line(on=False), A.CheckLine("last reply context", True, "off", required=False))
+
+    def test_on_with_a_readable_projects_folder_gives_its_count(self):
+        for name in ("a", "b"):
+            (self.claude / "projects" / name).mkdir(parents=True)
+        (self.claude / "projects" / "loose.txt").write_text("", encoding="utf-8")
+        line = self.line()
+        self.assertTrue(line.ok)
+        self.assertFalse(line.required)
+        self.assertEqual(line.detail, "on; Claude Code projects folder readable, 2 project folders")
+
+    def test_on_without_the_folder_is_a_note_without_a_path(self):
+        line = self.line()
+        self.assertFalse(line.ok)
+        self.assertFalse(line.required)
+        self.assertIn(CR.NO_PROJECTS, line.detail)
+        self.assertNotIn(str(self.claude.parent), line.detail)
 
 
 if __name__ == "__main__":

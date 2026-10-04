@@ -35,6 +35,16 @@ from the end.
 
 The text never appears in a ``repr`` or a log line; logs hold reason codes,
 counts and milliseconds only.
+
+``reply_context(folder, settings)`` is the lookup of a mouse 5 hold into
+Claude Code: the reply read with the ``[claude_code]`` caps and turned into a
+``quill.reply_terms.ReplyContext``, with a log line of counts only.
+``projects_status()`` tells ``python -m quill --check`` whether the projects
+folder is readable. The command line reports each known project folder
+(``[project_context] folders`` and the shortcut targets) by number, with
+reason codes and counts only:
+
+    .venv\\Scripts\\python -m quill.claude_reply --dry-run
 """
 
 from __future__ import annotations
@@ -470,3 +480,141 @@ def _lookup(folder: object, config_dir: Path | str, pointers: Path, max_chars: i
         return ReplyLookup(reason, SOURCE_NEWEST, pointer)
     text, reason = reply_text(opened[0], opened[1], max_chars, expired)
     return ReplyLookup(reason, SOURCE_NEWEST, pointer, text)
+
+
+# ---------------------------------------------------------------- the context of a mouse 5 hold
+
+NO_TERMS = "no_terms"  # a reply was read but gives no term, option or question
+
+
+@dataclass(frozen=True)
+class ReplyFound:
+    """The reply context of one lookup for mouse 5: ``context`` is the derived
+    ``quill.reply_terms.ReplyContext`` (None: none, ``reason`` says why) and the
+    rest are counts for the log line (``log_fields``)."""
+
+    reason: str
+    source: str | None = None
+    context: object | None = field(default=None, repr=False)
+    terms: int = 0
+    options: int = 0
+    ms: int = 0
+
+    def log_fields(self) -> str:
+        """Reason code, source, counts and milliseconds: never text, a title, a session id or a path."""
+        return (f"last reply {self.reason} (source {self.source or 'none'}, {self.terms} terms, "
+                f"{self.options} options, {self.ms} ms)")
+
+
+def reply_context(folder: object, settings: object, *, reader: Callable[..., ReplyLookup] | None = None,
+                  clock: Callable[[], float] = time.monotonic) -> ReplyFound:
+    """The ``ReplyFound`` of project ``folder`` with the ``[claude_code]`` caps of ``settings``
+    (``quill.config.ClaudeCode``): at most ``last_reply_max_chars`` characters read by ``reader``
+    (default ``last_reply``), sessions older than ``last_reply_max_age_h`` hours refused, at most
+    ``last_reply_max_terms`` terms derived (``quill.reply_terms.derive``). Never raises: any failure
+    gives none with ``failed``."""
+    from quill.reply_terms import derive  # here: quill.reply_terms imports quill.config, which imports this module
+
+    started = clock()
+    try:
+        lookup = (reader or last_reply)(folder, max_chars=settings.last_reply_max_chars,
+                                        max_age_s=settings.last_reply_max_age_h * 3600.0)
+        context = derive(lookup.text, settings.last_reply_max_terms) if lookup.text is not None else None
+        if lookup.text is None:
+            found = ReplyFound(lookup.reason, lookup.source)
+        elif not context:
+            found = ReplyFound(NO_TERMS, lookup.source)
+        else:
+            found = ReplyFound(OK, lookup.source, context, len(context.terms), len(context.options))
+    except Exception as exc:  # noqa: BLE001 - a failed lookup only leaves the dictation without context
+        log.debug("reply context failed (%s)", type(exc).__name__)
+        found = ReplyFound(FAILED)
+    ms = max(0, int(round((clock() - started) * 1000)))
+    return ReplyFound(found.reason, found.source, found.context, found.terms, found.options, ms)
+
+
+def projects_status(config_dir: Path | str | None = None, *,
+                    lstat: Callable[[str], os.stat_result] = os.lstat) -> tuple[str, int]:
+    """(reason, session directories) of ``<Claude config>/projects``: ``ok`` when it is a plain
+    readable directory, with the count of its directories (at most ``MAX_ENTRIES`` looked at)."""
+    config = claude_config_dir() if config_dir is None else config_dir
+    path = local_path(os.fspath(config))
+    if path is None:
+        return BAD_CONFIG, 0
+    projects = ntpath.join(path, PROJECTS)
+    reason = _directory(projects, lstat, NO_PROJECTS)
+    if reason is not None:
+        return reason, 0
+    try:
+        with os.scandir(projects) as entries:
+            count = sum(1 for entry in itertools.islice(entries, MAX_ENTRIES)
+                        if entry.is_dir(follow_symlinks=False))
+    except OSError:
+        return UNREADABLE, 0
+    return OK, count
+
+
+# ---------------------------------------------------------------- dry run
+
+
+def known_folders(project_context: object, shortcut_dirs: object, *,
+                  folders: object | None = None) -> list[str]:
+    """The known project folders, once each: ``[project_context] folders``, then the shortcut targets."""
+    if folders is None:
+        from quill.projects import ProjectFolders
+
+        folders = ProjectFolders(project_context.folders, shortcut_dirs)
+    found: dict[str, str] = {}
+    entries = [os.fspath(folder) for _, folder in project_context.folders]
+    entries += [folder for _, folder in folders.shortcut_folders()]
+    for folder in entries:
+        identity = folder_identity(folder)
+        if identity is not None and identity not in found:
+            found[identity] = folder
+    return list(found.values())
+
+
+def dry_run(config: object, *, out: Callable[[str], None] = print, reader: Callable[..., ReplyLookup] | None = None,
+            folders: object | None = None) -> int:
+    """One line per known project folder: its number, the reason code, source, counts and milliseconds.
+
+    Never prints text, a name, a title, a session id or a path; opens no microphone and touches no window.
+    """
+    settings = config.claude_code
+    known = known_folders(config.project_context, config.voice.shortcut_dirs, folders=folders)
+    out(f"last reply context: {'on' if settings.last_reply_context else 'off'} in the settings; "
+        f"{len(known)} known project folders")
+    found = 0
+    for number, folder in enumerate(known, 1):
+        result = reply_context(folder, settings, reader=reader)
+        found += result.context is not None
+        out(f"folder {number}: {result.reason} (source {result.source or 'none'}, {result.terms} terms, "
+            f"{result.options} options, {result.ms} ms)")
+    out(f"{found} of {len(known)} folders have a reply context")
+    return 0
+
+
+def main(argv: list[str] | None = None, *, out: Callable[[str], None] = print,
+         reader: Callable[..., ReplyLookup] | None = None, folders: object | None = None) -> int:
+    """``python -m quill.claude_reply --dry-run [--config PATH]``. Tests pass a fake reader and folders."""
+    import argparse
+
+    from quill.config import LOCAL_CONFIG, ConfigError, load_config
+
+    parser = argparse.ArgumentParser(prog="python -m quill.claude_reply",
+                                     description="Report the last Claude Code reply lookup of each known project "
+                                                 "folder (reason codes and counts only).")
+    parser.add_argument("--dry-run", action="store_true", required=True,
+                        help="look up and report counts; prints no text, name or path")
+    parser.add_argument("--config", type=Path, default=LOCAL_CONFIG, help="settings file (default local/quill.toml)")
+    args = parser.parse_args(argv)
+    try:
+        config = load_config(args.config)
+    except ConfigError as exc:
+        out(str(exc))
+        return 2
+    return dry_run(config, out=out, reader=reader, folders=folders)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -194,6 +194,62 @@ class SelectionTest(unittest.TestCase):
         self.assertGreater(sum(a != b for a, b in zip([source.initial, *stateless], stateless)), changes)
 
 
+class ReplyTermsTest(unittest.TestCase):
+    """The last Claude Code reply's terms: heard-only candidates of the project part."""
+
+    NAMES = ("Ana Lima", "Nimbus-Deck")
+    GENERIC = tuple(f"generic{n:02d}" for n in range(40))
+    REPLY = ("Travoline", "Mirquez", "ledger", "Kelvar", "Plumbatix")  # two of them are pack terms too
+
+    def setUp(self):
+        self.vocabulary = V.Vocabulary(names=tuple(V.Entry(name, "name") for name in self.NAMES))
+        self.today = V.whisper_hints(self.vocabulary, (), self.GENERIC)
+
+    def source(self, terms=PACK, project="orchard", reply=REPLY):
+        return H.HeardHints(project, terms, self.vocabulary, self.GENERIC, reply_terms=reply)
+
+    def test_nothing_heard_gives_exactly_todays_hints(self):
+        plain = H.HeardHints("orchard", PACK, self.vocabulary, self.GENERIC)
+        source = self.source()
+        self.assertEqual(source.words(""), plain.words(""))
+        self.assertEqual(source.initial, plain.initial)
+        self.assertEqual(source.words("nada de parecido aqui"), plain.words(""))
+        for term in ("Travoline", "Mirquez", "Plumbatix"):
+            self.assertNotIn(term, source.words(""))
+
+    def test_a_heard_reply_term_enters_the_project_part_closest_first(self):
+        words = self.source().words("usa o travolina e o mirquez")
+        self.assertEqual(words[:2], list(self.NAMES))
+        # Mirquez is heard exactly, Travoline with one edit: closest first, then today's order.
+        self.assertEqual(words[2:5], ["Mirquez", "Travoline", "orchard"])
+        self.assertNotIn("Plumbatix", words)  # not heard: never a hint
+        part = words[2:words.index("generic00")]
+        self.assertLessEqual(len(", ".join(part)), PROJECT_HINT_MAX_CHARS)
+        self.assertLessEqual(len(", ".join(words)), V.HINT_MAX_CHARS)
+
+    def test_a_tie_puts_the_pack_term_first_and_a_shared_term_is_one(self):
+        words = self.source().words("o kelvar e o mirquez")
+        self.assertEqual(words[2:5], ["Kelvar", "Mirquez", "orchard"])  # both exact: the pack's term first
+        self.assertEqual(words.count("Kelvar"), 1)
+        self.assertEqual(len(self.source().matcher.terms), len(self.source(reply=()).matcher.terms) + 3)
+
+    def test_without_a_pack_the_hints_are_todays_until_a_reply_term_is_heard(self):
+        source = self.source(terms=(), project="")
+        self.assertEqual(source.words(""), self.today)
+        self.assertEqual(source.initial, session_hints(self.today))
+        self.assertEqual(source.words("vamos ao plumbatix")[:3], [*self.NAMES, "Plumbatix"])
+        self.assertLessEqual(len(", ".join(source.words("plumbatix travolina mirkez"))), V.HINT_MAX_CHARS)
+
+    def test_the_budget_holds_with_many_heard_reply_terms(self):
+        reply = tuple(f"Rexo{chr(97 + n // 26)}{chr(97 + n % 26)}lun" for n in range(60))
+        source = self.source(reply=reply)
+        heard = " ".join(term.lower() for term in reply)
+        words = source.words(heard)
+        part = words[2:words.index("generic00")] if "generic00" in words else words[2:]
+        self.assertLessEqual(len(", ".join(part)), PROJECT_HINT_MAX_CHARS)
+        self.assertLessEqual(len(", ".join(words)), V.HINT_MAX_CHARS)
+        self.assertEqual(part[0], reply[0])
+
 
 class NamesInHintsTest(unittest.TestCase):
     """Mouse 5 into Claude Code: personal names, the project name and pack terms all reach the decoding hints."""

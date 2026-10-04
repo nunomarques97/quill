@@ -6,9 +6,11 @@ Usage:
     py -3.12 -m bench.record --set rewrite     # the command-mode rewrite instructions
     py -3.12 -m bench.record --set voice       # the voice commands ("abre VS Code no <projeto>")
     py -3.12 -m bench.record --set prompts     # Claude Code prompts with real domain terms
+    py -3.12 -m bench.record --set replies     # spoken answers to Claude Code messages
+    py -3.12 -m bench.record --set replies --dry-run   # counts only; the microphone is not opened
     py -3.12 -m bench.record --list-devices    # MME inputs; the microphone is not opened
 
-Four sets are recorded: ``dictation`` (the default, ``dt-NN``),
+Five sets are recorded: ``dictation`` (the default, ``dt-NN``),
 ``rewrite`` (``rw-NN``, the spoken instructions of command mode; the
 invented selected text of each take is shown first, for context only, and is
 not read aloud) and ``voice`` (``vc-NN``, the spoken voice commands; the
@@ -17,7 +19,11 @@ placeholder must have one before the microphone opens) and ``prompts``
 (``pp-NN``, spoken Claude Code prompts; ``[prompts.projects]`` names the
 ``<projeto-N>`` placeholders and ``[prompts.terms]`` the real domain terms of
 the ``<termo-N>`` ones, all required before the microphone opens; each take's
-manifest entry keeps the terms under ``termos``). Each phrase is shown
+manifest entry keeps the terms under ``termos``) and ``replies`` (``rr-NN``,
+spoken answers to Claude Code messages, mapped by ``[replies.projects]`` and
+``[replies.terms]`` the same way; a generic description of the Claude message
+each answer replies to is shown first, for context only, and is not read
+aloud). Each phrase is shown
 with the placeholders replaced by the names and terms from the local
 configuration. Enter starts and stops a take; ``s``
 skips it (it stays pending), ``q`` quits, ``r`` repeats the take just saved.
@@ -69,11 +75,15 @@ from bench.dataset import (
     parse_markup,
     resolve_placeholders,
     resolve_terms,
+    valid_term,
 )
 from bench.settings import LOCAL_DIR, Settings, SettingsError, load_settings
 
 MANIFEST_VERSION = 1
-RECORDED_SETS = ("dictation", "rewrite", "voice", "prompts")
+RECORDED_SETS = ("dictation", "rewrite", "voice", "prompts", "replies")
+# The label of the context shown before a phrase and of the phrase itself, per set (default: the rewrite set's).
+CONTEXT_LABELS = {"replies": ("Mensagem do Claude a que respondes (não ler)", "Resposta a dizer")}
+DEFAULT_LABELS = ("Texto selecionado (não ler)", "Instrução a dizer")
 
 
 class Console:
@@ -155,8 +165,10 @@ class Session:
     now: Callable[[], datetime] = datetime.now
     # Text shown before the phrase for context, never read aloud (rewrite set: the selected text).
     context: Callable[[ScriptRow], str | None] = field(default=lambda row: None, repr=False)
-    # <termo-N> -> real domain term shown and stored with each take (prompts set).
+    # <termo-N> -> real domain term shown and stored with each take (prompts and replies sets).
     terms: dict[str, str] = field(default_factory=dict, repr=False)
+    # (context label, phrase label) shown with a context.
+    labels: tuple[str, str] = DEFAULT_LABELS
 
     def __post_init__(self) -> None:
         if not _inside(self.recordings_dir, LOCAL_DIR) or not _inside(self.manifest_path, LOCAL_DIR):
@@ -234,8 +246,8 @@ class Session:
             say(f"[{position}] {row.id} · {row.style or '—'} · {row.case or '—'}")
             context = self.context(row)
             if context:
-                say(f"  Texto selecionado (não ler): {context}")
-                say(f"  Instrução a dizer: {self.phrase(row)}")
+                say(f"  {self.labels[0]}: {context}")
+                say(f"  {self.labels[1]}: {self.phrase(row)}")
             else:
                 say(f"  {self.phrase(row)}")
             answer = ask("Enter = gravar · s = saltar · q = sair: ")
@@ -290,6 +302,54 @@ def rewrite_context(settings: Settings) -> Callable[[ScriptRow], str | None]:
     return lambda row: selections.get(row.id)
 
 
+def reply_context(settings: Settings) -> Callable[[ScriptRow], str | None]:
+    """The generic description of the Claude message each replies take answers, shown while recording it."""
+    from bench.prompts import load_reply_rows
+
+    messages = {row.id: row.message for row in load_reply_rows(settings)}
+    return lambda row: messages.get(row.id)
+
+
+def dry_run(settings: Settings, set_name: str, console: Console) -> int:
+    """Counts of the chosen set: script rows, recorded and pending takes, named placeholders and reply files.
+
+    Opens no microphone, no audio and no reply file (file names only); prints
+    counts only, never a phrase, a name or a term.
+    """
+    chosen = settings.for_set(set_name)
+    rows = load_script(chosen)
+    manifest_path = chosen.manifest
+    entries: dict = {}
+    if manifest_path.is_file():
+        try:
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            raise DatasetError(f"{set_name}: recordings manifest is not valid JSON") from None
+        entries = data.get("gravacoes") if isinstance(data, dict) and isinstance(data.get("gravacoes"), dict) else {}
+    recorded = [row.id for row in rows
+                if isinstance(entries.get(row.id), dict) and (chosen.recordings_dir / f"{row.id}.wav").is_file()]
+    console.say(f"{set_name}: {len(rows)} script rows, {len(recorded)} recorded, {len(rows) - len(recorded)} pending "
+                "(dry run: the microphone is not opened)")
+    if set_name in ("prompts", "replies"):
+        from bench.prompts import _numbered, load_prompt_rows, load_reply_rows, reply_file_ids
+
+        typed = load_reply_rows(chosen) if set_name == "replies" else load_prompt_rows(chosen)
+        projects = _numbered(row.project for row in typed)
+        terms = _numbered(term for row in typed for term in row.terms)
+        names, real = dict(chosen.projects or ()), dict(chosen.terms or ())
+        console.say(f"local mapping: {sum(p in names for p in projects)} of {len(projects)} projects and "
+                    f"{sum(valid_term(real.get(t)) for t in terms)} of {len(terms)} terms named "
+                    f"([{set_name}.projects], [{set_name}.terms] in local/bench.toml)")
+        if set_name == "replies":
+            files = set(reply_file_ids(settings.replies_dir))
+            ids = [row.id for row in typed]
+            saved = sum(take_id in files for take_id in ids)
+            paired = sum(take_id in files for take_id in recorded)
+            console.say(f"reply files: {saved} of {len(ids)} saved, {paired} recorded takes paired, "
+                        f"pending pairs {len(ids) - paired}")
+    return 0
+
+
 def list_devices(settings_path: Path | None, api: object | None = None, console: Console | None = None) -> int:
     console = console or Console()
     try:
@@ -317,17 +377,32 @@ def main(argv: list[str] | None = None, *, api: object | None = None, console: C
     parser.add_argument("--set", choices=RECORDED_SETS, default="dictation", help="script to record (default dictation)")
     parser.add_argument("--list-devices", action="store_true", help="list MME inputs without opening them")
     parser.add_argument("--redo", default="", help="comma-separated take ids to record again")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="print the set's counts (recorded, pending, named, reply files) without opening anything")
     args = parser.parse_args(argv)
     if args.list_devices:
         return list_devices(args.config, api, console)
     console = console or Console()
+    if args.dry_run:
+        try:
+            return dry_run(load_settings(args.config), args.set, console)
+        except (SettingsError, DatasetError) as exc:
+            console.say(f"error: {exc}")
+            return 2
     try:
         settings = load_settings(args.config)
         chosen = settings.for_set(args.set)
         rows = load_script(chosen)
         context = rewrite_context(chosen) if args.set == "rewrite" else (lambda row: None)
         terms: dict[str, str] = {}
-        if args.set == "prompts":
+        if args.set == "replies":
+            from bench.prompts import load_reply_rows, recording_names as reply_names
+
+            reply_rows = load_reply_rows(chosen)
+            mapping, terms = reply_names(chosen, reply_rows)
+            known = known_names(chosen)
+            context = reply_context(chosen)
+        elif args.set == "prompts":
             from bench.prompts import load_prompt_rows, recording_names as prompt_names
 
             mapping, terms = prompt_names(chosen, load_prompt_rows(chosen))
@@ -355,6 +430,7 @@ def main(argv: list[str] | None = None, *, api: object | None = None, console: C
             console=console,
             context=context,
             terms=terms,
+            labels=CONTEXT_LABELS.get(args.set, DEFAULT_LABELS),
         )
         redo = [part.strip() for part in args.redo.split(",") if part.strip()]
         session.run(redo)

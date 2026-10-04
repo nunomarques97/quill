@@ -10,7 +10,11 @@ self-repetition. The markup gives the verbatim reference (what is spoken), the
 clean reference (what the final text should say) and the spans cleanup must
 remove. The prompts set (ids pp-NN) also has ``<termo-N>`` placeholders:
 the manifest entry of each take stores, under ``termos``, the real domain
-term each one was read as (``Take.terms``).
+term each one was read as (``Take.terms``). The replies set (ids rr-NN) is
+loaded the same way: its phrases are spoken answers to Claude Code messages,
+with ``<termo-N>`` placeholders and no project name said aloud; the manifest
+entry's ``projetos`` mapping names the project of the window answered, and
+``bench.prompts`` pairs each take with its reply file under ``local/replies``.
 """
 
 from __future__ import annotations

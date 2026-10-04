@@ -1,16 +1,16 @@
 """Mouse 5 measurement on the Sponsor's spoken Claude Code prompts: project context and prompt enrichment.
 
 Usage:
-    py -3.12 -m bench.prompts --dry-run [--set all|prompts|dictation] [--safety] [--require]
-    .venv\\Scripts\\python -m bench.prompts [--set all|prompts|dictation] [--summary PATH] [--require]
+    py -3.12 -m bench.prompts --dry-run [--set all|prompts|dictation|replies] [--safety] [--require]
+    .venv\\Scripts\\python -m bench.prompts [--set all|prompts|dictation|replies] [--summary PATH] [--require]
         [--timeouts bench|product] [--correction-candidates | --no-correction-candidates]
         [--common-sense | --no-common-sense] [--variants] [--safety]
         [--final-pass | --no-final-pass] [--pass-model M] [--pass-beam N]
         [--pass-temperature-fallback | --no-pass-temperature-fallback] [--pass-hints | --no-pass-hints]
-        [--pass-timeout S] [--pass-candidates all|NAME,...]
+        [--pass-timeout S] [--pass-candidates all|NAME,...] [--no-reply-context]
     py -3.12 -m bench.prompts --check SUMMARY
 
-Two sets are measured. ``prompts`` (``bench/dictation/guiao-prompts-pt.md``,
+Three sets are measured. ``prompts`` (``bench/dictation/guiao-prompts-pt.md``,
 recorded with ``py -3.12 -m bench.record --set prompts``) holds spoken Claude
 Code prompts of the Sponsor's projects, each with ``<termo-N>`` domain terms;
 ``[prompts.projects]`` and ``[prompts.terms]`` of the ignored
@@ -18,7 +18,32 @@ Code prompts of the Sponsor's projects, each with ``<termo-N>`` domain terms;
 keeps what it was read with. ``dictation`` is the existing dictation set,
 limited to its ``claude-code`` takes: it has no domain terms, so it measures
 content words lost, invented content words and latency without new
-recordings.
+recordings. ``replies`` (``bench/dictation/guiao-respostas-pt.md``, ids
+rr-NN, recorded with ``bench.record --set replies``) holds short spoken
+answers to Claude Code messages, mapped by ``[replies.projects]`` and
+``[replies.terms]``; an answer rarely says its project, so each take's
+simulated window is the project of its row (``window_projects``).
+
+Reply pairing. A take of any set whose id has a plain-text reply file
+``<take id>.md`` in ``[replies] replies_dir`` (default the ignored
+``local/replies``) is paired with it: the file, read-only and bounded
+(``read_reply_file``: a regular file, no link or reparse point, at most
+``MAX_REPLY_BYTES``, in a plain folder under local/), stands for the last
+Claude Code message the take answers. With the app's ``[claude_code]
+last_reply_context`` on (and without ``--no-reply-context``) it goes through
+the app's own path once per take (``quill.claude_reply.reply_context`` with a
+reader of that file, never of a Claude Code session): the hint source's
+reply lookup, the correction's ``reply=`` and the enrichment skip. Each
+paired take is also replayed without its reply. Each set's
+``reply_context`` block counts paired and unpaired takes (for the replies
+set also ``pending_pairs``: script rows without a paired recording) and
+gives, for the paired takes with and without the reply, the WER after the
+full mouse 5, domain-term and name errors, lost and invented words (and
+invented words found in the reply but not in the reference), the
+enrichment asked, accepted and skipped as a reply, and p50/p95 of the lookup
+and of release to text. Reply texts and derived terms join the summary's
+privacy check. ``--check`` validates the block and reports pending pairs
+without failing.
 
 Each take goes through the product path. It is replayed through
 ``quill.streaming`` with the app's engine model (``engine_model`` of the
@@ -162,7 +187,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import stat
 import sys
 import time
 import unicodedata
@@ -184,7 +211,8 @@ from quill.whisper import MODELS, distinctive_term
 
 SET_NAME = "prompts"
 DICTATION = "dictation"
-SETS = (SET_NAME, DICTATION)
+REPLIES = "replies"
+SETS = (SET_NAME, DICTATION, REPLIES)
 SAFETY = "safety"
 SUMMARY_SCHEMA = 1
 DEFAULT_SUMMARY = REPO_ROOT / "docs" / "research" / "prompts-summary.json"
@@ -198,6 +226,24 @@ TARGET_RELEASE_P95_S = 6.0  # release-to-text p95 of the takes up to LONG_TAKE_S
 LONG_TAKE_S = 20.0
 
 CASES = ("termo", "restrição", "números")
+REPLY_CASES = ("sim-condição", "opção", "ficheiro", "termo", "continuar", "parar")
+REPLY_MESSAGE_COLUMN = "mensagem do claude"
+# Reply files paired with takes: <take id>.md under [replies] replies_dir (local/), plain text.
+REPLY_SUFFIX = ".md"
+MAX_REPLY_BYTES = 256 * 1024
+REPLY_TAKE_ID = re.compile(r"^[a-z]{2,8}-\d{2}$")
+SOURCE_PAIRED = "paired_file"  # the source of a bench lookup: a reply file, never a Claude Code session
+PAIR_OK = "ok"
+PAIR_MISSING = "missing"
+PAIR_LINKED = "linked"  # a symlink, junction or other reparse point
+PAIR_NOT_REGULAR = "not_regular"
+PAIR_TOO_LARGE = "too_large"
+PAIR_UNREADABLE = "unreadable"
+PAIR_EMPTY = "empty"
+PAIR_OUTSIDE = "outside"  # the folder is not a plain folder under local/
+FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+# A word of a reply as the privacy check sees it: identifiers and file names stay whole.
+REPLY_WORD = re.compile(r"[^\s,;:!?()\[\]{}<>\"'`*|]+")
 NONE_MARK = "—"
 # The session's reason for an empty final text (quill.session.NO_SPEECH): mouse 5 types nothing.
 NO_SPEECH = "no_speech"
@@ -292,22 +338,65 @@ def load_prompt_rows(settings: Settings) -> list[PromptRow]:
     return parse_prompt_script(settings.recording_script.read_text(encoding="utf-8"), settings.id_prefix)
 
 
+@dataclass(frozen=True)
+class ReplyRow:
+    """A spoken answer to a Claude Code message (replies set)."""
+
+    id: str
+    case: str
+    intent: str
+    text: str = field(repr=False)  # the spoken answer, with <termo-N> placeholders
+    project: str = field(default="", repr=False)  # the <projeto-N> of the Claude Code window answered
+    terms: tuple[str, ...] = field(default=(), repr=False)  # its <termo-N>, in phrase order
+    message: str = field(default="", repr=False)  # a generic description of the Claude message it answers
+
+
+def parse_reply_script(text: str, id_prefix: str = "rr") -> list[ReplyRow]:
+    """The rows of the replies script: each with one window project, its terms listed and a message description."""
+    listed = _column(text, "termos")
+    messages = _column(text, REPLY_MESSAGE_COLUMN)
+    rows = []
+    for row in parse_script(text, id_prefix, markup=True):
+        if row.case not in REPLY_CASES:
+            raise PromptScriptError(f"{row.id}: caso must be one of {', '.join(REPLY_CASES)}")
+        if row.style != CLAUDE_CODE:
+            raise PromptScriptError(f"{row.id}: estilo must be {CLAUDE_CODE}")
+        if not PLACEHOLDER.fullmatch(row.project) or set(PLACEHOLDER.findall(row.text)) - {row.project}:
+            raise PromptScriptError(f"{row.id}: projeto needs one <projeto-N> (the frase may only repeat it)")
+        terms = tuple(TERM_PLACEHOLDER.findall(row.text))
+        cell = listed.get(row.id, "")
+        given = [] if cell in ("", NONE_MARK, "-") else [part.strip() for part in cell.split(",")]
+        if given != list(terms):
+            raise PromptScriptError(f"{row.id}: termos must list the <termo-N> of frase in order (or {NONE_MARK})")
+        message = messages.get(row.id, "")
+        if not message or message in (NONE_MARK, "-"):
+            raise PromptScriptError(f"{row.id}: mensagem do Claude must describe the message it answers")
+        rows.append(ReplyRow(row.id, row.case, row.intent, row.text, row.project, terms, message))
+    return rows
+
+
+def load_reply_rows(settings: Settings) -> list[ReplyRow]:
+    if not settings.recording_script.is_file():
+        raise DatasetError(f"{settings.name}: recording script not found")
+    return parse_reply_script(settings.recording_script.read_text(encoding="utf-8"), settings.id_prefix)
+
+
 def _numbered(placeholders: Iterable[str]) -> list[str]:
     return sorted(set(placeholders), key=lambda p: int(re.sub(r"\D", "", p)))
 
 
-def recording_names(settings: Settings, rows: Sequence[PromptRow]) -> tuple[dict[str, str], dict[str, str]]:
+def recording_names(settings: Settings, rows: Sequence[PromptRow | ReplyRow]) -> tuple[dict[str, str], dict[str, str]]:
     """(project names, domain terms) shown while recording; every placeholder of the script must be mapped."""
     projects = dict(settings.projects or ())
     terms = dict(settings.terms or ())
     missing_projects = [p for p in _numbered(row.project for row in rows) if p not in projects]
     missing_terms = [t for t in _numbered(t for row in rows for t in row.terms) if not valid_term(terms.get(t))]
     if missing_projects:
-        raise DatasetError(f"prompts: {len(missing_projects)} placeholder(s) without a name: add them to "
-                           "[prompts.projects] in local/bench.toml")
+        raise DatasetError(f"{settings.name}: {len(missing_projects)} placeholder(s) without a name: add them to "
+                           f"[{settings.name}.projects] in local/bench.toml")
     if missing_terms:
-        raise DatasetError(f"prompts: {len(missing_terms)} placeholder(s) without a domain term: add them to "
-                           "[prompts.terms] in local/bench.toml")
+        raise DatasetError(f"{settings.name}: {len(missing_terms)} placeholder(s) without a domain term: add them to "
+                           f"[{settings.name}.terms] in local/bench.toml")
     return projects, terms
 
 
@@ -320,16 +409,19 @@ def _fill(text: str, mapping: dict[str, str]) -> str:
     return TERM_PLACEHOLDER.sub(replace, PLACEHOLDER.sub(replace, text))
 
 
-def private_text(settings: Settings | None) -> tuple[list[str], frozenset[str], frozenset[str]]:
+def private_text(settings: Settings | None,
+                 loader: Callable[[Settings], Sequence[PromptRow | ReplyRow]] = load_prompt_rows,
+                 ) -> tuple[list[str], frozenset[str], frozenset[str]]:
     """(phrases raw and resolved, real project names, real domain terms) of the prompts set, for the privacy guard.
 
     Resolved with the local ``[prompts.projects]``/``[prompts.terms]`` mapping
     and with every take's manifest mapping; a partial mapping resolves what it
-    names. Opens no audio.
+    names. Opens no audio. ``loader`` (``load_reply_rows``) reads the replies
+    set the same way.
     """
     if settings is None:
         return [], frozenset(), frozenset()
-    rows = load_prompt_rows(settings)
+    rows = loader(settings)
     mappings = [{**dict(settings.projects or ()), **dict(settings.terms or ())}]
     if settings.manifest.is_file():
         from bench.dataset import load_manifest
@@ -374,6 +466,168 @@ def take_project(take: Take) -> str:
     """The project name the take was read with ('' when it names none or several)."""
     names = set(take.project_names)
     return next(iter(names)) if len(names) == 1 else ""
+
+
+# ---------------------------------------------------------------- reply pairs (local files, never Claude Code sessions)
+
+
+@dataclass(frozen=True)
+class ReplyFile:
+    """One reply file paired with a take: ``text`` (None unless ``reason`` is ``PAIR_OK``) never in a repr."""
+
+    reason: str
+    text: str | None = field(default=None, repr=False)
+
+
+def _plain_folder(folder: Path, lstat: Callable[[str], os.stat_result]) -> bool:
+    """Whether ``folder`` is a plain folder (no link or reparse point) under the ignored local/ folder."""
+    from bench.settings import LOCAL_DIR
+
+    try:
+        info = lstat(os.fspath(folder))
+    except OSError:
+        return False
+    if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+            or getattr(info, "st_file_attributes", 0) & FILE_ATTRIBUTE_REPARSE_POINT):
+        return False
+    local = Path(LOCAL_DIR).resolve()
+    return local in Path(folder).resolve().parents
+
+
+def read_reply_file(folder: Path, take_id: str, *,
+                    lstat: Callable[[str], os.stat_result] = os.lstat) -> ReplyFile:
+    """The reply file ``<take_id>.md`` of ``folder``, read-only and bounded; a reason code on every failure.
+
+    Only a regular file (no link or reparse point) of at most
+    ``MAX_REPLY_BYTES`` in a plain folder under local/ is read, as UTF-8; the
+    file opened must be the file checked. Never raises for a bad file.
+    """
+    if not REPLY_TAKE_ID.match(take_id):
+        return ReplyFile(PAIR_MISSING)
+    folder = Path(folder)
+    if not _plain_folder(folder, lstat):
+        return ReplyFile(PAIR_OUTSIDE if folder.exists() else PAIR_MISSING)
+    path = folder / f"{take_id}{REPLY_SUFFIX}"
+    try:
+        info = lstat(os.fspath(path))
+    except FileNotFoundError:
+        return ReplyFile(PAIR_MISSING)
+    except OSError:
+        return ReplyFile(PAIR_UNREADABLE)
+    if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & FILE_ATTRIBUTE_REPARSE_POINT:
+        return ReplyFile(PAIR_LINKED)
+    if not stat.S_ISREG(info.st_mode):
+        return ReplyFile(PAIR_NOT_REGULAR)
+    if info.st_size > MAX_REPLY_BYTES:
+        return ReplyFile(PAIR_TOO_LARGE)
+    try:
+        with open(path, "rb") as handle:
+            opened = os.fstat(handle.fileno())
+            if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino) or not stat.S_ISREG(opened.st_mode):
+                return ReplyFile(PAIR_UNREADABLE)
+            data = handle.read(MAX_REPLY_BYTES + 1)
+    except OSError:
+        return ReplyFile(PAIR_UNREADABLE)
+    if len(data) > MAX_REPLY_BYTES:
+        return ReplyFile(PAIR_TOO_LARGE)
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return ReplyFile(PAIR_UNREADABLE)
+    text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    return ReplyFile(PAIR_OK, text) if text else ReplyFile(PAIR_EMPTY)
+
+
+def load_pairs(folder: Path | None, take_ids: Iterable[str], *,
+               lstat: Callable[[str], os.stat_result] = os.lstat) -> dict[str, ReplyFile]:
+    """Each take id's reply file (``PAIR_MISSING`` without one); ``folder`` None pairs nothing."""
+    return {take_id: read_reply_file(folder, take_id, lstat=lstat) if folder is not None else ReplyFile(PAIR_MISSING)
+            for take_id in dict.fromkeys(take_ids)}
+
+
+def reply_file_ids(folder: Path | None) -> list[str]:
+    """The take ids of the reply files in ``folder`` (names only; nothing is opened)."""
+    if folder is None or not Path(folder).is_dir():
+        return []
+    return sorted(path.name[: -len(REPLY_SUFFIX)] for path in Path(folder).iterdir()
+                  if path.name.endswith(REPLY_SUFFIX) and REPLY_TAKE_ID.match(path.name[: -len(REPLY_SUFFIX)]))
+
+
+def _file_reader(text: str) -> Callable[..., object]:
+    """A ``quill.claude_reply.reply_context`` reader of one reply file's text, capped as the app caps a session's."""
+    from quill import claude_reply
+
+    def reader(folder: object, *, max_chars: int, max_age_s: float) -> object:
+        kept = text[-max(1, int(max_chars)):].strip()
+        return claude_reply.ReplyLookup(claude_reply.OK if kept else claude_reply.NO_TEXT, SOURCE_PAIRED,
+                                        text=kept or None)
+
+    return reader
+
+
+@dataclass
+class Pairing:
+    """The reply files paired with takes, looked up through the app's path once per take (as once per hold).
+
+    ``settings`` are the app's ``[claude_code]`` caps (``quill.config.ClaudeCode``).
+    A take's lookup (``lookup(take id, folder)``) runs ``quill.claude_reply.reply_context``
+    with a reader of its reply file, never of a Claude Code session, and keeps
+    the ``ReplyContext`` for that folder only. ``active`` False gives no reply
+    (the run without the reply) while the reply's words stay known for the counts.
+    """
+
+    settings: object
+    texts: dict[str, str] = field(default_factory=dict, repr=False)  # take id -> reply text
+    clock: Callable[[], float] = time.perf_counter
+    active: bool = True
+    found: dict[str, tuple[object, object, float]] = field(default_factory=dict, repr=False)  # id -> (folder, found, s)
+
+    def paired(self, take_id: str) -> bool:
+        return take_id in self.texts
+
+    def lookup(self, take_id: str, folder: object | None) -> object | None:
+        """The take's ``ReplyContext`` for project ``folder``; None when off, unpaired, folderless or another folder."""
+        if not self.active or folder is None or take_id not in self.texts:
+            return None
+        if take_id not in self.found:
+            from quill import claude_reply
+
+            started = self.clock()
+            found = claude_reply.reply_context(folder, self.settings, reader=_file_reader(self.texts[take_id]))
+            self.found[take_id] = (folder, found, max(0.0, self.clock() - started))
+        looked, found, _ = self.found[take_id]
+        if str(looked) != str(folder):
+            return None
+        return getattr(found, "context", None) or None
+
+    def outcome(self, take_id: str) -> tuple[str, float]:
+        """(the lookup's reason code, seconds) of a take; ("", 0) when it was not looked up."""
+        if take_id not in self.found:
+            return "", 0.0
+        _, found, seconds = self.found[take_id]
+        return getattr(found, "reason", ""), seconds
+
+    def words(self, take_id: str) -> frozenset[str]:
+        """Folded words of the take's reply text (for the invented-from-the-reply count)."""
+        return frozenset(fold(word) for word in tokens(self.texts.get(take_id, "")))
+
+    def terms(self) -> list[str]:
+        """Every term derived so far (for the privacy check of the summary)."""
+        return [term for _, found, _ in self.found.values()
+                for term in getattr(getattr(found, "context", None), "terms", ()) if isinstance(term, str)]
+
+
+@contextmanager
+def without_reply(pairing: Pairing | None) -> Iterator[None]:
+    """The pairing switched off (the run without the reply); back on afterwards."""
+    if pairing is None:
+        yield
+        return
+    saved, pairing.active = pairing.active, False
+    try:
+        yield
+    finally:
+        pairing.active = saved
 
 
 # ---------------------------------------------------------------- words
@@ -495,6 +749,16 @@ def term_errors(reference: str, text: str, terms: Sequence[str]) -> tuple[int, i
     return counts.expected, counts.expected - counts.found
 
 
+def invented_from_reply(reference: str, source: str, output: str, reply_words: Iterable[str]) -> int:
+    """Content words of ``output`` beyond their count in ``source`` that the paired reply holds and
+    ``reference`` does not (a reply word copied into the text, beyond what was said)."""
+    said = {fold(word) for word in tokens(reference)}
+    known = frozenset(reply_words)
+    extra = _content_counts(output) - _content_counts(source)
+    return sum(count for word, count in extra.items()
+               if word in known and word not in said and word not in STRUCTURE)
+
+
 def invented_reference(reference: str, source: str, corrected: str) -> int:
     """Content words the correction brought (beyond their count in ``source``) that ``reference`` does not hold.
 
@@ -518,8 +782,8 @@ class _CapturingEnricher:
         self.text: str | None = None
         self.result: object | None = None
 
-    def wants(self, text: str) -> bool:
-        return self.enricher.wants(text)
+    def wants(self, text: str, **kwargs: object) -> bool:
+        return self.enricher.wants(text, **kwargs)
 
     def enrich(self, text: str, **kwargs: object) -> object:
         self.text = text
@@ -552,6 +816,9 @@ class Product:
     app gives mouse 5 in the window ``info`` (``quill.app.project_hints``; None:
     no take gets project hints). ``final_pass`` is the app's ``[final_pass]``
     for mouse 5 into Claude Code (off when mouse 5 is not bound; None: off).
+    ``reply_settings`` are the app's ``[claude_code]`` caps when its last reply
+    context is on for mouse 5 (None: off, as the app with it off); ``pairing``
+    holds the run's reply files (``Pairing``; None: no take is paired).
     """
 
     pipeline: Callable[[str, object], object]
@@ -565,6 +832,8 @@ class Product:
     model_loaded: Callable[[], bool | None] | None = None
     hints_for: Callable[[WindowInfo], tuple[object | None, str]] | None = None
     final_pass: FinalPassSettings | None = None
+    reply_settings: object | None = None
+    pairing: Pairing | None = None
 
 
 @dataclass(frozen=True)
@@ -624,6 +893,10 @@ class TakeResult:
     pipeline_s: float = 0.0  # the text pipeline
     pass_s: float = 0.0  # the final pass, call to outcome (0 without one)
     pass_reason: str = ""  # the final pass's reason code ("": no pass asked)
+    reply: str = ""  # the reply lookup's reason code ("": not looked up: unpaired, off or no project folder)
+    reply_used: bool = False  # the new mouse 5 got a reply context
+    reply_s: float = 0.0  # the reply lookup (0 without one)
+    invented_reply: int = 0  # invented content words found in the paired reply but not in the reference
 
     @property
     def spoken(self) -> bool:
@@ -631,7 +904,8 @@ class TakeResult:
 
     @property
     def enrich_called(self) -> bool:
-        return self.enrichment not in ("", enrich.SHORT)
+        """Whether the enrichment asked the model (a short text or an answer to the reply asks nothing)."""
+        return self.enrichment not in ("", enrich.SHORT, enrich.REPLY)
 
     @property
     def total_s(self) -> float:
@@ -691,12 +965,16 @@ def run_take(take: Take, set_name: str, case: str, heard: str, asr_s: float, pro
         started = product.clock()
         pack, pack_reason = product.packs(folder)
         pack_s = product.clock() - started
+    # As the session: the hold's reply context (looked up once) goes with the correction only when there is one.
+    pairing = product.pairing
+    reply = pairing.lookup(take.id, folder) if pairing is not None else None
+    extra = {"reply": reply} if reply else {}
     capture = _CapturingEnricher(rewriter.enricher)
     rewriter.enricher = capture
     try:
         new = rewriter.rewrite(source, audio_s=audio_s, profile=profile, keep=processed.keep,
                                project=processed.project, force=True, pack=pack, enrich_prompt=enrich_prompt,
-                               context=True)
+                               context=True, **extra)
     finally:
         rewriter.enricher = capture.enricher
     # The text before enrichment: the correction's, or on every other path (refused, timed out) the dictation
@@ -714,6 +992,11 @@ def run_take(take: Take, set_name: str, case: str, heard: str, asr_s: float, pro
         today_fields = {}
     names = (*product.names, *take.project_names)
     invented_new, from_pack = invented_words(source, new.text, pack, processed.project, corrected, product.names)
+    reply_fields = {}
+    if pairing is not None and pairing.paired(take.id):
+        reply_reason, reply_s = pairing.outcome(take.id) if pairing.active and folder is not None else ("", 0.0)
+        reply_fields = {"reply": reply_reason, "reply_used": bool(reply), "reply_s": reply_s,
+                        "invented_reply": invented_from_reply(take.clean, source, new.text, pairing.words(take.id))}
     name_occurrences, name_errors_source = term_errors(take.clean, source, names)
     source_edits, new_edits = text_edits(take.clean, source), text_edits(take.clean, corrected)
     return TakeResult(
@@ -733,6 +1016,7 @@ def run_take(take: Take, set_name: str, case: str, heard: str, asr_s: float, pro
         word_errors_new=new_edits.errors, invented_reference=invented_reference(take.clean, source, corrected),
         invented_fixes=invented_words(source, corrected, pack, processed.project, names=product.names)[0],
         invented_beyond=invented_beyond_fixes(source, corrected, new.text, pack, processed.project, product.names),
+        **reply_fields,
     )
 
 
@@ -743,10 +1027,22 @@ def measure(set_name: str, takes: Sequence[Take], cases: dict[str, str], transcr
 
 
 def take_hints(takes: Sequence[Take], product: Product) -> list[tuple[object | None, str]]:
-    """The (decoding hints or hint source, or None; reason code) the app gives mouse 5 in each take's window."""
+    """The (decoding hints or hint source, or None; reason code) the app gives mouse 5 in each take's window.
+
+    A paired take's hints get its reply through the app's ``reply`` lookup
+    (``Pairing.lookup``, once per take); any other take is asked as before.
+    """
     if product.hints_for is None:
         return [(None, "") for _ in takes]
-    return [product.hints_for(window(take_project(take))) for take in takes]
+    pairing = product.pairing
+    hints = []
+    for take in takes:
+        info = window(take_project(take))
+        if pairing is not None and pairing.active and pairing.paired(take.id):
+            hints.append(product.hints_for(info, reply=lambda folder, take_id=take.id: pairing.lookup(take_id, folder)))
+        else:
+            hints.append(product.hints_for(info))
+    return hints
 
 
 def relevance_hints(hints: object | None) -> object | None:
@@ -1272,6 +1568,151 @@ def pending_block(dataset: dict) -> dict:
     return {"status": "pending_recordings", "dataset": dataset, "takes": 0}
 
 
+def reply_view(results: Sequence[TakeResult], terms: bool = False) -> dict:
+    """The paired takes of a set with or without their reply: counts and timings, never text, terms or reply words.
+
+    WER after the full mouse 5 (the corrected text against the clean
+    reference), domain-term and name errors after it, content words lost and
+    invented, invented words found in the reply but not in the reference, the
+    enrichment asked, accepted and skipped as an answer to the reply, and
+    p50/p95 of the reply lookup (takes that looked one up) and of release to text.
+    """
+    spoken = [r for r in results if r.spoken]
+    called = [r for r in spoken if r.enrich_called]
+    looked = [r.reply_s for r in results if r.reply]
+    words = sum(r.reference_words for r in spoken)
+    errors = sum(r.word_errors_new for r in spoken)
+    return {
+        "takes": len(results),
+        "no_speech": len(results) - len(spoken),
+        "replies_used": sum(r.reply_used for r in results),
+        "reference_words": words,
+        "word_errors": errors,
+        "wer": _ratio(errors, words),
+        "term_occurrences": sum(r.term_occurrences for r in spoken) if terms else None,
+        "term_errors": sum(r.term_errors_new for r in spoken) if terms else None,
+        "name_occurrences": sum(r.name_occurrences for r in spoken),
+        "name_errors": sum(r.name_errors_new for r in spoken),
+        "lost": sum(r.lost_new for r in spoken),
+        "invented": sum(r.invented_new for r in spoken),
+        "invented_from_reply": sum(r.invented_reply for r in spoken),
+        "enrichment": {"asked": len(called), "enriched": sum(r.enrichment == enrich.ENRICHED for r in spoken),
+                       "skipped_reply": sum(r.enrichment == enrich.REPLY for r in spoken)},
+        "latency": {"lookup_p50_s": _seconds(looked, 50), "lookup_p95_s": _seconds(looked, 95),
+                    "release_p50_s": _seconds([r.release_s for r in spoken], 50),
+                    "release_p95_s": _seconds([r.release_s for r in spoken], 95)},
+    }
+
+
+def reply_context_block(enabled: bool, take_ids: Sequence[str], pairs: dict[str, ReplyFile],
+                        with_reply: Sequence[TakeResult] = (), without: Sequence[TakeResult] = (),
+                        terms: bool = False, script_rows: int | None = None) -> dict:
+    """A set's reply pairing: paired and unpaired takes, and the paired ones with and without their reply.
+
+    ``pairs`` maps take ids to their reply file; ``script_rows`` (the replies
+    set) counts the script rows still waiting for a recording or a reply file
+    as ``pending_pairs`` (other sets pair optionally: 0). ``with_reply`` and
+    ``without`` are the paired takes' runs (``with_reply`` only when the reply
+    context is on). Counts only.
+    """
+    paired = [take_id for take_id in take_ids if pairs.get(take_id, ReplyFile(PAIR_MISSING)).reason == PAIR_OK]
+    invalid = Counter(pairs[take_id].reason for take_id in take_ids
+                      if take_id in pairs and pairs[take_id].reason not in (PAIR_OK, PAIR_MISSING))
+    return {
+        "enabled": enabled,
+        "paired": len(paired),
+        "unpaired": len(take_ids) - len(paired),
+        "pending_pairs": max(0, script_rows - len(paired)) if script_rows is not None else 0,
+        "invalid_pairs": dict(sorted(invalid.items())),
+        "lookups": dict(sorted(Counter(r.reply or "not_looked_up" for r in with_reply).items())),
+        "with_reply": reply_view(with_reply, terms) if enabled and paired else None,
+        "without_reply": reply_view(without, terms) if paired else None,
+    }
+
+
+_REPLY_COUNTS = ("paired", "unpaired", "pending_pairs")
+_VIEW_COUNTS = ("takes", "no_speech", "replies_used", "reference_words", "word_errors", "name_occurrences",
+                "name_errors", "lost", "invented", "invented_from_reply")
+
+
+def _count(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def reply_problems(block: object) -> list[str]:
+    """What is malformed in a ``reply_context`` block (field names only; [] when it is valid)."""
+    if not isinstance(block, dict):
+        return ["not an object"]
+    problems = [] if isinstance(block.get("enabled"), bool) else ["enabled"]
+    problems += [key for key in _REPLY_COUNTS if not _count(block.get(key))]
+    invalid = block.get("invalid_pairs")
+    if not isinstance(invalid, dict) or not all(_count(v) for v in invalid.values()):
+        problems.append("invalid_pairs")
+    if not isinstance(block.get("lookups"), dict):
+        problems.append("lookups")
+    for name in ("with_reply", "without_reply"):
+        view = block.get(name)
+        if view is None:
+            continue
+        if not isinstance(view, dict):
+            problems.append(name)
+            continue
+        problems += [f"{name}.{key}" for key in _VIEW_COUNTS if not _count(view.get(key))]
+        enrichment = view.get("enrichment")
+        if not isinstance(enrichment, dict) or not all(_count(enrichment.get(k))
+                                                       for k in ("asked", "enriched", "skipped_reply")):
+            problems.append(f"{name}.enrichment")
+        if not isinstance(view.get("latency"), dict):
+            problems.append(f"{name}.latency")
+    if _count(block.get("paired")) and block["paired"] > 0 and block.get("without_reply") is None:
+        problems.append("without_reply")
+    return problems
+
+
+def _view_text(view: dict) -> str:
+    latency = view.get("latency") or {}
+    terms = (f", domain-term errors {view['term_errors']} of {view['term_occurrences']}"
+             if view.get("term_errors") is not None else "")
+    enrichment = view.get("enrichment") or {}
+    return (f"WER {_percent_text(view.get('wer'))}{terms}, names {view['name_errors']} of {view['name_occurrences']}, "
+            f"lost {view['lost']}, invented {view['invented']} (from the reply {view['invented_from_reply']}); "
+            f"enrichment asked {enrichment.get('asked')}, accepted {enrichment.get('enriched')}, skipped as a reply "
+            f"{enrichment.get('skipped_reply')}; lookup p50/p95 {_pct(latency.get('lookup_p50_s'))} / "
+            f"{_pct(latency.get('lookup_p95_s'))} s, release p50/p95 {_pct(latency.get('release_p50_s'))} / "
+            f"{_pct(latency.get('release_p95_s'))} s")
+
+
+def _percent_text(value: object) -> str:
+    return f"{value:.1%}" if isinstance(value, (int, float)) and not isinstance(value, bool) else "—"
+
+
+def reply_lines(summary: dict) -> tuple[list[str], list[str]]:
+    """(report lines, problems) of each set's ``reply_context`` block; pending pairs are reported, never a failure."""
+    lines: list[str] = []
+    problems: list[str] = []
+    sets = summary.get("sets") if isinstance(summary.get("sets"), dict) else {}
+    for name, block in sets.items():
+        if not isinstance(block, dict) or "reply_context" not in block:
+            continue
+        reply = block["reply_context"]
+        found = reply_problems(reply)
+        if found:
+            problems.append(f"{name}: reply_context malformed ({', '.join(found)})")
+            continue
+        line = (f"reply pairs ({name}): {reply['paired']} paired, {reply['unpaired']} unpaired; reply context "
+                f"{'on' if reply['enabled'] else 'off'}")
+        if reply["invalid_pairs"]:
+            line += "; invalid pairs " + ", ".join(f"{k} {v}" for k, v in reply["invalid_pairs"].items())
+        lines.append(line)
+        if reply["pending_pairs"]:
+            lines.append(f"  pending pairs ({name}): {reply['pending_pairs']} (record them and save each reply file: "
+                         "docs/research/GRAVAR-RESPOSTAS.md); reported, not a failure")
+        for label, key in (("with the reply", "with_reply"), ("without the reply", "without_reply")):
+            if isinstance(reply.get(key), dict):
+                lines.append(f"  {label}: {_view_text(reply[key])}")
+    return lines, problems
+
+
 def targets() -> dict:
     return {"term_errors_ratio_max": TARGET_TERM_ERROR_RATIO, "lost_max": TARGET_LOST,
             "invented_max": TARGET_INVENTED, "pack_outside_context_max": TARGET_INVENTED,
@@ -1403,7 +1844,8 @@ def _rows(results: Sequence[TakeResult]) -> list[dict]:
              "word_errors_new": r.word_errors_new, "invented_reference": r.invented_reference,
              "invented_fixes": r.invented_fixes, "invented_beyond": r.invented_beyond, "audio_s": round(r.audio_s, 3),
              "word_errors_heard": r.word_errors_heard, "pipeline_s": round(r.pipeline_s, 3),
-             "pass_s": round(r.pass_s, 3), "pass_reason": r.pass_reason} for r in results]
+             "pass_s": round(r.pass_s, 3), "pass_reason": r.pass_reason, "reply": r.reply, "reply_used": r.reply_used,
+             "reply_s": round(r.reply_s, 3), "invented_reply": r.invented_reply} for r in results]
 
 
 def write_private(run_dir: Path, results: Sequence[TakeResult], results_dir: Path = RESULTS_DIR,
@@ -1459,6 +1901,50 @@ def write_private(run_dir: Path, results: Sequence[TakeResult], results_dir: Pat
     examples_path = run_dir / "exemplos.md"
     examples_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return takes_path, examples_path
+
+
+def reply_words(pairing: Pairing) -> set[str]:
+    """Every word of the paired replies and every derived term (``refused_project_words`` keeps distinctive ones)."""
+    words = {word for text in pairing.texts.values() for word in REPLY_WORD.findall(text)}
+    return words | set(pairing.terms())
+
+
+def named_in(word: str, values: Iterable[str]) -> bool:
+    """Whether ``word`` (normalized) is a run of words of one of ``values`` (a public model name of the summary)."""
+    needle = " " + " ".join(normalize_words(word)) + " "
+    return needle.strip() != "" and any(needle in " " + " ".join(normalize_words(value)) + " " for value in values)
+
+
+def public_models(summary: object) -> list[str]:
+    """Every model name the summary writes (a string under a ``model`` key, at any depth): public config values."""
+    if isinstance(summary, dict):
+        found = [value for key, value in summary.items() if key == "model" and isinstance(value, str)]
+        return found + [name for value in summary.values() for name in public_models(value)]
+    if isinstance(summary, list):
+        return [name for value in summary for name in public_models(value)]
+    return []
+
+
+def without_public(text: str, public: Iterable[str]) -> list[str]:
+    """The runs of ``text``'s normalized words between the public model names it holds (the privacy check's texts)."""
+    words = normalize_words(text)
+    covered = [False] * len(words)
+    for name in public:
+        needle = normalize_words(name)
+        for start in range(len(words) - len(needle) + 1) if needle else ():
+            if words[start:start + len(needle)] == needle:
+                covered[start:start + len(needle)] = [True] * len(needle)
+    parts, run = [], []
+    for word, hidden in zip(words, covered, strict=True):
+        if hidden:
+            if run:
+                parts.append(" ".join(run))
+            run = []
+        else:
+            run.append(word)
+    if run:
+        parts.append(" ".join(run))
+    return parts
 
 
 def private_texts(results: Sequence[TakeResult]) -> list[str]:
@@ -1661,10 +2147,14 @@ def default_product(vocabulary: object, generic_terms: Sequence[str], product_ti
     from quill.app import final_pass_on
 
     final_pass = config.final_pass if final_pass_on(config) else replace(config.final_pass, enabled=False)
+    # As the app: the last reply context only with [claude_code] last_reply_context on and mouse 5 bound.
+    reply_on = config.claude_code.last_reply_context and config.trigger("send_polished").enabled
+    info["last_reply_context"] = bool(reply_on)
     return Product(pipeline, holder, rewriter, names, packs.lookup, info,
                    hold_start=(lambda: warmer.warm("mouse 5 hold")) if warmer is not None else None,
                    model_loaded=lambda: config.ollama_model in client.loaded(),
-                   hints_for=app_hints(pipeline, packs.get, vocabulary, generic_terms), final_pass=final_pass)
+                   hints_for=app_hints(pipeline, packs.get, vocabulary, generic_terms), final_pass=final_pass,
+                   reply_settings=config.claude_code if reply_on else None)
 
 
 def app_hints(pipeline: object, pack_for: Callable[[object], object | None], vocabulary: object,
@@ -1672,9 +2162,10 @@ def app_hints(pipeline: object, pack_for: Callable[[object], object | None], voc
     """The app's mouse 5 decoding hints (``quill.app.project_hints``) for a simulated window: no process, title only."""
     from quill.app import project_hints
 
-    def hints_for(info: WindowInfo) -> tuple[object | None, str]:
+    def hints_for(info: WindowInfo, reply: Callable[[object], object | None] | None = None,
+                  ) -> tuple[object | None, str]:
         return project_hints(info, 0, profiles=pipeline.profiles, projects=pipeline.projects, pack_for=pack_for,
-                             vocabulary=vocabulary, generic_terms=generic_terms)
+                             vocabulary=vocabulary, generic_terms=generic_terms, reply=reply)
 
     return hints_for
 
@@ -1792,6 +2283,34 @@ class Loaded:
     dictation_takes: tuple[Take, ...] = field(default=(), repr=False)
     dictation_rows: int = 0
     safety_takes: tuple[Take, ...] = field(default=(), repr=False)  # every valid dictation take (--safety)
+    reply_rows: list[ReplyRow] = field(default_factory=list, repr=False)
+    replies: Dataset | None = None
+    reply_takes: tuple[Take, ...] = field(default=(), repr=False)  # with the window project of their row
+
+
+def window_projects(settings: Settings, dataset: Dataset, rows: Sequence[ReplyRow]) -> tuple[Take, ...]:
+    """The replies set's takes, each with its row's window project as its project name.
+
+    An answer rarely says the project's name: the window it answers is the
+    row's ``projeto``, named by the take's manifest mapping (or
+    ``[replies.projects]``), so the simulated window has that project.
+    """
+    from dataclasses import replace
+
+    from bench.dataset import load_manifest
+
+    by_id = {row.id: row for row in rows}
+    entries = load_manifest(settings.manifest) if dataset.takes else {}
+    fallback = dict(settings.projects or ())
+    takes = []
+    for take in dataset.takes:
+        entry = entries.get(take.id)
+        mapping = entry.get("projetos") if isinstance(entry, dict) else None
+        mapping = mapping if isinstance(mapping, dict) else fallback
+        name = mapping.get(by_id[take.id].project) if take.id in by_id else None
+        takes.append(replace(take, project_names=(name.strip(),)) if isinstance(name, str) and name.strip()
+                     else take)
+    return tuple(takes)
 
 
 def load_sets(settings: Settings, chosen: Sequence[str], safety: bool = False) -> Loaded:
@@ -1807,6 +2326,11 @@ def load_sets(settings: Settings, chosen: Sequence[str], safety: bool = False) -
         from bench.dataset import load_script
 
         loaded.dictation_rows = sum(row.style == CLAUDE_CODE for row in load_script(dictation))
+    if REPLIES in chosen:
+        replies = settings.for_set(REPLIES)
+        loaded.reply_rows = load_reply_rows(replies)
+        loaded.replies = load_dataset(replies)
+        loaded.reply_takes = window_projects(replies, loaded.replies, loaded.reply_rows)
     if safety:
         if loaded.dictation is None:
             loaded.dictation = load_dataset(settings.for_set(DICTATION))
@@ -1865,10 +2389,45 @@ def dry_run(settings: Settings, chosen: Sequence[str], out: Callable[[str], None
     if loaded.dictation is not None and DICTATION in chosen:
         out(f"dictation claude-code takes: {len(loaded.dictation_takes)} recorded of {loaded.dictation_rows} "
             "script rows")
+    if loaded.replies is not None:
+        rows, dataset = loaded.reply_rows, loaded.replies
+        cases = Counter(row.case for row in rows)
+        replies = settings.for_set(REPLIES)
+        projects = _numbered(row.project for row in rows)
+        terms = _numbered(t for row in rows for t in row.terms)
+        out(f"replies script: {len(rows)} rows; cases " + ", ".join(f"{c} {cases[c]}" for c in REPLY_CASES if cases[c])
+            + f"; {len(projects)} projects, {len(terms)} domain terms")
+        out(f"local mapping: {sum(p in dict(replies.projects or ()) for p in projects)} of {len(projects)} projects "
+            f"and {sum(valid_term(dict(replies.terms or ()).get(t)) for t in terms)} of {len(terms)} terms named")
+        out(f"replies recorded {len(dataset.takes)} of {len(rows)}, pending {len(dataset.pending)}, invalid "
+            f"{len(dataset.invalid)}, discarded {dataset.discarded}")
+        for invalid in dataset.invalid:
+            out(f"  invalid {invalid.id}: {invalid.reason}")
+    out(pair_line(settings, loaded))
     if safety:
         out(f"safety set: {len(loaded.safety_takes)} valid dictation takes, each correction variant into Claude Code "
             "without a project")
     return 0, done
+
+
+def pair_line(settings: Settings, loaded: Loaded) -> str:
+    """Reply pairs of the chosen sets' recorded takes, counts only (file names are read, no file is opened)."""
+    folder = getattr(settings, "replies_dir", None)
+    takes = [*(loaded.prompts.takes if loaded.prompts is not None else ()), *loaded.dictation_takes,
+             *loaded.reply_takes]
+    pairs = load_pairs(folder, [take.id for take in takes]) if takes else {}
+    paired = sum(pair.reason == PAIR_OK for pair in pairs.values())
+    invalid = Counter(pair.reason for pair in pairs.values() if pair.reason not in (PAIR_OK, PAIR_MISSING))
+    files = reply_file_ids(folder)
+    recorded = {take.id for take in takes}
+    line = (f"reply pairs: {len(files)} reply files, {paired} of {len(takes)} recorded takes paired, "
+            f"{sum(take_id not in recorded for take_id in files)} without a recorded take")
+    if loaded.replies is not None:
+        reply_paired = sum(pairs.get(take.id, ReplyFile(PAIR_MISSING)).reason == PAIR_OK for take in loaded.reply_takes)
+        line += f"; replies set pending pairs {max(0, len(loaded.reply_rows) - reply_paired)}"
+    if invalid:
+        line += "; invalid " + ", ".join(f"{k} {v}" for k, v in sorted(invalid.items()))
+    return line
 
 
 def _pct(value: float | None) -> str:
@@ -1980,6 +2539,7 @@ def report_lines(summary: dict) -> list[str]:
                      f"{rule['word_errors']['off']}, with common sense {rule['word_errors']['on']}; lost, invented "
                      "beyond the fixes and invented vs reference must be 0 in every set)")
     lines += final_pass_lines(summary.get("final_pass"))
+    lines += reply_lines(summary)[0]
     rewrite = summary.get("rewrite") or {}
     if isinstance(rewrite.get("common_sense_fixes"), bool):
         lines.append(f"correction settings: name fixes {'on' if rewrite.get('name_fixes') else 'off'}, common-sense "
@@ -2045,6 +2605,27 @@ def final_pass_lines(section: object) -> list[str]:
         lines.append(f"  choice: {choice['chosen']} (prompts WER {_pct(choice['prompts_wer'])}; qualifying: "
                      + (", ".join(k for k, row in choice["runs"].items() if row["qualifies"]) or "none") + ")")
     return lines
+
+
+def measure_hint_runs(name: str, takes: Sequence[Take], cases: dict[str, str], today: Sequence[TakeResult],
+                      relevance: Sequence[tuple[str, float]], heard: Sequence[tuple[str, float]],
+                      reasons: Sequence[str], switches: Sequence[int], outcomes: Sequence[dict],
+                      main_key: str | None, product: Product,
+                      ) -> tuple[list[TakeResult], list[TakeResult], list[TakeResult], list[tuple[str, float]]]:
+    """(before, streaming, after, the texts ``after`` typed) of a set's takes against their run with today's hints.
+
+    before: the Phase 7 project hints; streaming: the heard-term hint source;
+    after: the main run's final pass on it when ``main_key`` names one, else
+    the streaming run.
+    """
+    before = measure_after(name, takes, cases, relevance, reasons, today, product)
+    streaming = measure_after(name, takes, cases, heard, reasons, today, product, switches=switches, reuse=(before,))
+    after, main_texts = streaming, list(heard)
+    if main_key is not None:
+        main_texts, main_finals = pass_rows(heard, outcomes, main_key)
+        after = measure_after(name, takes, cases, main_texts, reasons, today, product, switches=switches,
+                              reuse=(streaming, before), passes=main_finals)
+    return before, streaming, after, main_texts
 
 
 def require_lines(summary: dict, out: Callable[[str], None]) -> int:
@@ -2124,6 +2705,9 @@ def main(
     parser.add_argument("--pass-candidates", default=None,
                         help="also measure these final passes against the streaming text: 'all' or a comma list of "
                              + ", ".join(PASS_CANDIDATES))
+    parser.add_argument("--no-reply-context", action="store_true",
+                        help="replay every take without its paired reply file (local/replies), as with "
+                             "[claude_code] last_reply_context off")
     args = parser.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -2138,7 +2722,13 @@ def main(
         if not isinstance(summary, dict) or summary.get("kind") != "mouse5_prompts":
             out("error: not a bench.prompts summary")
             return 2
-        return require_lines(summary, out)
+        code = require_lines(summary, out)
+        lines, problems = reply_lines(summary)
+        for line in lines:
+            out(line)
+        for problem in problems:
+            out(f"error: {problem}")
+        return 2 if problems else code
 
     try:
         candidates = pass_candidates(args.pass_candidates)
@@ -2173,6 +2763,13 @@ def main(
         else:
             blocks[DICTATION] = pending_block({"script_rows": loaded.dictation_rows, "recorded": 0,
                                                "pending": loaded.dictation_rows, "invalid": 0})
+    if loaded.replies is not None:
+        if loaded.reply_takes:
+            work.append((REPLIES, loaded.reply_takes, {row.id: row.case for row in loaded.reply_rows}))
+        else:
+            blocks[REPLIES] = pending_block(dataset_counts(loaded.replies))
+            blocks[REPLIES]["reply_context"] = reply_context_block(False, (), {},
+                                                                   script_rows=loaded.replies.script_rows)
     if not work and not loaded.safety_takes:
         out("error: no recorded takes to measure (py -3.12 -m bench.record --set prompts)")
         return 2
@@ -2206,6 +2803,13 @@ def main(
         alias[key] = next((known for known, value in decode.items() if value == wanted), key)
         decode.setdefault(alias[key], wanted)
     main_key = alias.get(APP)
+    # The reply files paired with the takes (local/replies): read once, never a Claude Code session.
+    pairs = load_pairs(getattr(settings, "replies_dir", None), [take.id for _, takes, _ in work for take in takes])
+    reply_on = product.reply_settings is not None and not args.no_reply_context
+    texts_by_id = {take_id: pair.text for take_id, pair in pairs.items() if pair.reason == PAIR_OK and pair.text}
+    if texts_by_id:
+        product.pairing = Pairing(product.reply_settings, texts_by_id, clock=product.clock, active=reply_on)
+    pairing = product.pairing
 
     streamer = None
     transcripts: dict[str, list[tuple[str, float]]] = {}  # today's hints
@@ -2220,6 +2824,9 @@ def main(
     project_chars: list[int] = []
     project_words: set[str] = set()  # the project hints' words: the pack's terms are real project terms
     gpu: list[dict] = []
+    # The paired takes of each set replayed without their reply (only with the reply context on):
+    # (their indexes, hint reasons, before texts, heard texts, switches, final passes).
+    unreplied: dict[str, tuple] = {}
 
     def replay(takes: Sequence[Take], per_take: Sequence[object | None], otherwise: Sequence[tuple[str, float]],
                otherwise_passes: Sequence[dict]) -> tuple[list[tuple[str, float]], list[int], list[dict]]:
@@ -2273,6 +2880,18 @@ def main(
             relevance[name], _, relevance_passes = replay(takes, before_hints, transcripts[name], today_passes[name])
             heard[name], switches[name], outcomes[name] = replay(takes, after_hints, relevance[name],
                                                                  relevance_passes)
+            indexes = [i for i, take in enumerate(takes) if pairing is not None and pairing.paired(take.id)]
+            if reply_on and indexes:
+                subset = [takes[i] for i in indexes]
+                with without_reply(pairing):
+                    plain = take_hints(subset, product)
+                plain_before, _, plain_passes = replay(subset, [relevance_hints(h) for h, _ in plain],
+                                                       [transcripts[name][i] for i in indexes],
+                                                       [today_passes[name][i] for i in indexes])
+                plain_heard, plain_switches, plain_outcomes = replay(subset, [heard_source(h) for h, _ in plain],
+                                                                     plain_before, plain_passes)
+                unreplied[name] = (indexes, [reason for _, reason in plain], plain_before, plain_heard,
+                                   plain_switches, plain_outcomes)
         snapshot("Whisper models loaded, after the replay")
     except (EngineUnavailable, EngineError) as exc:
         out(f"error: {' '.join(str(exc).split())[:200]}")
@@ -2289,26 +2908,38 @@ def main(
     pass_sets: dict[str, dict] = {}
     loaded_before = model_state(product)
     for name, takes, cases in work:
+        termed = name in (SET_NAME, REPLIES)
         today = measure(name, takes, cases, transcripts[name], product)
-        before = measure_after(name, takes, cases, relevance[name], reasons[name], today, product)
-        streaming = measure_after(name, takes, cases, heard[name], reasons[name], today, product,
-                                  switches=switches[name], reuse=(before,))
-        after, main_texts = streaming, heard[name]
-        if main_key is not None:
-            main_texts, main_finals = pass_rows(heard[name], outcomes[name], main_key)
-            after = measure_after(name, takes, cases, main_texts, reasons[name], today, product,
-                                  switches=switches[name], reuse=(streaming, before), passes=main_finals)
+        before, streaming, after, main_texts = measure_hint_runs(
+            name, takes, cases, today, relevance[name], heard[name], reasons[name], switches[name], outcomes[name],
+            main_key, product)
         earlier.extend(today)
         previous.extend(before)
         results.extend(after)
-        dataset = loaded.prompts if name == SET_NAME else loaded.dictation
-        counts = dataset_counts(dataset) if name == SET_NAME else {
-            "script_rows": loaded.dictation_rows, "recorded": len(takes),
-            "pending": max(0, loaded.dictation_rows - len(takes)), "invalid": 0}
-        blocks[name] = set_block(after, counts, product.info, terms=name == SET_NAME)
-        blocks[name]["relevance_hints"] = before_block(before, terms=name == SET_NAME)
-        blocks[name]["today_hints"] = before_block(today, terms=name == SET_NAME)
+        if name == DICTATION:
+            counts = {"script_rows": loaded.dictation_rows, "recorded": len(takes),
+                      "pending": max(0, loaded.dictation_rows - len(takes)), "invalid": 0}
+        else:
+            counts = dataset_counts(loaded.prompts if name == SET_NAME else loaded.replies)
+        blocks[name] = set_block(after, counts, product.info, terms=termed)
+        blocks[name]["relevance_hints"] = before_block(before, terms=termed)
+        blocks[name]["today_hints"] = before_block(today, terms=termed)
         blocks[name]["heard_hints"] = heard_block(streaming, before, sources[name])
+        paired_at = [i for i, take in enumerate(takes) if pairing is not None and pairing.paired(take.id)]
+        without: list[TakeResult] = [after[i] for i in paired_at]
+        if name in unreplied:
+            indexes, plain_reasons, plain_before, plain_heard, plain_switches, plain_outcomes = unreplied[name]
+            subset = [takes[i] for i in indexes]
+            with without_reply(pairing):
+                # Today's mouse 5 never uses the reply: each take keeps its run's, only the new mouse 5 runs again.
+                plain_today = [run_take(take, name, cases.get(take.id, take.case), *transcripts[name][i], product,
+                                        today_from=today[i]) for take, i in zip(subset, indexes, strict=True)]
+                _, _, without, _ = measure_hint_runs(name, subset, cases, plain_today, plain_before, plain_heard,
+                                                     plain_reasons, plain_switches, plain_outcomes, main_key, product)
+            extra.setdefault("no-reply", []).extend(without)
+        blocks[name]["reply_context"] = reply_context_block(
+            reply_on, [take.id for take in takes], pairs, [after[i] for i in paired_at] if reply_on else (), without,
+            terms=termed, script_rows=counts["script_rows"] if name == REPLIES else None)
         if decode:
             runs = {STREAMING: streaming, **({APP: after} if main_key is not None else {})}
             for candidate in candidate_settings:
@@ -2316,13 +2947,13 @@ def main(
                 runs[candidate] = measure_after(name, takes, cases, texts, reasons[name], today, product,
                                                 switches=switches[name], reuse=(after, streaming, before),
                                                 passes=finals)
-            pass_sets[name] = {key: pass_block(rows, terms=name == SET_NAME) for key, rows in runs.items()}
+            pass_sets[name] = {key: pass_block(rows, terms=termed) for key, rows in runs.items()}
             for key, rows in runs.items():
                 if key != APP:
                     extra.setdefault(f"pass-{key}", []).extend(rows)
         if args.variants:
             runs = measure_variants(name, takes, cases, main_texts, reasons[name], after, product)
-            blocks[name]["variants"] = variants_block(runs, terms=name == SET_NAME)
+            blocks[name]["variants"] = variants_block(runs, terms=termed)
             blocks[name]["variant_app"] = app_variant(product.rewriter)
             for variant, rows in runs.items():
                 extra.setdefault(variant, []).extend(rows)
@@ -2355,6 +2986,7 @@ def main(
     rewrite = {key: product.info[key] for key in ("model", "timeout_s", "enrich_timeout_s", "bench_timeout_s",
                                                   "timeouts", "keep_alive", "load_wait_s", "cleanup")
                if key in product.info}
+    rewrite["last_reply_context"] = reply_on
     rewrite["correction_candidates"] = (autorewrite.LIKELY_TERMS if args.correction_candidates is None
                                         else args.correction_candidates)
     rewrite["name_fixes"] = bool(getattr(product.rewriter, "name_fixes", autorewrite.NAME_FIXES))
@@ -2372,20 +3004,30 @@ def main(
 
     texts = private_texts([*results, *previous, *earlier, *(r for rows in extra.values() for r in rows)])
     names = [entry.text for entry in vocabulary.names]
-    for dataset in (loaded.prompts, loaded.dictation):
+    for dataset in (loaded.prompts, loaded.dictation, loaded.replies):
         if dataset is not None:
             texts += dataset.reference_texts()
             names += sorted(dataset.names)
             names += [term for take in dataset.takes for term in take.terms]
     try:
         phrases, projects, terms = private_text(settings.for_set(SET_NAME))
-    except DatasetError as exc:
+        if loaded.replies is not None:
+            reply_phrases, reply_projects, reply_terms = private_text(settings.for_set(REPLIES), load_reply_rows)
+            phrases, projects, terms = phrases + reply_phrases, projects | reply_projects, terms | reply_terms
+    except (DatasetError, SettingsError) as exc:
         out(f"error: {exc}")
         return 2
     texts += phrases
     names += sorted(projects) + sorted(terms)
     # A pack term spelled as only the project writes it is refused too; common words would refuse at random.
     names += refused_project_words(project_words)
+    if pairing is not None:
+        # The paired replies and the terms derived from them: the same rule (texts, distinctive words).
+        # The summary names its models (the engine, the rewriter's, the final passes'): a reply naming one still
+        # writes it, so its words never run across a model name.
+        public = [*public_models(summary), *MODELS]
+        texts += [part for text in (*pairing.texts.values(), *pairing.terms()) for part in without_public(text, public)]
+        names += [word for word in refused_project_words(reply_words(pairing)) if not named_in(word, public)]
     run_dir = Path(results_dir) / "prompts" / time.strftime("%Y%m%d-%H%M%S")
     try:
         write_private(run_dir, results, results_dir, before=previous, today=earlier, extra=extra)

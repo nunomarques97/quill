@@ -11,6 +11,12 @@ voice set's ``<projeto-N>`` placeholders name project-hub shortcuts, so its
 own ``[voice.projects]`` mapping, not the reference config, lists the names it
 may use; the prompts set does the same with ``[prompts.projects]`` and maps
 its ``<termo-N>`` placeholders to real domain terms with ``[prompts.terms]``.
+The spoken answers to Claude Code replies are ``settings.replies`` (ids
+rr-NN), mapped the same way by ``[replies.projects]`` and ``[replies.terms]``.
+``settings.replies_dir`` (``[replies] replies_dir``, default ``local/replies``,
+always under the ignored ``local/`` folder) holds the reply files that
+``bench.prompts`` pairs with takes: ``<take id>.md``, the plain text of the
+Claude Code message the take answers.
 """
 
 from __future__ import annotations
@@ -51,6 +57,12 @@ PROMPTS_EXPECTED_TAKES = 15
 # The domain-term comparison needs every prompt: all are required.
 PROMPTS_MIN_TAKES = 15
 
+REPLIES_SCRIPT = REPO_ROOT / "bench" / "dictation" / "guiao-respostas-pt.md"
+REPLIES_PREFIX = "rr"
+REPLIES_EXPECTED_TAKES = 10
+# Pairs are measured as they come: a partial set is reported with its pending pairs.
+REPLIES_MIN_TAKES = 1
+
 ID_PREFIX = re.compile(r"^[a-z]{2,8}$")
 PLACEHOLDER_KEY = re.compile(r"^<projeto-\d+>$")
 TERM_KEY = re.compile(r"^<termo-\d+>$")
@@ -87,6 +99,10 @@ class Settings:
     voice: Settings | None = None
     # Spoken Claude Code prompts with domain terms (commands set only).
     prompts: Settings | None = None
+    # Spoken answers to Claude Code replies (commands set only).
+    replies: Settings | None = None
+    # Reply files paired with takes by bench.prompts (commands set only; under local/).
+    replies_dir: Path | None = None
     # MME input device name for bench.record; None falls back to the reference config.
     recorder_device: str | None = None
 
@@ -97,7 +113,7 @@ class Settings:
     def for_set(self, name: str) -> Settings:
         if name == self.name:
             return self
-        for extra in (self.dictation, self.rewrite, self.voice, self.prompts):
+        for extra in (self.dictation, self.rewrite, self.voice, self.prompts, self.replies):
             if extra is not None and name == extra.name:
                 return extra
         raise SettingsError(f"unknown dataset set: {name}")
@@ -204,6 +220,26 @@ def _prompts(data: dict, reference_config: Path) -> Settings:
                        minimum=PROMPTS_MIN_TAKES, projects=True, own_names=True, terms=True)
 
 
+def _replies(data: dict, reference_config: Path) -> Settings:
+    return _script_set(data, "replies", reference_config, recordings=LOCAL_DIR / "recordings" / "replies",
+                       script=REPLIES_SCRIPT, prefix=REPLIES_PREFIX, expected=REPLIES_EXPECTED_TAKES,
+                       minimum=REPLIES_MIN_TAKES, projects=True, own_names=True, terms=True)
+
+
+def _replies_dir(data: dict) -> Path:
+    """``[replies] replies_dir``: the folder of the reply files paired with takes (default local/replies)."""
+    table = data.get("replies", {})
+    value = table.get("replies_dir") if isinstance(table, dict) else None
+    if value is None:
+        return LOCAL_DIR / "replies"
+    if not isinstance(value, str) or not value.strip():
+        raise SettingsError("benchmark settings: [replies].replies_dir must be a non-empty string")
+    folder = _repo_path(value)
+    if not _inside(folder, LOCAL_DIR):
+        raise SettingsError("benchmark settings: [replies].replies_dir must be under the ignored local/ folder")
+    return folder
+
+
 def load_settings(path: Path | None = None) -> Settings:
     """Load settings; error messages name the missing key, never its value."""
     config_path = Path(path) if path is not None else DEFAULT_CONFIG
@@ -256,5 +292,7 @@ def load_settings(path: Path | None = None) -> Settings:
         rewrite=_rewrite(data, reference_config),
         voice=_voice(data, reference_config),
         prompts=_prompts(data, reference_config),
+        replies=_replies(data, reference_config),
+        replies_dir=_replies_dir(data),
         recorder_device=device.strip() if isinstance(device, str) else None,
     )

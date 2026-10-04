@@ -98,6 +98,27 @@ expected_takes = 44
 # "<termo-2>" = "quillmark"
 # ... one line per <termo-N> of the script (15 terms)
 
+# Optional: the answers to Claude Code messages (defaults shown), recorded
+# with `bench.record --set replies` and measured with `bench.prompts`. Its
+# script is committed with placeholders, invented text and a generic
+# description of each Claude message. `bench.prompts` pairs a take with the
+# plain-text reply file <take id>.md of replies_dir (any set's take may have
+# one); the real Claude messages stay there, under the ignored local/ folder.
+# The bench never reads Claude Code sessions.
+# [replies]
+# recordings_dir = "local/recordings/replies"   # must be under local/
+# recording_script = "bench/dictation/guiao-respostas-pt.md"
+# replies_dir = "local/replies"                 # must be under local/
+# id_prefix = "rr"
+# expected_takes = 10
+# min_takes = 1
+# [replies.projects]
+# "<projeto-1>" = "nimbus-deck"
+# "<projeto-2>" = "orchard"
+# [replies.terms]
+# "<termo-1>" = "gridlock"
+# ... one line per <termo-N> of the script (8 terms)
+
 # Optional: MME input device used by bench.record. A name truncated by MME to
 # 31 characters still matches. Without it the reference config's microphone
 # name ([microfone].nome) is used.
